@@ -48,6 +48,13 @@ export function defaultRois(): RoiConfig[] {
   ];
 }
 
+/** ROI を1枚足す。固定カメラで見えるのは最大3面なので上限は3。 */
+export function makeRoi(id: string, face: FaceIndex): RoiConfig {
+  return { id, face, corners: defaultCorners(0.5, 0.5, 0.13), rotate: 0, mirror: false, enabled: true };
+}
+
+export const MAX_ROIS = 3;
+
 export function roiLabel(r: RoiConfig): string {
   return `${r.id} → ${FACE_NAMES[r.face]}`;
 }
@@ -164,8 +171,9 @@ export function loadRois(): RoiConfig[] {
     if (!raw) return defaultRois();
     const parsed = JSON.parse(raw) as RoiConfig[];
     if (!Array.isArray(parsed) || parsed.length === 0) return defaultRois();
-    return parsed.map((r, i) => ({
-      ...defaultRois()[Math.min(i, 1)],
+    const base = defaultRois();
+    return parsed.slice(0, MAX_ROIS).map((r, i) => ({
+      ...(base[i] ?? makeRoi(`roi${i}`, 1 as FaceIndex)),
       ...r,
       corners: r.corners.map((c) => ({ x: c.x, y: c.y })) as Corners,
     }));

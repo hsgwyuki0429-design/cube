@@ -11,10 +11,11 @@ import { attachRoiEditor } from './roiEditor';
 import { Rolling } from './metrics';
 import { Camera } from '../vision/camera';
 import {
-  cellSamplePoints, loadRois, saveRois, defaultRois, validateRoi,
+  cellSamplePoints, loadRois, saveRois, defaultRois, validateRoi, makeRoi, MAX_ROIS,
   DEFAULT_SAMPLES_PER_AXIS, type RoiConfig,
 } from '../vision/roi';
-import { FACE_NAMES, type FaceIndex } from '../core/cube';
+import { Tracker, defaultThresholds, type RoiObservation, type TrackerStep } from '../core/tracker';
+import { FACE_NAMES, solvedState, applySequence, isSolved, type FaceIndex } from '../core/cube';
 import {
   classifyCells, adaptRef, refMinDistance, FaceAccumulator, labToRgb,
   loadProfiles, saveProfiles, getActiveProfileId, setActiveProfileId,
@@ -73,6 +74,14 @@ export class App {
     result: { lab: [number, number, number]; spread: number }[];
   } = { active: false, roi: 0, index: 0, target: 30, acc: new FaceAccumulator(), capturing: false, result: [] };
 
+  // --- 追跡 ---
+  private tracker = new Tracker(solvedState(), defaultThresholds());
+  private tracking = false;
+  private lastStep: TrackerStep | null = null;
+  private moveLog: string[] = [];
+  private trackerBody!: HTMLElement;
+  private trackerStatsEl!: HTMLElement;
+
   // --- 色分類精度の集計 ---
   private accuracy = {
     running: false,
@@ -122,6 +131,7 @@ export class App {
     this.panel.appendChild(this.buildCameraSection());
     this.panel.appendChild(this.buildRoiSection());
     this.panel.appendChild(this.buildColorSection());
+    this.panel.appendChild(this.buildTrackerSection());
     this.panel.appendChild(this.buildRawSection());
     this.panel.appendChild(this.buildLogSection());
 
@@ -253,6 +263,7 @@ export class App {
     this.classifyFrame(frame);
     if (this.calib.active && this.calib.capturing) this.stepCalibration(frame);
     if (this.accuracy.running) this.accumulateAccuracy(frame);
+    if (this.tracking) this.trackFrame(frame);
     this.procMs.push(frame.procMs);
     this.latencyMs.push(performance.now() - this.tStart - frame.t);
     const now = performance.now();
@@ -279,6 +290,28 @@ export class App {
       }
     }
   }
+
+  /** 分類結果を追跡エンジンに渡す。 */
+  private trackFrame(frame: FrameSample): void {
+    const active = this.activeRoiIndices();
+    const obs: RoiObservation[] = [];
+    for (let k = 0; k < frame.rois.length; k++) {
+      const roi = this.rois[active[k]];
+      if (!roi) continue;
+      obs.push({ face: roi.face, labels: this.labels[k], conf: this.conf[k] });
+    }
+    if (!obs.length) return;
+    const step = this.tracker.step(obs, frame.t);
+    this.lastStep = step;
+    for (const m of step.applied) {
+      this.moveLog.push(`${(frame.t / 1000).toFixed(2)}s ${m}`);
+      if (this.moveLog.length > 200) this.moveLog.shift();
+    }
+    if (step.applied.length) this.onMovesApplied(step, frame.t);
+  }
+
+  /** 計測モード（ステップ7）が差し込むフック。 */
+  private onMovesApplied(_step: TrackerStep, _t: number): void { /* step7 で使う */ }
 
   private get processedFps(): number {
     const n = this.procFpsTimes.length;
@@ -309,9 +342,12 @@ export class App {
       showRaw: this.showRaw,
       showGrid: this.showGrid,
       hoverCorner: this.editor?.hover ?? null,
-      candidates: [],
-      status: this.running ? 'CAPTURING' : 'IDLE',
-      moveLog: [],
+      candidates: this.lastStep?.candidates.map((c) => ({
+        label: c.label + (c.aliases.length ? `=${c.aliases.length}` : ''),
+        score: c.score,
+      })) ?? [],
+      status: this.tracking ? this.tracker.status : this.running ? 'CAPTURING' : 'IDLE',
+      moveLog: this.moveLog,
     });
     this.updateStats();
     requestAnimationFrame(this.renderLoop);
@@ -345,6 +381,7 @@ export class App {
       </table>`;
     this.renderRawCells();
     this.renderAccuracy();
+    this.renderTrackerStats();
     if (this.calib.active && this.calib.capturing) this.refreshColorSection();
   }
 
@@ -432,7 +469,7 @@ export class App {
   }
 
   private buildRoiSection(): HTMLElement {
-    const { root, body } = section('ROI（2枚）');
+    const { root, body } = section('ROI（最大3枚）');
     const rebuild = () => {
       body.replaceChildren(
         el('div', { class: 'hint' }, [
@@ -441,6 +478,20 @@ export class App {
         ]),
         ...this.rois.map((r) => this.roiRow(r, rebuild)),
         el('div', { class: 'row' }, [
+          el('button', {
+            disabled: this.rois.length >= MAX_ROIS,
+            title: '固定カメラで見えるのは最大3面。3枚目を足すと恒等と区別できない手が消える。',
+            onclick: () => {
+              const used = new Set(this.rois.map((r) => r.face));
+              const face = ([1, 0, 2, 3, 4, 5] as FaceIndex[]).find((f) => !used.has(f)) ?? 1;
+              this.rois.push(makeRoi(`roi${this.rois.length}`, face as FaceIndex));
+              saveRois(this.rois); this.pushConfig(); rebuild();
+            },
+          }, ['ROI追加']),
+          el('button', {
+            disabled: this.rois.length <= 1,
+            onclick: () => { this.rois.pop(); saveRois(this.rois); this.pushConfig(); rebuild(); },
+          }, ['末尾を削除']),
           el('button', { onclick: () => { this.rois = defaultRois(); saveRois(this.rois); this.pushConfig(); rebuild(); } }, ['初期位置に戻す']),
           el('button', {
             class: this.showRaw ? 'on' : '',
@@ -758,6 +809,108 @@ export class App {
         <tr><td>平均信頼度</td><td>${fmt(a.confSum / a.cells, 3)}</td></tr>
         <tr><td>低信頼セル</td><td>${((a.lowConf / a.cells) * 100).toFixed(2)}%</td></tr>
         <tr><td>判定セル数</td><td>${a.matched} / ${a.cells}</td></tr>
+      </table>`;
+  }
+
+
+  // -------------------------------------------------------------------------
+  // 追跡パネル
+  // -------------------------------------------------------------------------
+
+  private buildTrackerSection(): HTMLElement {
+    const { root, body } = section('追跡エンジン');
+    this.trackerBody = body;
+    this.trackerStatsEl = el('div');
+    this.refreshTrackerSection();
+    return root;
+  }
+
+  private refreshTrackerSection(): void {
+    if (!this.trackerBody) return;
+    const th = this.tracker.thresholds;
+    this.trackerBody.replaceChildren(
+      el('div', { class: 'row' }, [
+        el('button', {
+          class: this.tracking ? 'danger' : 'primary',
+          onclick: () => {
+            this.tracking = !this.tracking;
+            if (this.tracking) {
+              this.moveLog.length = 0;
+              this.log('追跡開始。内部状態は現在の値のまま。');
+            }
+            this.refreshTrackerSection();
+          },
+        }, [this.tracking ? '追跡停止' : '追跡開始']),
+        el('button', {
+          onclick: () => {
+            this.tracker.reset(solvedState());
+            this.moveLog.length = 0;
+            this.lastStep = null;
+            this.log('内部状態を完成状態にリセット。');
+          },
+        }, ['完成状態にリセット']),
+        el('button', {
+          onclick: () => {
+            const n = prompt('内部状態にする手順（例: R U R\' U\'）', '');
+            if (n === null) return;
+            try {
+              this.tracker.reset(applySequence(solvedState(), n));
+              this.moveLog.length = 0;
+              this.log(`内部状態を「${n}」適用後にセット。`);
+            } catch (e) {
+              this.log(`記法エラー: ${e instanceof Error ? e.message : String(e)}`, 'bad');
+            }
+          },
+        }, ['手順から状態設定']),
+      ]),
+      slider('SCORE_THRESHOLD', 0.3, 1, 0.005, th.scoreThreshold, (v) => { th.scoreThreshold = v; }),
+      slider('MARGIN_THRESHOLD', 0, 0.5, 0.005, th.marginThreshold, (v) => { th.marginThreshold = v; }),
+      slider('ヒステリシス(フレーム)', 1, 8, 1, th.hysteresisFrames, (v) => { th.hysteresisFrames = v; }),
+      slider('LOST判定(フレーム)', 3, 120, 1, th.lostFrames, (v) => { th.lostFrames = v; }),
+      slider('セル信頼度の下限', 0, 0.8, 0.01, th.minCellConf, (v) => { th.minCellConf = v; }),
+      slider('最低可視セル数', 1, 27, 1, th.minVisibleCells, (v) => { th.minVisibleCells = v; }),
+      el('div', { class: 'row' }, [
+        el('button', {
+          class: th.twoMoveEnabled ? 'on' : '',
+          onclick: (e: Event) => {
+            th.twoMoveEnabled = !th.twoMoveEnabled;
+            (e.target as HTMLElement).classList.toggle('on', th.twoMoveEnabled);
+          },
+        }, ['2手同時展開']),
+        el('button', {
+          class: th.preferIdentityOnTie ? 'on' : '',
+          onclick: (e: Event) => {
+            th.preferIdentityOnTie = !th.preferIdentityOnTie;
+            (e.target as HTMLElement).classList.toggle('on', th.preferIdentityOnTie);
+          },
+          title: '同点候補に恒等が含まれるとき恒等を採る。OFF にすると曖昧なフレームは全て TRANSITION。',
+        }, ['同点時は恒等優先']),
+      ]),
+      slider('2手展開の刈り込みK', 1, 12, 1, th.twoMoveTopK, (v) => { th.twoMoveTopK = v; }),
+      this.trackerStatsEl,
+    );
+  }
+
+  private renderTrackerStats(): void {
+    if (!this.trackerStatsEl) return;
+    const tr = this.tracker;
+    const st = this.lastStep;
+    const moves = tr.moves;
+    const span = moves.length > 1 ? (moves[moves.length - 1].t - moves[0].t) / 1000 : 0;
+    const tps = span > 0 ? (moves.length - 1) / span : 0;
+    const confMean = moves.length ? moves.reduce((a, m) => a + m.confidence, 0) / moves.length : NaN;
+    this.trackerStatsEl.innerHTML = `
+      <table class="kv">
+        <tr><td>状態</td><td><span class="pill ${this.tracking ? tr.status : 'IDLE'}">${this.tracking ? tr.status : 'IDLE'}</span></td></tr>
+        <tr><td>確定手数</td><td>${moves.length}</td></tr>
+        <tr><td>TPS</td><td>${fmt(tps, 2)}</td></tr>
+        <tr><td>LOST回数</td><td><span class="${tr.lostCount ? 'bad' : 'ok'}">${tr.lostCount}</span></td></tr>
+        <tr><td>TRANSITIONフレーム</td><td>${tr.transitionFrames} / ${tr.frameCount}</td></tr>
+        <tr><td>最良スコア</td><td>${fmt(st?.best ?? NaN, 3)}</td></tr>
+        <tr><td>2位とのマージン</td><td>${fmt(st?.margin ?? NaN, 3)}</td></tr>
+        <tr><td>可視セル</td><td>${st?.visibleCells ?? '-'}</td></tr>
+        <tr><td>平均信頼度(採用手)</td><td>${fmt(confMean, 3)}</td></tr>
+        <tr><td>内部状態</td><td>${isSolved(tr.state) ? '<span class="ok">完成</span>' : '未完成'}</td></tr>
       </table>`;
   }
 
