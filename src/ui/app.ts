@@ -14,7 +14,9 @@ import {
   cellSamplePoints, loadRois, saveRois, defaultRois, validateRoi, makeRoi, MAX_ROIS,
   DEFAULT_SAMPLES_PER_AXIS, type RoiConfig,
 } from '../vision/roi';
-import { Tracker, defaultThresholds, type RoiObservation, type TrackerStep } from '../core/tracker';
+import { Tracker, defaultThresholds, PRESETS, type RoiObservation, type TrackerStep } from '../core/tracker';
+import { Recorder, downloadSession, parseSession, type RecordedSession } from '../dev/recorder';
+import { replaySession, type ReplayResult } from '../dev/replay';
 import { FACE_NAMES, solvedState, applySequence, isSolved, type FaceIndex } from '../core/cube';
 import {
   classifyCells, adaptRef, refMinDistance, FaceAccumulator, labToRgb,
@@ -82,6 +84,13 @@ export class App {
   private trackerBody!: HTMLElement;
   private trackerStatsEl!: HTMLElement;
 
+  // --- 録画 / リプレイ ---
+  private recorder = new Recorder();
+  private loadedSession: RecordedSession | null = null;
+  private lastReplay: ReplayResult | null = null;
+  private recordBody!: HTMLElement;
+  private recordStatsEl!: HTMLElement;
+
   // --- 色分類精度の集計 ---
   private accuracy = {
     running: false,
@@ -132,6 +141,7 @@ export class App {
     this.panel.appendChild(this.buildRoiSection());
     this.panel.appendChild(this.buildColorSection());
     this.panel.appendChild(this.buildTrackerSection());
+    this.panel.appendChild(this.buildRecordSection());
     this.panel.appendChild(this.buildRawSection());
     this.panel.appendChild(this.buildLogSection());
 
@@ -264,6 +274,7 @@ export class App {
     if (this.calib.active && this.calib.capturing) this.stepCalibration(frame);
     if (this.accuracy.running) this.accumulateAccuracy(frame);
     if (this.tracking) this.trackFrame(frame);
+    if (this.recorder.recording) this.recorder.add(frame, this.labels, this.conf, this.processedFps);
     this.procMs.push(frame.procMs);
     this.latencyMs.push(performance.now() - this.tStart - frame.t);
     const now = performance.now();
@@ -382,6 +393,7 @@ export class App {
     this.renderRawCells();
     this.renderAccuracy();
     this.renderTrackerStats();
+    this.renderRecordStats();
     if (this.calib.active && this.calib.capturing) this.refreshColorSection();
   }
 
@@ -863,9 +875,55 @@ export class App {
           },
         }, ['手順から状態設定']),
       ]),
+      el('div', { class: 'row' }, [
+        el('label', {}, ['プリセット']),
+        el('select', {
+          class: 'grow',
+          onchange: (e: Event) => {
+            const p = PRESETS[Number((e.target as HTMLSelectElement).value)];
+            if (!p) return;
+            Object.assign(this.tracker.thresholds, defaultThresholds(), p.thresholds);
+            this.log(`閾値プリセット「${p.name}」を適用。`);
+            this.refreshTrackerSection();
+          },
+        }, [el('option', { value: '' }, ['(選択して適用)']),
+            ...PRESETS.map((p, i) => el('option', { value: String(i) }, [p.name]))]),
+      ]),
       slider('SCORE_THRESHOLD', 0.3, 1, 0.005, th.scoreThreshold, (v) => { th.scoreThreshold = v; }),
       slider('MARGIN_THRESHOLD', 0, 0.5, 0.005, th.marginThreshold, (v) => { th.marginThreshold = v; }),
-      slider('ヒステリシス(フレーム)', 1, 8, 1, th.hysteresisFrames, (v) => { th.hysteresisFrames = v; }),
+      el('div', { class: 'row' }, [
+        el('label', {}, ['マージンの測り方']),
+        el('button', {
+          class: th.marginMode === 'ratio' ? 'on' : '',
+          onclick: () => { th.marginMode = 'ratio'; this.refreshTrackerSection(); },
+          title: '正規化スコアの差。可視セルが多いほど1セル差のマージンが小さくなる。',
+        }, ['ratio']),
+        el('button', {
+          class: th.marginMode === 'cells' ? 'on' : '',
+          onclick: () => { th.marginMode = 'cells'; this.refreshTrackerSection(); },
+          title: '正規化前の一致質量の差。可視セル数に依存しない。',
+        }, ['cells']),
+      ]),
+      th.marginMode === 'cells'
+        ? slider('マージン(セル数)', 0.1, 3, 0.05, th.marginCells, (v) => { th.marginCells = v; })
+        : el('span'),
+      el('div', { class: 'row' }, [
+        el('label', {}, ['ヒステリシス']),
+        el('button', {
+          class: th.hysteresisMode === 'consecutive' ? 'on' : '',
+          onclick: () => { th.hysteresisMode = 'consecutive'; this.refreshTrackerSection(); },
+          title: '連続 N フレーム同一（CLAUDE.md の既定）',
+        }, ['連続']),
+        el('button', {
+          class: th.hysteresisMode === 'window' ? 'on' : '',
+          onclick: () => { th.hysteresisMode = 'window'; this.refreshTrackerSection(); },
+          title: '直近 M フレーム中 N 回。高TPSでの取りこぼしに強い。',
+        }, ['窓']),
+      ]),
+      slider('ヒステリシス N(フレーム)', 1, 8, 1, th.hysteresisFrames, (v) => { th.hysteresisFrames = v; }),
+      th.hysteresisMode === 'window'
+        ? slider('ヒステリシス 窓幅 M', 2, 16, 1, th.hysteresisWindow, (v) => { th.hysteresisWindow = v; })
+        : el('span'),
       slider('LOST判定(フレーム)', 3, 120, 1, th.lostFrames, (v) => { th.lostFrames = v; }),
       slider('セル信頼度の下限', 0, 0.8, 0.01, th.minCellConf, (v) => { th.minCellConf = v; }),
       slider('最低可視セル数', 1, 27, 1, th.minVisibleCells, (v) => { th.minVisibleCells = v; }),
@@ -907,11 +965,164 @@ export class App {
         <tr><td>LOST回数</td><td><span class="${tr.lostCount ? 'bad' : 'ok'}">${tr.lostCount}</span></td></tr>
         <tr><td>TRANSITIONフレーム</td><td>${tr.transitionFrames} / ${tr.frameCount}</td></tr>
         <tr><td>最良スコア</td><td>${fmt(st?.best ?? NaN, 3)}</td></tr>
-        <tr><td>2位とのマージン</td><td>${fmt(st?.margin ?? NaN, 3)}</td></tr>
+        <tr><td>2位とのマージン</td><td>${fmt(st?.margin ?? NaN, 3)} / ${fmt(st?.marginCells ?? NaN, 2)}セル</td></tr>
         <tr><td>可視セル</td><td>${st?.visibleCells ?? '-'}</td></tr>
         <tr><td>平均信頼度(採用手)</td><td>${fmt(confMean, 3)}</td></tr>
         <tr><td>内部状態</td><td>${isSolved(tr.state) ? '<span class="ok">完成</span>' : '未完成'}</td></tr>
       </table>`;
+  }
+
+
+  // -------------------------------------------------------------------------
+  // 録画 / リプレイ
+  // -------------------------------------------------------------------------
+
+  private startRecording(): void {
+    const active = this.activeRoiIndices();
+    this.recorder.start({
+      name: `rec ${new Date().toLocaleTimeString('ja-JP')}`,
+      faces: active.map((i) => this.rois[i].face),
+      initialScramble: null,
+      refLab: this.ref ? Array.from(this.ref) : undefined,
+      camera: {
+        width: this.camera.stats().width,
+        height: this.camera.stats().height,
+        requestedFps: this.camera.stats().requestedFps,
+        negotiatedFps: this.camera.stats().negotiatedFps,
+        measuredFps: this.camera.stats().presentedFps,
+        label: this.camera.stats().label,
+      },
+      synthetic: false,
+    });
+    this.log('録画開始。認識を間引いても記録は間引かない。');
+    this.refreshRecordSection();
+  }
+
+  private stopRecording(): void {
+    const s = this.recorder.stop();
+    if (s) this.log(`録画停止: ${s.frames.length} フレーム`, 'ok');
+    this.loadedSession = s;
+    this.refreshRecordSection();
+  }
+
+  private async loadSessionFile(file: File): Promise<void> {
+    try {
+      this.loadedSession = parseSession(await file.text());
+      this.lastReplay = null;
+      this.log(`録画を読み込み: ${this.loadedSession.name} / ${this.loadedSession.frames.length} フレーム` +
+        (this.loadedSession.synthetic ? '（合成データ）' : ''), 'ok');
+    } catch (e) {
+      this.log(`読み込み失敗: ${e instanceof Error ? e.message : String(e)}`, 'bad');
+    }
+    this.refreshRecordSection();
+  }
+
+  /** カメラなしで追跡エンジンだけを再実行する。 */
+  private runReplay(): void {
+    const s = this.loadedSession;
+    if (!s) return;
+    const t0 = performance.now();
+    this.lastReplay = replaySession(s, { thresholds: { ...this.tracker.thresholds } });
+    const ms = performance.now() - t0;
+    const c = this.lastReplay.comparison;
+    this.log(`リプレイ完了 ${s.frames.length}フレームを ${ms.toFixed(0)}ms で処理。` +
+      `手数 ${this.lastReplay.moves.length} / LOST ${this.lastReplay.lostCount}` +
+      (c ? ` / 一致 ${c.matchedPrefix}/${c.expected.length} ${c.complete ? '完走' : '未完走'}` : ''),
+      c?.complete ? 'ok' : 'warn');
+    this.refreshRecordSection();
+  }
+
+  /** 現在の閾値と全プリセットを同一データで比較する。 */
+  private runSweep(): void {
+    const s = this.loadedSession;
+    if (!s) return;
+    this.log('--- 閾値スイープ ---');
+    for (const p of PRESETS) {
+      const r = replaySession(s, { thresholds: { ...defaultThresholds(), ...p.thresholds } });
+      const c = r.comparison;
+      this.log(`${p.name}: 手数 ${r.moves.length} / LOST ${r.lostCount}` +
+        (c ? ` / ${c.matchedPrefix}/${c.expected.length} ${c.complete ? 'OK' : 'NG'}` +
+             (c.falsePositives ? ` 誤検出${c.falsePositives}` : '') : ''),
+        c?.complete ? 'ok' : '');
+    }
+  }
+
+  private buildRecordSection(): HTMLElement {
+    const { root, body } = section('録画 / リプレイ');
+    this.recordBody = body;
+    this.recordStatsEl = el('div');
+    this.refreshRecordSection();
+    return root;
+  }
+
+  private refreshRecordSection(): void {
+    if (!this.recordBody) return;
+    const s = this.loadedSession;
+    const fileInput = el('input', {
+      type: 'file', accept: 'application/json',
+      onchange: (e: Event) => {
+        const f = (e.target as HTMLInputElement).files?.[0];
+        if (f) void this.loadSessionFile(f);
+      },
+    });
+    this.recordBody.replaceChildren(
+      el('div', { class: 'row' }, [
+        el('button', {
+          class: this.recorder.recording ? 'danger' : 'primary',
+          onclick: () => (this.recorder.recording ? this.stopRecording() : this.startRecording()),
+        }, [this.recorder.recording ? '録画停止' : '録画開始']),
+        el('button', {
+          disabled: !s || s.frames.length === 0,
+          onclick: () => s && downloadSession(s),
+        }, ['JSONダウンロード']),
+      ]),
+      el('div', { class: 'row' }, [el('label', {}, ['録画を読込']), fileInput]),
+      el('div', { class: 'row' }, [
+        el('button', { class: 'primary', disabled: !s, onclick: () => this.runReplay() }, ['リプレイ実行']),
+        el('button', { disabled: !s, onclick: () => this.runSweep() }, ['プリセット比較']),
+        el('button', {
+          disabled: !s?.expectedMoves,
+          onclick: () => {
+            if (!s) return;
+            const n = prompt('正解手順（空白区切り）', s.expectedMoves?.join(' ') ?? '');
+            if (n === null) return;
+            s.expectedMoves = n.trim() ? n.trim().split(/\s+/) : undefined;
+            this.refreshRecordSection();
+          },
+        }, ['正解手順を編集']),
+      ]),
+      el('div', { class: 'hint' }, [
+        'リプレイはカメラなしで追跡エンジンだけを再実行する。閾値を変えて同じデータで比較するのが目的。',
+      ]),
+      this.recordStatsEl,
+    );
+  }
+
+  private renderRecordStats(): void {
+    if (!this.recordStatsEl) return;
+    const s = this.loadedSession;
+    const r = this.lastReplay;
+    const rows: string[] = [];
+    if (this.recorder.recording) {
+      rows.push(`<tr><td>録画中</td><td>${this.recorder.frameCount} フレーム / 約${fmt(this.recorder.approxSizeMb, 2)}MB</td></tr>`);
+    }
+    if (s) {
+      rows.push(`<tr><td>読込中の録画</td><td>${s.name}${s.synthetic ? ' <span class="warn">(合成)</span>' : ''}</td></tr>`);
+      rows.push(`<tr><td>フレーム数</td><td>${s.frames.length}</td></tr>`);
+      rows.push(`<tr><td>ROI面</td><td>${s.faces.map((f) => FACE_NAMES[f]).join(', ')}</td></tr>`);
+      rows.push(`<tr><td>正解手順</td><td>${s.expectedMoves ? `${s.expectedMoves.length}手` : 'なし'}</td></tr>`);
+    }
+    if (r) {
+      const c = r.comparison;
+      rows.push(`<tr><td>リプレイ手数</td><td>${r.moves.length}</td></tr>`);
+      rows.push(`<tr><td>リプレイ LOST</td><td>${r.lostCount}</td></tr>`);
+      if (c) {
+        rows.push(`<tr><td>一致手数</td><td><span class="${c.complete ? 'ok' : 'bad'}">${c.matchedPrefix}/${c.expected.length}</span></td></tr>`);
+        rows.push(`<tr><td>誤検出 / 取りこぼし</td><td>${c.falsePositives} / ${c.missed}</td></tr>`);
+        rows.push(`<tr><td>最終状態</td><td>${c.finalStateMatches ? '<span class="ok">一致</span>' : '<span class="bad">不一致</span>'}</td></tr>`);
+      }
+    }
+    this.recordStatsEl.innerHTML = rows.length ? `<table class="kv">${rows.join('')}</table>` : '';
   }
 
   private buildRawSection(): HTMLElement {

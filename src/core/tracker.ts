@@ -27,10 +27,34 @@ const SECOND_MOVES: readonly string[] = [...MOVES_18, ...ROTATIONS_6];
 export interface TrackerThresholds {
   /** 最良スコアがこれを超えないと採用しない */
   scoreThreshold: number;
-  /** 2位（異なる予測をする候補）との差がこれを超えないと採用しない */
+  /** 2位（異なる予測をする候補）との差がこれを超えないと採用しない（marginMode='ratio'） */
   marginThreshold: number;
-  /** 非恒等候補を確定させるのに必要な連続フレーム数 */
+  /**
+   * マージンの測り方。
+   * 'ratio' … 正規化スコアの差（CLAUDE.md の既定）。
+   * 'cells' … 正規化前の「一致した信頼度の質量」の差。可視セル数に依存しない。
+   *
+   * 正規化スコアで測ると、可視セルを増やすほど1セルしか変えない手のマージンが
+   * 小さくなる（18セルなら 1/18≈0.056、27セルなら 1/27≈0.037）。
+   * 実際にこれで D2 を取りこぼす例が fixtures にある。
+   */
+  marginMode: 'ratio' | 'cells';
+  /** marginMode='cells' のときの閾値。信頼度1のセル何個ぶんの差を要求するか */
+  marginCells: number;
+  /** 非恒等候補を確定させるのに必要なフレーム数 */
   hysteresisFrames: number;
+  /**
+   * ヒステリシスの数え方。
+   * 'consecutive' … 連続 hysteresisFrames フレーム同一（CLAUDE.md の既定）。
+   * 'window'      … 直近 hysteresisWindow フレーム中 hysteresisFrames 回。
+   *
+   * 高 TPS では正解候補が1位になっても、ノイズで別候補が1フレームだけ割り込み、
+   * 連続条件が満たされずに手を落とす。実際に fixtures の tps8 でこれが起きる。
+   * 'window' はその取りこぼしに強い。
+   */
+  hysteresisMode: 'consecutive' | 'window';
+  /** hysteresisMode='window' のときの窓幅（フレーム） */
+  hysteresisWindow: number;
   /** TRANSITION がこのフレーム数続いたら LOST */
   lostFrames: number;
   /** これ未満の信頼度のセルはスコアに使わない（見えていない扱い） */
@@ -52,7 +76,11 @@ export function defaultThresholds(): TrackerThresholds {
   return {
     scoreThreshold: 0.85,
     marginThreshold: 0.05,
+    marginMode: 'ratio',
+    marginCells: 0.5,
     hysteresisFrames: 2,
+    hysteresisMode: 'consecutive',
+    hysteresisWindow: 5,
     lostFrames: 30,
     minCellConf: 0.15,
     minVisibleCells: 6,
@@ -61,6 +89,22 @@ export function defaultThresholds(): TrackerThresholds {
     preferIdentityOnTie: true,
   };
 }
+
+/**
+ * 閾値のプリセット。設定パネルとスイープツールで共有する。
+ * 合成 fixtures での完走率は npm run sweep で確認できる。
+ */
+export const PRESETS: { name: string; thresholds: Partial<TrackerThresholds> }[] = [
+  { name: '仕様どおり(連続2)', thresholds: {} },
+  { name: '連続3', thresholds: { hysteresisFrames: 3 } },
+  { name: '窓 3/6（推奨）', thresholds: { hysteresisMode: 'window', hysteresisFrames: 3, hysteresisWindow: 6 } },
+  { name: '窓 3/8', thresholds: { hysteresisMode: 'window', hysteresisFrames: 3, hysteresisWindow: 8 } },
+  { name: '窓3/6 + cellマージン', thresholds: { hysteresisMode: 'window', hysteresisFrames: 3, hysteresisWindow: 6, marginMode: 'cells', marginCells: 0.5 } },
+  { name: '窓3/6 + score0.90', thresholds: { hysteresisMode: 'window', hysteresisFrames: 3, hysteresisWindow: 6, scoreThreshold: 0.9 } },
+  { name: '2手同時ON + 窓3/6', thresholds: { hysteresisMode: 'window', hysteresisFrames: 3, hysteresisWindow: 6, twoMoveEnabled: true } },
+  { name: '厳しめ(score0.90 margin0.10)', thresholds: { scoreThreshold: 0.9, marginThreshold: 0.1 } },
+  { name: '緩め(score0.80)', thresholds: { scoreThreshold: 0.8 } },
+];
 
 /** 1枚の ROI の観測。 */
 export interface RoiObservation {
@@ -93,6 +137,8 @@ export interface TrackerStep {
   best: number;
   margin: number;
   visibleCells: number;
+  /** 正規化前のマージン（信頼度の質量差）。marginMode の比較用に常に出す */
+  marginCells: number;
   /** 曖昧（同点の別候補が複数ありどれとも決められない）だったか */
   ambiguous: boolean;
 }
@@ -100,6 +146,8 @@ export interface TrackerStep {
 interface ScoredGroup {
   key: string;
   score: number;
+  /** 正規化前の一致質量 Σ(信頼度 × 一致) */
+  mass: number;
   members: string[];
 }
 
@@ -115,6 +163,8 @@ export class Tracker {
   transitionFrames = 0;
 
   private pending: { label: string; count: number } | null = null;
+  /** window モード用。閾値を通った候補（通らなければ null）を新しい順に保持 */
+  private votes: (string | null)[] = [];
   private consecutiveTransition = 0;
   private buf: FaceIndex[] = new Array(9);
   /** 候補状態のキャッシュ（1フレーム内で使い捨て） */
@@ -130,6 +180,7 @@ export class Tracker {
     this.status = 'TRACKING';
     this.moves.length = 0;
     this.pending = null;
+    this.votes.length = 0;
     this.consecutiveTransition = 0;
     this.lostCount = 0;
     this.frameCount = 0;
@@ -144,7 +195,9 @@ export class Tracker {
    * 候補状態を ROI に投影したときの予測ラベル列と、その一致スコアを返す。
    * スコア = Σ(信頼度 × 一致) / Σ(信頼度)、可視セルのみで正規化。
    */
-  private scoreState(s: CubeState, obs: RoiObservation[], minConf: number): { score: number; key: string } {
+  private scoreState(
+    s: CubeState, obs: RoiObservation[], minConf: number,
+  ): { score: number; mass: number; key: string } {
     let num = 0;
     let den = 0;
     let key = '';
@@ -162,7 +215,7 @@ export class Tracker {
         if (this.buf[i] === l) num += c;
       }
     }
-    return { score: den > 0 ? num / den : 0, key };
+    return { score: den > 0 ? num / den : 0, mass: num, key };
   }
 
   private candidateState(label: string): CubeState {
@@ -190,9 +243,9 @@ export class Tracker {
     }
 
     // --- 単手候補 ---
-    const scored: { label: string; score: number; key: string }[] = CANDIDATES.map((label) => {
-      const { score, key } = this.scoreState(this.candidateState(label), obs, th.minCellConf);
-      return { label, score, key };
+    const scored: { label: string; score: number; mass: number; key: string }[] = CANDIDATES.map((label) => {
+      const r = this.scoreState(this.candidateState(label), obs, th.minCellConf);
+      return { label, score: r.score, mass: r.mass, key: r.key };
     });
     scored.sort((a, b) => b.score - a.score || (a.label === IDENTITY ? -1 : b.label === IDENTITY ? 1 : 0));
 
@@ -203,8 +256,8 @@ export class Tracker {
         const base = this.candidateState(seed.label);
         for (const m2 of SECOND_MOVES) {
           const label = `${seed.label} ${m2}`;
-          const { score, key } = this.scoreState(applyMove(base, m2), obs, th.minCellConf);
-          scored.push({ label, score, key });
+          const r = this.scoreState(applyMove(base, m2), obs, th.minCellConf);
+          scored.push({ label, score: r.score, mass: r.mass, key: r.key });
         }
       }
       scored.sort((a, b) => b.score - a.score || (a.label === IDENTITY ? -1 : b.label === IDENTITY ? 1 : 0));
@@ -218,7 +271,7 @@ export class Tracker {
     for (const c of scored) {
       let g = byKey.get(c.key);
       if (!g) {
-        g = { key: c.key, score: c.score, members: [] };
+        g = { key: c.key, score: c.score, mass: c.mass, members: [] };
         byKey.set(c.key, g);
         groups.push(g);
       }
@@ -229,6 +282,8 @@ export class Tracker {
     const bestGroup = groups[0];
     const best = bestGroup.score;
     const margin = groups.length > 1 ? best - groups[1].score : 1;
+    const marginCells = groups.length > 1 ? bestGroup.mass - groups[1].mass : Infinity;
+    const marginOk = th.marginMode === 'cells' ? marginCells > th.marginCells : margin > th.marginThreshold;
 
     const candidates: CandidateScore[] = groups.slice(0, 5).map((g) => ({
       label: g.members[0],
@@ -237,8 +292,8 @@ export class Tracker {
     }));
 
     // --- 採用判定 ---
-    if (best <= th.scoreThreshold || margin <= th.marginThreshold) {
-      return this.transition(candidates, best, margin, visible, false);
+    if (best <= th.scoreThreshold || !marginOk) {
+      return this.transition(candidates, best, margin, visible, false, marginCells);
     }
 
     const hasIdentity = bestGroup.members.includes(IDENTITY);
@@ -254,23 +309,33 @@ export class Tracker {
       ambiguous = true;
     }
 
-    if (chosen === null) return this.transition(candidates, best, margin, visible, ambiguous);
+    if (chosen === null) return this.transition(candidates, best, margin, visible, ambiguous, marginCells);
+
+    this.pushVote(chosen);
 
     if (chosen === IDENTITY) {
       this.pending = null;
       this.consecutiveTransition = 0;
       this.status = 'TRACKING';
-      return { status: 'TRACKING', applied: [], candidates, best, margin, visibleCells: visible, ambiguous: false };
+      return { status: 'TRACKING', applied: [], candidates, best, margin, marginCells, visibleCells: visible, ambiguous: false };
     }
 
-    // 非恒等はヒステリシス（連続 N フレーム同一）で確定
-    if (this.pending && this.pending.label === chosen) this.pending.count++;
-    else this.pending = { label: chosen, count: 1 };
+    // 非恒等はヒステリシスで確定
+    let confirmed: boolean;
+    if (th.hysteresisMode === 'window') {
+      let n = 0;
+      for (const v of this.votes) if (v === chosen) n++;
+      confirmed = n >= th.hysteresisFrames;
+    } else {
+      if (this.pending && this.pending.label === chosen) this.pending.count++;
+      else this.pending = { label: chosen, count: 1 };
+      confirmed = this.pending.count >= th.hysteresisFrames;
+    }
 
-    if (this.pending.count < th.hysteresisFrames) {
+    if (!confirmed) {
       // 確定前。状態は保持したまま TRANSITION 扱いにはしない（回転途中ではなく確認中）
       this.consecutiveTransition = 0;
-      return { status: this.status, applied: [], candidates, best, margin, visibleCells: visible, ambiguous: false };
+      return { status: this.status, applied: [], candidates, best, margin, marginCells, visibleCells: visible, ambiguous: false };
     }
 
     const applied = chosen.split(' ');
@@ -279,14 +344,23 @@ export class Tracker {
       this.moves.push({ notation: m, t, confidence: best });
     }
     this.pending = null;
+    this.votes.length = 0; // 状態が変わったので過去の票は無効
     this.consecutiveTransition = 0;
     this.status = 'TRACKING';
-    return { status: 'TRACKING', applied, candidates, best, margin, visibleCells: visible, ambiguous: false };
+    return { status: 'TRACKING', applied, candidates, best, margin, marginCells, visibleCells: visible, ambiguous: false };
+  }
+
+  /** window モードの票を進める。閾値を通らなかったフレームは null を入れて窓だけ進める。 */
+  private pushVote(v: string | null): void {
+    this.votes.unshift(v);
+    while (this.votes.length > this.thresholds.hysteresisWindow) this.votes.pop();
   }
 
   private transition(
     candidates: CandidateScore[], best: number, margin: number, visible: number, ambiguous: boolean,
+    marginCells = 0,
   ): TrackerStep {
+    this.pushVote(null);
     this.transitionFrames++;
     this.consecutiveTransition++;
     this.pending = null;
@@ -296,6 +370,6 @@ export class Tracker {
     } else if (this.status !== 'LOST') {
       this.status = 'TRANSITION';
     }
-    return { status: this.status, applied: [], candidates, best, margin, visibleCells: visible, ambiguous };
+    return { status: this.status, applied: [], candidates, best, margin, marginCells, visibleCells: visible, ambiguous };
   }
 }
