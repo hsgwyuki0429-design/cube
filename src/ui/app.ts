@@ -85,6 +85,8 @@ export class App {
   // --- 追跡 ---
   private tracker = new Tracker(solvedState(), defaultThresholds());
   private tracking = false;
+  /** tracker.reset に使った手順。録画の initialScramble に入れる */
+  private stateNotation: string | null = null;
   private lastStep: TrackerStep | null = null;
   private moveLog: string[] = [];
   private trackerBody!: HTMLElement;
@@ -931,6 +933,7 @@ export class App {
         el('button', {
           onclick: () => {
             this.tracker.reset(solvedState());
+            this.stateNotation = null;
             this.moveLog.length = 0;
             this.lastStep = null;
             this.log('内部状態を完成状態にリセット。');
@@ -942,6 +945,7 @@ export class App {
             if (n === null) return;
             try {
               this.tracker.reset(applySequence(solvedState(), n));
+              this.stateNotation = n.trim() || null;
               this.moveLog.length = 0;
               this.log(`内部状態を「${n}」適用後にセット。`);
             } catch (e) {
@@ -1057,7 +1061,8 @@ export class App {
     this.recorder.start({
       name: `rec ${new Date().toLocaleTimeString('ja-JP')}`,
       faces: active.map((i) => this.rois[i].face),
-      initialScramble: null,
+      // 録画開始時点の内部状態。これが無いとリプレイが完成状態から始まって必ず食い違う
+      initialScramble: this.stateNotation,
       refLab: this.ref ? Array.from(this.ref) : undefined,
       camera: {
         width: this.camera.stats().width,
@@ -1077,6 +1082,21 @@ export class App {
     const s = this.recorder.stop();
     if (s) this.log(`録画停止: ${s.frames.length} フレーム`, 'ok');
     this.loadedSession = s;
+    this.refreshRecordSection();
+  }
+
+  /**
+   * 追跡が確定した手順を、その録画の正解手順として設定する。
+   * 完成状態まで追い切れたソルブなら、確定手順は正解と見なしてよい
+   * （途中で誤ると完成状態に到達しないため）。
+   */
+  private adoptTrackedAsExpected(): void {
+    const s = this.loadedSession;
+    if (!s) return;
+    s.expectedMoves = this.tracker.moves.map((m) => m.notation);
+    this.log(`確定手順 ${s.expectedMoves.length} 手を正解手順として設定しました。` +
+      (isSolved(this.tracker.state) ? '' : '（完成状態に到達していないので信頼度は低い）'),
+      isSolved(this.tracker.state) ? 'ok' : 'warn');
     this.refreshRecordSection();
   }
 
@@ -1156,7 +1176,12 @@ export class App {
         el('button', { class: 'primary', disabled: !s, onclick: () => this.runReplay() }, ['リプレイ実行']),
         el('button', { disabled: !s, onclick: () => this.runSweep() }, ['プリセット比較']),
         el('button', {
-          disabled: !s?.expectedMoves,
+          disabled: !s || !this.tracker.moves.length,
+          onclick: () => this.adoptTrackedAsExpected(),
+          title: '完成まで追い切れたソルブなら、確定手順を正解と見なしてよい',
+        }, ['確定手順を正解にする']),
+        el('button', {
+          disabled: !s,
           onclick: () => {
             if (!s) return;
             const n = prompt('正解手順（空白区切り）', s.expectedMoves?.join(' ') ?? '');
@@ -1214,6 +1239,7 @@ export class App {
     m.t0 = null;
     m.tEnd = null;
     this.tracker.reset(applySequence(solvedState(), m.scramble));
+    this.stateNotation = m.scramble;
     this.moveLog.length = 0;
     this.tracking = true;
     this.refreshTrackerSection();
@@ -1264,6 +1290,12 @@ export class App {
       completed ? 'ok' : 'bad',
     );
     this.log('手順ログ: ' + result.moves.map((x) => `${(x.t / 1000).toFixed(2)}s ${x.notation}`).join('  '));
+    if (completed && this.recorder.recording) {
+      // 完成まで追えたソルブは、その手順を正解として録画に埋め込める
+      const rec = this.recorder.session;
+      if (rec) rec.expectedMoves = this.tracker.moves.map((x) => x.notation);
+      this.log('録画に正解手順を埋め込みました（fixtures に置けば回帰テストになる）。', 'ok');
+    }
     this.refreshMeasureSection();
   }
 
