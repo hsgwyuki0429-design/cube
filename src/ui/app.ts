@@ -15,6 +15,11 @@ import {
   DEFAULT_SAMPLES_PER_AXIS, type RoiConfig,
 } from '../vision/roi';
 import { FACE_NAMES, type FaceIndex } from '../core/cube';
+import {
+  classifyCells, adaptRef, refMinDistance, FaceAccumulator, labToRgb,
+  loadProfiles, saveProfiles, getActiveProfileId, setActiveProfileId,
+  MIN_SEPARATION_WARN, MIN_SEPARATION_FAIL, type ColorProfile,
+} from '../vision/color';
 import type { FrameSample, WorkerRequest, WorkerResponse } from '../vision/types';
 
 export class App {
@@ -42,13 +47,50 @@ export class App {
   private latencyMs = new Rolling(120);
   private procFpsTimes: number[] = [];
 
-  private showRaw = true;
+  private showRaw = false;
   private showGrid = true;
+
+  // --- 色 ---
+  private profiles: ColorProfile[] = loadProfiles();
+  private activeProfile: ColorProfile | null = null;
+  /** 実行中の代表ベクトル（EMA でここだけが動く。プロファイル本体は触らない） */
+  private ref: Float32Array | null = null;
+  private labels: Int8Array[] = [];
+  private conf: Float32Array[] = [];
+  private confThreshold = 0.15;
+  private adaptOn = false;
+  private adaptAlpha = 0.02;
+  private adaptMinConf = 0.5;
+
+  // --- キャリブレーション ---
+  private calib: {
+    active: boolean;
+    roi: number;
+    index: number;
+    target: number;
+    acc: FaceAccumulator;
+    capturing: boolean;
+    result: { lab: [number, number, number]; spread: number }[];
+  } = { active: false, roi: 0, index: 0, target: 30, acc: new FaceAccumulator(), capturing: false, result: [] };
+
+  // --- 色分類精度の集計 ---
+  private accuracy = {
+    running: false,
+    t0: 0,
+    frames: 0,
+    cells: 0,
+    matched: 0,
+    faceMatched: 0,
+    lowConf: 0,
+    confSum: 0,
+  };
   private editor!: ReturnType<typeof attachRoiEditor>;
 
   private cameraStatsEl!: HTMLElement;
   private perfStatsEl!: HTMLElement;
   private cellsEl!: HTMLElement;
+  private colorBody!: HTMLElement;
+  private accuracyEl!: HTMLElement;
   private logEl!: HTMLElement;
   private deviceSelect!: HTMLSelectElement;
 
@@ -59,6 +101,8 @@ export class App {
   // -------------------------------------------------------------------------
 
   init(): void {
+    const activeId = getActiveProfileId();
+    this.setActiveProfile(this.profiles.find((p) => p.id === activeId) ?? this.profiles[0] ?? null, false);
     this.buildLayout();
     this.startWorker();
     this.pushConfig();
@@ -77,6 +121,7 @@ export class App {
 
     this.panel.appendChild(this.buildCameraSection());
     this.panel.appendChild(this.buildRoiSection());
+    this.panel.appendChild(this.buildColorSection());
     this.panel.appendChild(this.buildRawSection());
     this.panel.appendChild(this.buildLogSection());
 
@@ -205,11 +250,34 @@ export class App {
   private onFrameResult(frame: FrameSample): void {
     this.busy = false;
     this.lastFrame = frame;
+    this.classifyFrame(frame);
+    if (this.calib.active && this.calib.capturing) this.stepCalibration(frame);
+    if (this.accuracy.running) this.accumulateAccuracy(frame);
     this.procMs.push(frame.procMs);
     this.latencyMs.push(performance.now() - this.tStart - frame.t);
     const now = performance.now();
     this.procFpsTimes.push(now);
     while (this.procFpsTimes.length > 2 && now - this.procFpsTimes[0] > 1000) this.procFpsTimes.shift();
+  }
+
+  /** Worker が返した Lab を分類し、必要なら代表ベクトルを EMA 更新する。 */
+  private classifyFrame(frame: FrameSample): void {
+    const ref = this.ref;
+    while (this.labels.length < frame.rois.length) {
+      this.labels.push(new Int8Array(9));
+      this.conf.push(new Float32Array(9));
+    }
+    for (let i = 0; i < frame.rois.length; i++) {
+      if (!ref) {
+        this.labels[i].fill(-1);
+        this.conf[i].fill(0);
+        continue;
+      }
+      classifyCells(frame.rois[i].lab, ref, this.labels[i], this.conf[i]);
+      if (this.adaptOn) {
+        adaptRef(ref, frame.rois[i].lab, this.labels[i], this.conf[i], this.adaptMinConf, this.adaptAlpha);
+      }
+    }
   }
 
   private get processedFps(): number {
@@ -230,14 +298,14 @@ export class App {
     if (this.lastFrame) {
       active.forEach((roiIdx, k) => {
         const s = this.lastFrame!.rois[k];
-        if (s) cells[roiIdx] = { rgb: s.rgb, labels: null, conf: null };
+        if (s) cells[roiIdx] = { rgb: s.rgb, labels: this.labels[k] ?? null, conf: this.conf[k] ?? null };
       });
     }
     this.overlay.draw({
       rois: this.rois,
       cells,
-      palette: null,
-      confThreshold: 0,
+      palette: this.palette(),
+      confThreshold: this.confThreshold,
       showRaw: this.showRaw,
       showGrid: this.showGrid,
       hoverCorner: this.editor?.hover ?? null,
@@ -276,6 +344,8 @@ export class App {
         <tr><td>認識スキップ</td><td>${this.skippedFrames}</td></tr>
       </table>`;
     this.renderRawCells();
+    this.renderAccuracy();
+    if (this.calib.active && this.calib.capturing) this.refreshColorSection();
   }
 
   private renderRawCells(): void {
@@ -401,6 +471,294 @@ export class App {
       el('button', { class: r.enabled ? 'on' : '', onclick: () => { r.enabled = !r.enabled; this.pushConfig(); saveRois(this.rois); rebuild(); } }, ['有効']),
       err ? el('span', { class: 'bad' }, [err]) : null,
     ]);
+  }
+
+
+  // -------------------------------------------------------------------------
+  // 色: プロファイル / キャリブレーション / 精度計測
+  // -------------------------------------------------------------------------
+
+  /** 6色の表示用 RGB。オーバーレイの塗りに使う。 */
+  private palette(): [number, number, number][] | null {
+    if (!this.ref) return null;
+    const out: [number, number, number][] = [];
+    for (let f = 0; f < 6; f++) out.push(labToRgb(this.ref[f * 3], this.ref[f * 3 + 1], this.ref[f * 3 + 2]));
+    return out;
+  }
+
+  private setActiveProfile(p: ColorProfile | null, persist = true): void {
+    this.activeProfile = p;
+    this.ref = p ? Float32Array.from(p.refLab) : null;
+    if (persist) setActiveProfileId(p?.id ?? null);
+  }
+
+  private startCalibration(): void {
+    if (!this.running) {
+      this.log('先にカメラを開始してください。', 'warn');
+      return;
+    }
+    this.calib.active = true;
+    this.calib.index = 0;
+    this.calib.capturing = false;
+    this.calib.result = [];
+    this.calib.acc.reset();
+    this.log('キャリブレーション開始。完成状態のキューブを用意し、指示された面を ROI に合わせてください。');
+    this.refreshColorSection();
+  }
+
+  private captureCalibFace(): void {
+    this.calib.acc.reset();
+    this.calib.capturing = true;
+    this.refreshColorSection();
+  }
+
+  /** フレームごとに呼ばれ、規定枚数たまったら次の面へ進む。 */
+  private stepCalibration(frame: FrameSample): void {
+    const active = this.activeRoiIndices();
+    const k = active.indexOf(this.calib.roi);
+    const sample = k >= 0 ? frame.rois[k] : undefined;
+    if (!sample) {
+      this.calib.capturing = false;
+      this.log('キャリブレーション対象の ROI が無効です。', 'bad');
+      return;
+    }
+    this.calib.acc.add(sample.lab);
+    if (this.calib.acc.count < this.calib.target * 9) return;
+
+    const res = this.calib.acc.result();
+    this.calib.result.push(res);
+    this.calib.capturing = false;
+    this.log(`${FACE_NAMES[this.calib.index]} 面を記録: L*a*b* = ${res.lab.map((v) => v.toFixed(1)).join(', ')} / ばらつき ${res.spread.toFixed(2)}`,
+      res.spread > 8 ? 'warn' : 'ok');
+    if (res.spread > 8) this.log('  ばらつきが大きい。影・反射・ROI ずれを疑う。', 'warn');
+    this.calib.index++;
+    if (this.calib.index >= 6) this.finishCalibration();
+    this.refreshColorSection();
+  }
+
+  private finishCalibration(): void {
+    const refLab: number[] = [];
+    const spread: number[] = [];
+    for (const r of this.calib.result) {
+      refLab.push(r.lab[0], r.lab[1], r.lab[2]);
+      spread.push(r.spread);
+    }
+    const { d, a, b } = refMinDistance(refLab);
+    const profile: ColorProfile = {
+      id: `p${Date.now().toString(36)}`,
+      name: `cube ${new Date().toLocaleString('ja-JP', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}`,
+      refLab,
+      spread,
+      createdAt: Date.now(),
+    };
+    this.profiles.push(profile);
+    saveProfiles(this.profiles);
+    this.setActiveProfile(profile);
+    this.calib.active = false;
+    this.log(`キャリブレーション完了: ${profile.name}`, 'ok');
+    this.log(`6色間の最小距離 ΔE=${d.toFixed(1)} (${FACE_NAMES[a]} vs ${FACE_NAMES[b]})`,
+      d < MIN_SEPARATION_FAIL ? 'bad' : d < MIN_SEPARATION_WARN ? 'warn' : 'ok');
+    if (d < MIN_SEPARATION_FAIL) {
+      this.log('  この配色は判別困難。照明を変えるか別のキューブを使うこと。', 'bad');
+    } else if (d < MIN_SEPARATION_WARN) {
+      this.log('  判別が苦しい配色。誤分類が増える可能性が高い。', 'warn');
+    }
+    this.refreshColorSection();
+  }
+
+  private cancelCalibration(): void {
+    this.calib.active = false;
+    this.calib.capturing = false;
+    this.refreshColorSection();
+  }
+
+  // --- 精度計測 -------------------------------------------------------------
+
+  private startAccuracy(): void {
+    if (!this.ref) {
+      this.log('先にキャリブレーションが必要です。', 'warn');
+      return;
+    }
+    this.accuracy = { running: true, t0: performance.now(), frames: 0, cells: 0, matched: 0, faceMatched: 0, lowConf: 0, confSum: 0 };
+    this.log('色分類精度の計測開始。完成状態のキューブを ROI に映したまま静止させる。');
+    this.refreshColorSection();
+  }
+
+  private stopAccuracy(): void {
+    this.accuracy.running = false;
+    const a = this.accuracy;
+    const acc = a.cells ? (a.matched / a.cells) * 100 : NaN;
+    this.log(`精度計測終了: ${fmt(acc, 2)}% (${a.matched}/${a.cells} セル, ${a.frames} フレーム, ${fmt((performance.now() - a.t0) / 1000)}秒)`,
+      acc >= 98 ? 'ok' : 'bad');
+    this.refreshColorSection();
+  }
+
+  /**
+   * 完成状態の面は9セルすべて同色なので、ROI 内の最頻ラベルを正解とみなして一致率を出す
+   * （CLAUDE.md「色分類精度（完成状態など既知状態での一致率）」）。
+   * あわせて、最頻ラベルが ROI に設定した面と一致するか（= 本当の正解）も数える。
+   */
+  private accumulateAccuracy(frame: FrameSample): void {
+    const a = this.accuracy;
+    const active = this.activeRoiIndices();
+    a.frames++;
+    for (let k = 0; k < frame.rois.length; k++) {
+      const labels = this.labels[k];
+      const conf = this.conf[k];
+      if (!labels) continue;
+      const counts = [0, 0, 0, 0, 0, 0];
+      for (let i = 0; i < 9; i++) if (labels[i] >= 0) counts[labels[i]]++;
+      let mode = 0;
+      for (let f = 1; f < 6; f++) if (counts[f] > counts[mode]) mode = f;
+      for (let i = 0; i < 9; i++) {
+        a.cells++;
+        if (labels[i] === mode) a.matched++;
+        a.confSum += conf[i];
+        if (conf[i] < this.confThreshold) a.lowConf++;
+      }
+      if (mode === this.rois[active[k]]?.face) a.faceMatched += 9;
+    }
+  }
+
+  // --- パネル ---------------------------------------------------------------
+
+  private buildColorSection(): HTMLElement {
+    const { root, body } = section('色キャリブレーション / 分類');
+    this.colorBody = body;
+    this.accuracyEl = el('div');
+    this.refreshColorSection();
+    return root;
+  }
+
+  private refreshColorSection(): void {
+    if (!this.colorBody) return;
+    const b = this.colorBody;
+    const children: (HTMLElement | null)[] = [];
+
+    // プロファイル選択
+    const sel = el('select', {
+      class: 'grow',
+      onchange: (e: Event) => {
+        const id = (e.target as HTMLSelectElement).value;
+        this.setActiveProfile(this.profiles.find((p) => p.id === id) ?? null);
+        this.refreshColorSection();
+      },
+    }, [
+      el('option', { value: '' }, ['(なし: 未キャリブレーション)']),
+      ...this.profiles.map((p) => el('option', { value: p.id }, [p.name])),
+    ]) as HTMLSelectElement;
+    sel.value = this.activeProfile?.id ?? '';
+    children.push(el('div', { class: 'row' }, [el('label', {}, ['プロファイル']), sel]));
+    children.push(el('div', { class: 'row' }, [
+      el('button', { onclick: () => this.startCalibration(), disabled: this.calib.active }, ['新規キャリブレーション']),
+      el('button', {
+        disabled: !this.activeProfile,
+        onclick: () => {
+          const p = this.activeProfile!;
+          const name = prompt('プロファイル名', p.name);
+          if (name) { p.name = name; saveProfiles(this.profiles); this.refreshColorSection(); }
+        },
+      }, ['名前変更']),
+      el('button', {
+        class: 'danger', disabled: !this.activeProfile,
+        onclick: () => {
+          this.profiles = this.profiles.filter((p) => p.id !== this.activeProfile!.id);
+          saveProfiles(this.profiles);
+          this.setActiveProfile(this.profiles[0] ?? null);
+          this.refreshColorSection();
+        },
+      }, ['削除']),
+    ]));
+
+    // 代表色スウォッチと最小距離
+    if (this.ref) {
+      const pal = this.palette()!;
+      children.push(el('div', { class: 'swatches' }, pal.map((c, f) =>
+        el('div', { class: 'swatch', style: { background: `rgb(${c[0]},${c[1]},${c[2]})` } }, [FACE_NAMES[f]]))));
+      const { d, a, bIdx } = (() => { const r = refMinDistance(this.ref!); return { d: r.d, a: r.a, bIdx: r.b }; })();
+      children.push(el('div', { class: d < MIN_SEPARATION_FAIL ? 'bad' : d < MIN_SEPARATION_WARN ? 'warn' : 'ok' },
+        [`6色間の最小距離 ΔE=${d.toFixed(1)} (${FACE_NAMES[a]}↔${FACE_NAMES[bIdx]})` +
+          (d < MIN_SEPARATION_FAIL ? ' — 判別困難' : d < MIN_SEPARATION_WARN ? ' — 苦しい' : ' — 良好')]));
+    }
+
+    // ウィザード
+    if (this.calib.active) {
+      const f = this.calib.index;
+      children.push(el('div', { class: 'row' }, [
+        el('label', {}, ['対象ROI']),
+        el('select', {
+          onchange: (e: Event) => { this.calib.roi = Number((e.target as HTMLSelectElement).value); },
+        }, this.rois.map((r, i) => el('option', { value: String(i), selected: i === this.calib.roi }, [r.id]))),
+        el('label', {}, ['平均フレーム']),
+        el('input', {
+          type: 'number', value: String(this.calib.target), min: '5', max: '200',
+          style: { width: '60px' },
+          onchange: (e: Event) => { this.calib.target = Number((e.target as HTMLInputElement).value); },
+        }),
+      ]));
+      children.push(el('div', { class: 'big' }, [
+        this.calib.capturing
+          ? `${FACE_NAMES[f]} 面を撮影中… ${Math.floor(this.calib.acc.count / 9)}/${this.calib.target}`
+          : `${FACE_NAMES[f]} 面を ROI に向けてください（${f + 1}/6）`,
+      ]));
+      children.push(el('div', { class: 'row' }, [
+        el('button', { class: 'primary', disabled: this.calib.capturing, onclick: () => this.captureCalibFace() }, ['この面を記録']),
+        el('button', { class: 'danger', onclick: () => this.cancelCalibration() }, ['中止']),
+      ]));
+      children.push(el('div', { class: 'hint' }, [
+        '完成状態のキューブの各面を、同じ ROI に順に見せる。キューブを回して面を変えてよい（内部状態はまだ使っていない）。',
+      ]));
+    }
+
+    // 分類パラメータ
+    children.push(slider('信頼度しきい値', 0, 0.6, 0.01, this.confThreshold, (v) => { this.confThreshold = v; }));
+    children.push(el('div', { class: 'row' }, [
+      el('button', {
+        class: this.adaptOn ? 'on' : '',
+        onclick: (e: Event) => { this.adaptOn = !this.adaptOn; (e.target as HTMLElement).classList.toggle('on', this.adaptOn); },
+      }, ['EMA オンライン適応']),
+      el('button', {
+        disabled: !this.activeProfile,
+        onclick: () => {
+          if (!this.ref || !this.activeProfile) return;
+          this.activeProfile.refLab = Array.from(this.ref);
+          saveProfiles(this.profiles);
+          this.log('適応後の代表ベクトルをプロファイルに保存しました。', 'ok');
+        },
+      }, ['適応結果を保存']),
+      el('button', {
+        disabled: !this.activeProfile,
+        onclick: () => { this.setActiveProfile(this.activeProfile); this.log('代表ベクトルをプロファイルの値に戻しました。'); },
+      }, ['適応をリセット']),
+    ]));
+    children.push(slider('EMA alpha', 0.001, 0.2, 0.001, this.adaptAlpha, (v) => { this.adaptAlpha = v; }));
+    children.push(slider('EMA 最低信頼度', 0, 1, 0.01, this.adaptMinConf, (v) => { this.adaptMinConf = v; }));
+
+    // 精度計測
+    children.push(el('div', { class: 'row' }, [
+      el('button', {
+        class: this.accuracy.running ? 'danger' : 'primary',
+        onclick: () => (this.accuracy.running ? this.stopAccuracy() : this.startAccuracy()),
+      }, [this.accuracy.running ? '精度計測を止める' : '色分類精度を計測']),
+    ]));
+    children.push(this.accuracyEl);
+    b.replaceChildren(...(children.filter(Boolean) as HTMLElement[]));
+  }
+
+  private renderAccuracy(): void {
+    const a = this.accuracy;
+    if (!a.cells) { this.accuracyEl.replaceChildren(); return; }
+    const acc = (a.matched / a.cells) * 100;
+    const faceAcc = (a.faceMatched / a.cells) * 100;
+    this.accuracyEl.innerHTML = `
+      <table class="kv">
+        <tr><td>経過</td><td>${fmt((performance.now() - a.t0) / 1000)}s / ${a.frames}フレーム</td></tr>
+        <tr><td>一致率(面内最頻)</td><td><span class="${acc >= 98 ? 'ok' : 'bad'}">${fmt(acc, 2)}%</span></td></tr>
+        <tr><td>期待面と一致</td><td>${fmt(faceAcc, 2)}%</td></tr>
+        <tr><td>平均信頼度</td><td>${fmt(a.confSum / a.cells, 3)}</td></tr>
+        <tr><td>低信頼セル</td><td>${((a.lowConf / a.cells) * 100).toFixed(2)}%</td></tr>
+        <tr><td>判定セル数</td><td>${a.matched} / ${a.cells}</td></tr>
+      </table>`;
   }
 
   private buildRawSection(): HTMLElement {

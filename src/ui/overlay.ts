@@ -89,14 +89,13 @@ export class Overlay {
       for (let i = 0; i < 9; i++) {
         const q = quads[i];
         let fill: string | null = null;
-        if (s.showRaw && data.rgb) {
+        const l = data.labels ? data.labels[i] : -1;
+        if (!s.showRaw && l >= 0 && s.palette) {
+          const c = s.palette[l];
+          fill = `rgb(${c[0]},${c[1]},${c[2]})`;
+        } else if (data.rgb) {
+          // 未キャリブレーションなら分類色は出せないので生RGBに落ちる
           fill = `rgb(${data.rgb[i * 3] | 0},${data.rgb[i * 3 + 1] | 0},${data.rgb[i * 3 + 2] | 0})`;
-        } else if (data.labels && s.palette) {
-          const l = data.labels[i];
-          if (l >= 0) {
-            const c = s.palette[l];
-            fill = `rgb(${c[0]},${c[1]},${c[2]})`;
-          }
         }
         if (!fill) continue;
         g.beginPath();
