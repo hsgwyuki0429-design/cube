@@ -151,6 +151,38 @@ interface ScoredGroup {
   members: string[];
 }
 
+/**
+ * ある状態を ROI に投影したときの一致スコア。
+ * スコア = Σ(信頼度 × 一致) / Σ(信頼度)、可視セルのみで正規化。
+ *
+ * 追跡本体だけでなく、スクランブル適用状態の検証にも使う。
+ */
+export function matchScore(
+  s: CubeState, obs: RoiObservation[], minConf: number,
+): { score: number; mass: number; key: string; visible: number } {
+  let num = 0;
+  let den = 0;
+  let visible = 0;
+  let key = '';
+  const buf: FaceIndex[] = new Array(9);
+  for (const o of obs) {
+    getFaceletsInto(s, o.face, buf);
+    for (let i = 0; i < 9; i++) {
+      const c = o.conf[i];
+      const l = o.labels[i];
+      if (l < 0 || c < minConf) {
+        key += '-';
+        continue;
+      }
+      visible++;
+      key += String(buf[i]);
+      den += c;
+      if (buf[i] === l) num += c;
+    }
+  }
+  return { score: den > 0 ? num / den : 0, mass: num, key, visible };
+}
+
 export class Tracker {
   state: CubeState;
   status: TrackStatus = 'TRACKING';

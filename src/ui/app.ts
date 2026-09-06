@@ -14,10 +14,16 @@ import {
   cellSamplePoints, loadRois, saveRois, defaultRois, validateRoi, makeRoi, MAX_ROIS,
   DEFAULT_SAMPLES_PER_AXIS, type RoiConfig,
 } from '../vision/roi';
-import { Tracker, defaultThresholds, PRESETS, type RoiObservation, type TrackerStep } from '../core/tracker';
+import {
+  Tracker, defaultThresholds, PRESETS, matchScore,
+  type RoiObservation, type TrackerStep,
+} from '../core/tracker';
+import {
+  bucketByTps, evaluateGoNoGo, overallVerdict, loadSolves, saveSolves, type SolveResult,
+} from '../dev/solves';
 import { Recorder, downloadSession, parseSession, type RecordedSession } from '../dev/recorder';
 import { replaySession, type ReplayResult } from '../dev/replay';
-import { FACE_NAMES, solvedState, applySequence, isSolved, type FaceIndex } from '../core/cube';
+import { FACE_NAMES, solvedState, applySequence, isSolved, generateScramble, type FaceIndex } from '../core/cube';
 import {
   classifyCells, adaptRef, refMinDistance, FaceAccumulator, labToRgb,
   loadProfiles, saveProfiles, getActiveProfileId, setActiveProfileId,
@@ -84,6 +90,30 @@ export class App {
   private trackerBody!: HTMLElement;
   private trackerStatsEl!: HTMLElement;
 
+  // --- 計測モード ---
+  private measure: {
+    phase: 'IDLE' | 'SCRAMBLED' | 'ARMED' | 'RUNNING' | 'DONE';
+    targetTps: number | null;
+    scramble: string;
+    verifyScore: number;
+    verifyVisible: number;
+    verifyStreak: number;
+    verifyThreshold: number;
+    verifyFramesNeeded: number;
+    t0: number | null;
+    tEnd: number | null;
+    lostAtStart: number;
+    moveIndexAtStart: number;
+  } = {
+    phase: 'IDLE', targetTps: 5, scramble: '', verifyScore: 0, verifyVisible: 0,
+    verifyStreak: 0, verifyThreshold: 0.9, verifyFramesNeeded: 10,
+    t0: null, tEnd: null, lostAtStart: 0, moveIndexAtStart: 0,
+  };
+  private solves: SolveResult[] = loadSolves();
+  private measureBody!: HTMLElement;
+  private measureStatsEl!: HTMLElement;
+  private goNoGoEl!: HTMLElement;
+
   // --- 録画 / リプレイ ---
   private recorder = new Recorder();
   private loadedSession: RecordedSession | null = null;
@@ -137,10 +167,12 @@ export class App {
     this.root.appendChild(this.stage);
     this.root.appendChild(this.panel);
 
+    this.panel.appendChild(this.buildGoNoGoSection());
     this.panel.appendChild(this.buildCameraSection());
     this.panel.appendChild(this.buildRoiSection());
     this.panel.appendChild(this.buildColorSection());
     this.panel.appendChild(this.buildTrackerSection());
+    this.panel.appendChild(this.buildMeasureSection());
     this.panel.appendChild(this.buildRecordSection());
     this.panel.appendChild(this.buildRawSection());
     this.panel.appendChild(this.buildLogSection());
@@ -274,6 +306,7 @@ export class App {
     if (this.calib.active && this.calib.capturing) this.stepCalibration(frame);
     if (this.accuracy.running) this.accumulateAccuracy(frame);
     if (this.tracking) this.trackFrame(frame);
+    if (this.measure.phase === 'SCRAMBLED') this.verifyScramble(frame);
     if (this.recorder.recording) this.recorder.add(frame, this.labels, this.conf, this.processedFps);
     this.procMs.push(frame.procMs);
     this.latencyMs.push(performance.now() - this.tStart - frame.t);
@@ -321,8 +354,48 @@ export class App {
     if (step.applied.length) this.onMovesApplied(step, frame.t);
   }
 
-  /** 計測モード（ステップ7）が差し込むフック。 */
-  private onMovesApplied(_step: TrackerStep, _t: number): void { /* step7 で使う */ }
+  /** 最初の確定手でタイマー開始、isSolved で停止する。 */
+  private onMovesApplied(_step: TrackerStep, t: number): void {
+    const m = this.measure;
+    if (m.phase === 'ARMED') {
+      m.phase = 'RUNNING';
+      m.t0 = t;
+      m.lostAtStart = this.tracker.lostCount;
+      m.moveIndexAtStart = Math.max(0, this.tracker.moves.length - _step.applied.length);
+      this.log('計測開始（最初の確定手を検出）', 'ok');
+      this.refreshMeasureSection();
+    }
+    if (m.phase === 'RUNNING' && isSolved(this.tracker.state)) {
+      m.tEnd = t;
+      this.finishSolve(true);
+    }
+  }
+
+  /** スクランブル適用状態が ROI の見え方と一致するかを検証する。 */
+  private verifyScramble(frame: FrameSample): void {
+    const active = this.activeRoiIndices();
+    const obs: RoiObservation[] = [];
+    for (let k = 0; k < frame.rois.length; k++) {
+      const roi = this.rois[active[k]];
+      if (roi) obs.push({ face: roi.face, labels: this.labels[k], conf: this.conf[k] });
+    }
+    if (!obs.length) return;
+    const m = this.measure;
+    const r = matchScore(this.tracker.state, obs, this.tracker.thresholds.minCellConf);
+    m.verifyScore = r.score;
+    m.verifyVisible = r.visible;
+    if (r.visible >= this.tracker.thresholds.minVisibleCells && r.score >= m.verifyThreshold) {
+      m.verifyStreak++;
+    } else {
+      m.verifyStreak = 0;
+    }
+    if (m.verifyStreak >= m.verifyFramesNeeded) {
+      m.phase = 'ARMED';
+      m.verifyStreak = 0;
+      this.log(`スクランブル適用を確認（一致 ${(r.score * 100).toFixed(1)}%）。最初の1手で計測開始。`, 'ok');
+      this.refreshMeasureSection();
+    }
+  }
 
   private get processedFps(): number {
     const n = this.procFpsTimes.length;
@@ -394,6 +467,8 @@ export class App {
     this.renderAccuracy();
     this.renderTrackerStats();
     this.renderRecordStats();
+    this.renderMeasureStats();
+    this.renderGoNoGo();
     if (this.calib.active && this.calib.capturing) this.refreshColorSection();
   }
 
@@ -1123,6 +1198,202 @@ export class App {
       }
     }
     this.recordStatsEl.innerHTML = rows.length ? `<table class="kv">${rows.join('')}</table>` : '';
+  }
+
+
+  // -------------------------------------------------------------------------
+  // 計測モード / Go-No-Go
+  // -------------------------------------------------------------------------
+
+  private newScramble(): void {
+    if (!this.ref) { this.log('先にキャリブレーションが必要です。', 'warn'); return; }
+    const m = this.measure;
+    m.scramble = generateScramble(20);
+    m.phase = 'SCRAMBLED';
+    m.verifyStreak = 0;
+    m.t0 = null;
+    m.tEnd = null;
+    this.tracker.reset(applySequence(solvedState(), m.scramble));
+    this.moveLog.length = 0;
+    this.tracking = true;
+    this.refreshTrackerSection();
+    this.log(`スクランブル: ${m.scramble}`);
+    this.log('キューブに適用してから ROI に見せてください。一致を検出したら自動で待機状態になります。');
+    this.refreshMeasureSection();
+  }
+
+  /** 検証を飛ばして即待機。ROI の見え方が合わないときの逃げ道。 */
+  private forceArm(): void {
+    this.measure.phase = 'ARMED';
+    this.log('検証をスキップして待機状態に入りました（記録の信頼度は下がる）。', 'warn');
+    this.refreshMeasureSection();
+  }
+
+  private finishSolve(completed: boolean, reason?: string): void {
+    const m = this.measure;
+    const tr = this.tracker;
+    const moves = tr.moves.slice(m.moveIndexAtStart);
+    const t0 = m.t0 ?? 0;
+    const tEnd = m.tEnd ?? (moves.length ? moves[moves.length - 1].t : t0);
+    const timeMs = Math.max(0, tEnd - t0);
+    const result: SolveResult = {
+      id: `s${Date.now().toString(36)}`,
+      createdAt: Date.now(),
+      targetTps: m.targetTps,
+      scramble: m.scramble,
+      timeMs,
+      moveCount: moves.length,
+      tps: timeMs > 0 ? (moves.length / timeMs) * 1000 : 0,
+      lostCount: tr.lostCount - m.lostAtStart,
+      meanConfidence: moves.length ? moves.reduce((a, x) => a + x.confidence, 0) / moves.length : 0,
+      completed,
+      abortReason: reason,
+      moves: moves.map((x) => ({ notation: x.notation, t: +(x.t - t0).toFixed(1), confidence: +x.confidence.toFixed(3) })),
+      meanProcMs: +this.procMs.mean.toFixed(2),
+      meanTotalMs: +(this.captureMs.mean + this.procMs.mean).toFixed(2),
+      cameraFps: +this.camera.stats().presentedFps.toFixed(1),
+      processedFps: +this.processedFps.toFixed(1),
+    };
+    this.solves.push(result);
+    saveSolves(this.solves);
+    m.phase = 'DONE';
+    this.log(
+      `${completed ? '完走' : '失敗'}: ${(timeMs / 1000).toFixed(2)}秒 / ${result.moveCount}手 / ` +
+      `TPS ${result.tps.toFixed(2)} / LOST ${result.lostCount} / 平均信頼度 ${fmt(result.meanConfidence, 3)}` +
+      (reason ? ` / ${reason}` : ''),
+      completed ? 'ok' : 'bad',
+    );
+    this.log('手順ログ: ' + result.moves.map((x) => `${(x.t / 1000).toFixed(2)}s ${x.notation}`).join('  '));
+    this.refreshMeasureSection();
+  }
+
+  private buildMeasureSection(): HTMLElement {
+    const { root, body } = section('計測モード');
+    this.measureBody = body;
+    this.measureStatsEl = el('div');
+    this.refreshMeasureSection();
+    return root;
+  }
+
+  private refreshMeasureSection(): void {
+    if (!this.measureBody) return;
+    const m = this.measure;
+    const running = m.phase === 'RUNNING';
+    this.measureBody.replaceChildren(
+      el('div', { class: 'row' }, [
+        el('label', {}, ['目標TPS']),
+        ...[3, 5, 8].map((t) =>
+          el('button', {
+            class: m.targetTps === t ? 'on' : '',
+            onclick: () => { m.targetTps = t; this.refreshMeasureSection(); },
+          }, [String(t)])),
+        el('button', {
+          class: m.targetTps === null ? 'on' : '',
+          onclick: () => { m.targetTps = null; this.refreshMeasureSection(); },
+        }, ['自由']),
+      ]),
+      el('div', { class: 'row' }, [
+        el('button', { class: 'primary', disabled: running, onclick: () => this.newScramble() }, ['スクランブル生成']),
+        el('button', { disabled: m.phase !== 'SCRAMBLED', onclick: () => this.forceArm() }, ['検証をスキップ']),
+        el('button', { class: 'danger', disabled: !running, onclick: () => this.finishSolve(false, '手動中断') }, ['失敗として記録']),
+        el('button', { disabled: !running, onclick: () => { m.tEnd = this.lastFrame?.t ?? 0; this.finishSolve(true, '手動終了'); } }, ['手動で完了']),
+      ]),
+      m.scramble ? el('div', { class: 'big' }, [m.scramble]) : el('span'),
+      slider('検証しきい値', 0.5, 1, 0.01, m.verifyThreshold, (v) => { m.verifyThreshold = v; }),
+      this.measureStatsEl,
+      el('div', { class: 'row' }, [
+        el('button', {
+          disabled: !this.solves.length,
+          onclick: () => {
+            const blob = new Blob([JSON.stringify(this.solves, null, 1)], { type: 'application/json' });
+            const a = document.createElement('a');
+            a.href = URL.createObjectURL(blob);
+            a.download = `cubevision_solves_${Date.now()}.json`;
+            a.click();
+          },
+        }, ['計測結果をJSON出力']),
+        el('button', {
+          class: 'danger', disabled: !this.solves.length,
+          onclick: () => {
+            if (!confirm(`${this.solves.length} 件の計測結果を削除しますか？`)) return;
+            this.solves = [];
+            saveSolves(this.solves);
+            this.refreshMeasureSection();
+          },
+        }, ['結果をクリア']),
+      ]),
+    );
+  }
+
+  private renderMeasureStats(): void {
+    if (!this.measureStatsEl) return;
+    const m = this.measure;
+    const tr = this.tracker;
+    const elapsed = m.phase === 'RUNNING' && m.t0 !== null && this.lastFrame
+      ? (this.lastFrame.t - m.t0) / 1000
+      : m.tEnd !== null && m.t0 !== null ? (m.tEnd - m.t0) / 1000 : 0;
+    const moves = tr.moves.length - m.moveIndexAtStart;
+    const phaseLabel: Record<string, string> = {
+      IDLE: '待機', SCRAMBLED: 'スクランブル適用待ち', ARMED: '最初の1手待ち',
+      RUNNING: '計測中', DONE: '完了',
+    };
+    const rows = [
+      `<tr><td>フェーズ</td><td>${phaseLabel[m.phase]}</td></tr>`,
+      m.phase === 'SCRAMBLED'
+        ? `<tr><td>一致率</td><td><span class="${m.verifyScore >= m.verifyThreshold ? 'ok' : 'warn'}">${fmt(m.verifyScore * 100, 1)}%</span> 可視${m.verifyVisible} (${m.verifyStreak}/${m.verifyFramesNeeded})</td></tr>`
+        : '',
+      `<tr><td>経過</td><td class="big">${elapsed.toFixed(2)}s</td></tr>`,
+      `<tr><td>手数 / TPS</td><td>${Math.max(0, moves)} / ${fmt(elapsed > 0 ? moves / elapsed : 0, 2)}</td></tr>`,
+      `<tr><td>LOST</td><td class="${tr.lostCount - m.lostAtStart ? 'bad' : 'ok'}">${Math.max(0, tr.lostCount - m.lostAtStart)}</td></tr>`,
+    ].join('');
+
+    const buckets = bucketByTps(this.solves);
+    const table = buckets.length
+      ? `<table class="kv"><tr><td>目標TPS</td><td>完走率 / 平均タイム / 平均TPS / 平均LOST</td></tr>` +
+        buckets.map((b) => `<tr><td>${b.targetTps ?? '自由'}</td><td>` +
+          `<span class="${b.completionRate >= 0.8 ? 'ok' : b.completionRate >= 0.5 ? 'warn' : 'bad'}">` +
+          `${(b.completionRate * 100).toFixed(0)}% (${b.completed}/${b.attempts})</span> / ` +
+          `${fmt(b.meanTimeMs / 1000, 2)}s / ${fmt(b.meanTps, 2)} / ${fmt(b.meanLost, 1)}</td></tr>`).join('') +
+        '</table>'
+      : '<div class="hint">まだ計測結果がありません。</div>';
+
+    this.measureStatsEl.innerHTML = `<table class="kv">${rows}</table>${table}`;
+  }
+
+  private buildGoNoGoSection(): HTMLElement {
+    const { root, body } = section('Go / No-Go 判定');
+    this.goNoGoEl = el('div');
+    body.append(
+      this.goNoGoEl,
+      el('div', { class: 'hint' }, [
+        'フェーズ0の成果物はこの表。未計測が1つでもあれば判定は保留（PENDING）にする。',
+      ]),
+    );
+    return root;
+  }
+
+  private goNoGoTick = 0;
+  private renderGoNoGo(): void {
+    if (!this.goNoGoEl || this.goNoGoTick++ % 3 !== 0) return;
+    const a = this.accuracy;
+    const rows = evaluateGoNoGo({
+      colorAccuracy: a.cells ? a.matched / a.cells : null,
+      colorSamples: a.cells,
+      solves: this.solves,
+      latencyMs: this.procMs.count ? this.captureMs.mean + this.procMs.mean : null,
+      latencySamples: this.procMs.count,
+      cameraFps: this.running ? this.camera.stats().presentedFps : null,
+    });
+    const verdict = overallVerdict(rows);
+    const cls = verdict === 'GO' ? 'ok' : verdict === 'NO-GO' ? 'bad' : 'warn';
+    this.goNoGoEl.innerHTML =
+      `<div class="big ${cls}">${verdict}</div><table class="kv">` +
+      rows.map((r) => {
+        const mark = r.pass === null || !r.enough ? '<span class="dim">—</span>'
+          : r.pass ? '<span class="ok">PASS</span>' : '<span class="bad">FAIL</span>';
+        return `<tr><td>${r.metric}<br><span class="dim">${r.threshold}</span></td>` +
+          `<td>${r.display} ${mark}${r.note ? `<br><span class="dim">${r.note}</span>` : ''}</td></tr>`;
+      }).join('') + '</table>';
   }
 
   private buildRawSection(): HTMLElement {
