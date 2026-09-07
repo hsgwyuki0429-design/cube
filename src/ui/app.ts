@@ -12,7 +12,7 @@ import { Rolling } from './metrics';
 import { Camera } from '../vision/camera';
 import {
   cellSamplePoints, loadRois, saveRois, defaultRois, validateRoi, makeRoi, MAX_ROIS,
-  DEFAULT_SAMPLES_PER_AXIS, type RoiConfig,
+  DEFAULT_SAMPLES_PER_AXIS, type RoiConfig, type Corners,
 } from '../vision/roi';
 import {
   Tracker, defaultThresholds, PRESETS, matchScore,
@@ -29,7 +29,11 @@ import {
   loadProfiles, saveProfiles, getActiveProfileId, setActiveProfileId,
   MIN_SEPARATION_WARN, MIN_SEPARATION_FAIL, type ColorProfile,
 } from '../vision/color';
-import type { FrameSample, WorkerRequest, WorkerResponse } from '../vision/types';
+import type { FrameSample, TrackedRoiConfig, WorkerRequest, WorkerResponse } from '../vision/types';
+import {
+  defaultTrackingConfig, type CubeTrackingState, type InitHint, type TrackingConfig,
+  type VisibleFaceId,
+} from '../tracking/types';
 
 export class App {
   private stage!: HTMLElement;
@@ -92,6 +96,25 @@ export class App {
   private trackerBody!: HTMLElement;
   private trackerStatsEl!: HTMLElement;
 
+  // --- 姿勢追跡（Phase 0.5） ---
+  /**
+   * ROI の座標をどこから取るか。
+   * 'manual'  … 既存どおり四隅ドラッグ（後方互換。既定）
+   * 'tracked' … キューブ姿勢追跡が毎フレーム供給する
+   */
+  private roiMode: 'manual' | 'tracked' = 'manual';
+  private trackingConfig: TrackingConfig = defaultTrackingConfig();
+  private trackingState: CubeTrackingState | null = null;
+  private trackingBody!: HTMLElement;
+  private trackingStatsEl!: HTMLElement;
+  /** 追跡モードで、次のタップを初期化に使う */
+  private awaitingTap = false;
+  private showFaceOutlines = true;
+  private showFeaturePoints = true;
+  private showFlowVectors = false;
+  private trackMs = new Rolling(120);
+  private samplingMs = new Rolling(120);
+
   // --- 計測モード ---
   private measure: {
     phase: 'IDLE' | 'SCRAMBLED' | 'ARMED' | 'RUNNING' | 'DONE';
@@ -151,6 +174,10 @@ export class App {
   // -------------------------------------------------------------------------
 
   init(): void {
+    try {
+      const m = localStorage.getItem('cubevision.roiMode.v1');
+      if (m === 'tracked' || m === 'manual') this.roiMode = m;
+    } catch { /* noop */ }
     const activeId = getActiveProfileId();
     this.setActiveProfile(this.profiles.find((p) => p.id === activeId) ?? this.profiles[0] ?? null, false);
     this.buildLayout();
@@ -171,6 +198,7 @@ export class App {
 
     this.panel.appendChild(this.buildGoNoGoSection());
     this.panel.appendChild(this.buildCameraSection());
+    this.panel.appendChild(this.buildTrackingSection());
     this.panel.appendChild(this.buildRoiSection());
     this.panel.appendChild(this.buildColorSection());
     this.panel.appendChild(this.buildTrackerSection());
@@ -185,6 +213,18 @@ export class App {
       (final) => {
         this.pushConfig();
         if (final) saveRois(this.rois);
+      },
+      {
+        // 追跡モードでは四隅は追跡側が供給するのでドラッグさせない
+        dragEnabled: () => this.roiMode === 'manual',
+        onTap: (nx, ny) => {
+          if (this.roiMode !== 'tracked' || !this.awaitingTap) return;
+          this.initTracking({
+            kind: 'tap',
+            point: { x: nx, y: ny },
+            radius: 0.18,
+          });
+        },
       },
     );
     window.addEventListener('resize', () => this.overlay.resize());
@@ -203,12 +243,55 @@ export class App {
         this.busy = false;
         return;
       }
+      if (msg.type === 'trackingInit') {
+        this.log(
+          msg.ok ? '追跡を初期化しました。' : `追跡の初期化に失敗: ${msg.reason ?? '不明'}`,
+          msg.ok ? 'ok' : 'bad',
+        );
+        if (!msg.ok) this.awaitingTap = true;
+        this.refreshTrackingSection();
+        return;
+      }
       if (msg.type === 'result') this.onFrameResult(msg.frame);
     };
   }
 
   private post(msg: WorkerRequest, transfer: Transferable[] = []): void {
     this.worker?.postMessage(msg, transfer);
+  }
+
+  /** 追跡モードの ROI 割り当て。roi[0]=U, roi[1]=F, roi[2]=R に対応させる。 */
+  private trackedRoiConfigs(): TrackedRoiConfig[] {
+    const ids: VisibleFaceId[] = ['U', 'F', 'R'];
+    return ids.map((faceId, i) => {
+      const r = this.rois[i];
+      return {
+        faceId,
+        rotate: r?.rotate ?? 0,
+        mirror: r?.mirror ?? false,
+        enabled: r?.enabled ?? true,
+      };
+    });
+  }
+
+  /** 追跡モードでは ROI が必ず3枚（U/F/R）必要。 */
+  private ensureThreeRois(): void {
+    const faces: FaceIndex[] = [0, 2, 1];
+    while (this.rois.length < 3) {
+      this.rois.push(makeRoi(`roi${this.rois.length}`, faces[this.rois.length] ?? 1));
+    }
+    this.rois.length = Math.min(this.rois.length, MAX_ROIS);
+  }
+
+  private pushTrackingConfig(): void {
+    this.post({
+      type: 'trackingConfig',
+      enabled: this.roiMode === 'tracked',
+      rois: this.trackedRoiConfigs(),
+      samplesPerAxis: this.samplesPerAxis,
+      config: { ...this.trackingConfig },
+      collectPoints: this.showFeaturePoints || this.showFlowVectors,
+    });
   }
 
   /** ROI 設定が変わるたびにサンプリング点を作り直して Worker に送る。 */
@@ -223,11 +306,16 @@ export class App {
         }
       });
     this.post({ type: 'config', rois, procWidth: this.procWidth });
+    this.pushTrackingConfig();
   }
 
   /** enabled な ROI のインデックス（Worker 側の並びと対応させる） */
   private activeRoiIndices(): number[] {
     const out: number[] = [];
+    if (this.roiMode === 'tracked') {
+      for (let i = 0; i < 3; i++) if (this.rois[i]?.enabled) out.push(i);
+      return out;
+    }
     this.rois.forEach((r, i) => { if (r.enabled) out.push(i); });
     return out;
   }
@@ -304,10 +392,29 @@ export class App {
   private onFrameResult(frame: FrameSample): void {
     this.busy = false;
     this.lastFrame = frame;
+    if (frame.tracking) {
+      this.trackingState = frame.tracking;
+      // 追跡された四角形を ROI にそのまま流し込む。
+      // これで既存のオーバーレイ・セル表示・検証がそのまま動く。
+      const ids: VisibleFaceId[] = ['U', 'F', 'R'];
+      for (let i = 0; i < 3 && i < this.rois.length; i++) {
+        const f = frame.tracking.faces.find((x) => x.id === ids[i]);
+        if (f) this.rois[i].corners = f.corners.map((p) => ({ x: p.x, y: p.y })) as Corners;
+      }
+    }
+    if (frame.timing) {
+      this.trackMs.push(frame.timing.trackingMs);
+      this.samplingMs.push(frame.timing.samplingMs);
+    }
     this.classifyFrame(frame);
     if (this.calib.active && this.calib.capturing) this.stepCalibration(frame);
     if (this.accuracy.running) this.accumulateAccuracy(frame);
-    if (this.tracking) this.trackFrame(frame);
+    // 追跡が LOST のときは Move Tracker も止める。
+    // 誤った ROI の色で状態機械を進めるのが最悪（CLAUDE.md 原則 §3）。
+    const poseOk = this.roiMode !== 'tracked' ||
+      (this.trackingState !== null && this.trackingState.status !== 'LOST' &&
+       this.trackingState.status !== 'UNINITIALIZED');
+    if (this.tracking && poseOk) this.trackFrame(frame);
     if (this.measure.phase === 'SCRAMBLED') this.verifyScramble(frame);
     if (this.recorder.recording) this.recorder.add(frame, this.labels, this.conf, this.processedFps);
     this.procMs.push(frame.procMs);
@@ -326,6 +433,12 @@ export class App {
     }
     for (let i = 0; i < frame.rois.length; i++) {
       if (!ref) {
+        this.labels[i].fill(-1);
+        this.conf[i].fill(0);
+        continue;
+      }
+      if (frame.rois[i].trusted === false) {
+        // 追跡が見失っている面。誤った位置の色を下流へ流さない
         this.labels[i].fill(-1);
         this.conf[i].fill(0);
         continue;
@@ -434,6 +547,20 @@ export class App {
       })) ?? [],
       status: this.tracking ? this.tracker.status : this.running ? 'CAPTURING' : 'IDLE',
       moveLog: this.moveLog,
+      tracking: this.roiMode === 'tracked'
+        ? {
+            status: this.trackingState?.status ?? 'UNINITIALIZED',
+            confidence: this.trackingState?.confidence ?? 0,
+            faces: this.trackingState?.faces.map((f) => ({
+              id: f.id, corners: f.corners, visible: f.visible, gridLock: f.gridLock,
+            })) ?? [],
+            points: this.trackingState?.points ?? [],
+            showOutlines: this.showFaceOutlines,
+            showPoints: this.showFeaturePoints,
+            showFlow: this.showFlowVectors,
+            awaitingTap: this.awaitingTap,
+          }
+        : null,
     });
     this.updateStats();
     requestAnimationFrame(this.renderLoop);
@@ -463,11 +590,14 @@ export class App {
         <tr><td>合計 ms</td><td><span class="${total <= 16 ? 'ok' : 'bad'}">${fmt(total, 2)}</span></td></tr>
         <tr><td>p95 worker ms</td><td>${fmt(this.procMs.percentile(0.95), 2)}</td></tr>
         <tr><td>end-to-end ms</td><td>${fmt(this.latencyMs.mean, 2)}</td></tr>
+        <tr><td>tracking ms</td><td>${fmt(this.trackMs.mean, 2)}</td></tr>
+        <tr><td>sampling ms</td><td>${fmt(this.samplingMs.mean, 2)}</td></tr>
         <tr><td>認識スキップ</td><td>${this.skippedFrames}</td></tr>
       </table>`;
     this.renderRawCells();
     this.renderAccuracy();
     this.renderTrackerStats();
+    this.renderTrackingStats();
     this.renderRecordStats();
     this.renderMeasureStats();
     this.renderGoNoGo();
@@ -557,6 +687,8 @@ export class App {
     } catch { /* 権限前は列挙できない */ }
   }
 
+  private rebuildRoiSection: (() => void) | null = null;
+
   private buildRoiSection(): HTMLElement {
     const { root, body } = section('ROI（最大3枚）');
     const rebuild = () => {
@@ -594,6 +726,7 @@ export class App {
       );
     };
     rebuild();
+    this.rebuildRoiSection = rebuild;
     return root;
   }
 
@@ -1073,6 +1206,8 @@ export class App {
         label: this.camera.stats().label,
       },
       synthetic: false,
+      roiMode: this.roiMode,
+      trackingConfig: this.roiMode === 'tracked' ? { ...this.trackingConfig } : undefined,
     });
     this.log('録画開始。認識を間引いても記録は間引かない。');
     this.refreshRecordSection();
@@ -1426,6 +1561,176 @@ export class App {
         return `<tr><td>${r.metric}<br><span class="dim">${r.threshold}</span></td>` +
           `<td>${r.display} ${mark}${r.note ? `<br><span class="dim">${r.note}</span>` : ''}</td></tr>`;
       }).join('') + '</table>';
+  }
+
+
+  // -------------------------------------------------------------------------
+  // 姿勢追跡パネル（Phase 0.5）
+  // -------------------------------------------------------------------------
+
+  private setRoiMode(mode: 'manual' | 'tracked'): void {
+    this.roiMode = mode;
+    try { localStorage.setItem('cubevision.roiMode.v1', mode); } catch { /* noop */ }
+    if (mode === 'tracked') {
+      this.ensureThreeRois();
+      saveRois(this.rois);
+      this.awaitingTap = this.trackingState === null || this.trackingState.status === 'UNINITIALIZED';
+      this.log('ROI 供給元を「自動追跡」に切り替えました。キューブをタップして初期化してください。');
+    } else {
+      this.awaitingTap = false;
+      this.trackingState = null;
+      this.post({ type: 'resetTracking' });
+      this.log('ROI 供給元を「手動」に戻しました。四隅ドラッグで合わせます。');
+    }
+    this.pushConfig();
+    this.refreshTrackingSection();
+    this.rebuildRoiSection?.();
+  }
+
+  /** タップ / ドラッグから追跡を初期化する。座標は正規化画像座標。 */
+  private initTracking(hint: InitHint): void {
+    if (!this.running) {
+      this.log('先にカメラを開始してください。', 'warn');
+      return;
+    }
+    this.post({ type: 'initTracking', hint });
+    this.awaitingTap = false;
+    this.log(`追跡を初期化します（${hint.kind}）…`);
+  }
+
+  /** 現在の手動 ROI をそのまま初期モデルにする。一番確実な初期化経路。 */
+  private initTrackingFromRois(): void {
+    this.ensureThreeRois();
+    const quads = [0, 1, 2].map((i) => this.rois[i].corners.map((p) => ({ x: p.x, y: p.y })));
+    this.initTracking({ kind: 'quads', quads: quads as InitHint['quads'] });
+  }
+
+  private buildTrackingSection(): HTMLElement {
+    const { root, body } = section('キューブ姿勢追跡');
+    this.trackingBody = body;
+    this.trackingStatsEl = el('div');
+    this.refreshTrackingSection();
+    return root;
+  }
+
+  private refreshTrackingSection(): void {
+    if (!this.trackingBody) return;
+    const t = this.trackingConfig;
+    const tracked = this.roiMode === 'tracked';
+    const toggle = (label: string, get: () => boolean, set: (v: boolean) => void, title?: string) =>
+      el('button', {
+        class: get() ? 'on' : '', title,
+        onclick: (e: Event) => {
+          set(!get());
+          (e.target as HTMLElement).classList.toggle('on', get());
+          this.pushTrackingConfig();
+        },
+      }, [label]);
+
+    this.trackingBody.replaceChildren(
+      el('div', { class: 'row' }, [
+        el('label', {}, ['ROI 供給元']),
+        el('button', {
+          class: !tracked ? 'on' : '', onclick: () => this.setRoiMode('manual'),
+        }, ['手動']),
+        el('button', {
+          class: tracked ? 'on' : '', onclick: () => this.setRoiMode('tracked'),
+        }, ['自動追跡']),
+      ]),
+      el('div', { class: 'hint' }, [
+        '自動追跡では、一度キューブを指定すると以後は3x3グリッドが面に貼り付いたまま追従します。' +
+        ' 追えなくなったら誤魔化さずに LOST にします。',
+      ]),
+      el('div', { class: 'row' }, [
+        el('button', {
+          class: 'primary', disabled: !tracked,
+          onclick: () => { this.awaitingTap = true; this.refreshTrackingSection(); },
+        }, [this.awaitingTap ? 'キューブをタップ…' : 'タップで初期化']),
+        el('button', {
+          disabled: !tracked,
+          title: '現在の手動 ROI をそのまま初期モデルにする。一番確実',
+          onclick: () => this.initTrackingFromRois(),
+        }, ['現在の ROI から初期化']),
+        el('button', {
+          disabled: !tracked,
+          title: '予測位置の周りで輪郭に貼り直す',
+          onclick: () => this.initTrackingFromRois(),
+        }, ['再検出']),
+        el('button', {
+          class: 'danger', disabled: !tracked,
+          onclick: () => {
+            this.post({ type: 'resetTracking' });
+            this.trackingState = null;
+            this.awaitingTap = true;
+            this.log('追跡をリセットしました。');
+            this.refreshTrackingSection();
+          },
+        }, ['リセット']),
+      ]),
+      el('div', { class: 'row' }, [
+        el('label', {}, ['表示']),
+        toggle('面の外枠', () => this.showFaceOutlines, (v) => { this.showFaceOutlines = v; }),
+        toggle('特徴点', () => this.showFeaturePoints, (v) => { this.showFeaturePoints = v; }),
+        toggle('フロー', () => this.showFlowVectors, (v) => { this.showFlowVectors = v; },
+          'オプティカルフローのベクトル'),
+      ]),
+      slider('最小グリッドロック', 1, 2.5, 0.05, t.minGridLock, (v) => {
+        t.minGridLock = v;
+        t.fullGridLock = Math.max(v + 0.05, t.fullGridLock);
+        this.pushTrackingConfig();
+      }),
+      slider('DEGRADED しきい値', 0.1, 0.95, 0.01, t.degradedConfidence, (v) => {
+        t.degradedConfidence = v; this.pushTrackingConfig();
+      }),
+      slider('LOST まで(フレーム)', 5, 120, 1, t.lostAfterDegradedFrames, (v) => {
+        t.lostAfterDegradedFrames = v; this.pushTrackingConfig();
+      }),
+      slider('全面消失で LOST(フレーム)', 1, 40, 1, t.blindFramesBeforeLost, (v) => {
+        t.blindFramesBeforeLost = v; this.pushTrackingConfig();
+      }),
+      slider('特徴点の内側寄せ', 0, 0.2, 0.005, t.featureInset, (v) => {
+        t.featureInset = v; this.pushTrackingConfig();
+      }),
+      slider('セル内側マージン', 0.2, 1, 0.05, t.cellSampleInset, (v) => {
+        t.cellSampleInset = v; this.pushTrackingConfig();
+      }),
+      el('div', { class: 'row' }, [
+        toggle('共有辺を一致', () => t.enforceSharedEdges, (v) => { t.enforceSharedEdges = v; }),
+        toggle('グリッドロック検査', () => t.useGridSupport, (v) => { t.useGridSupport = v; },
+          '別物体に貼り付くのを防ぐ。OFF にすると背景にも追従してしまう'),
+        toggle('隠れ面を復元', () => t.predictFailedFaces, (v) => { t.predictFailedFaces = v; }),
+        toggle('局所再検出', () => t.localRedetect, (v) => { t.localRedetect = v; }),
+      ]),
+      this.trackingStatsEl,
+    );
+  }
+
+  private renderTrackingStats(): void {
+    if (!this.trackingStatsEl) return;
+    if (this.roiMode !== 'tracked') {
+      this.trackingStatsEl.innerHTML = '<div class="hint">手動モードです。</div>';
+      return;
+    }
+    const s = this.trackingState;
+    if (!s) {
+      this.trackingStatsEl.innerHTML = '<div class="hint">未初期化。キューブをタップしてください。</div>';
+      return;
+    }
+    const faces = s.faces.map((f) =>
+      `<span class="${f.visible ? 'ok' : 'bad'}">${f.id}</span>`).join(' / ');
+    const cls = s.status === 'TRACKING' ? 'TRACKING'
+      : s.status === 'DEGRADED' ? 'TRANSITION' : s.status === 'LOST' ? 'LOST' : 'IDLE';
+    this.trackingStatsEl.innerHTML = `
+      <table class="kv">
+        <tr><td>状態</td><td><span class="pill ${cls}">${s.status}</span></td></tr>
+        <tr><td>信頼度</td><td><span class="${s.confidence >= this.trackingConfig.degradedConfidence ? 'ok' : 'bad'}">${(s.confidence * 100).toFixed(0)}%</span></td></tr>
+        <tr><td>可視の面</td><td>${faces}</td></tr>
+        <tr><td>追跡点</td><td>${s.trackedPoints}/${s.totalPoints}</td></tr>
+        <tr><td>再投影誤差</td><td>${fmt(s.reprojectionError, 2)} px</td></tr>
+        <tr><td>グリッドロック</td><td><span class="${s.gridSupport >= this.trackingConfig.minGridLock ? 'ok' : 'bad'}">${fmt(s.gridSupport, 2)}</span></td></tr>
+        <tr><td>面ごとのロック</td><td>${s.faces.map((f) => `${f.id} ${f.gridLock.toFixed(2)}`).join(' / ')}</td></tr>
+        ${s.reason ? `<tr><td>備考</td><td class="warn">${s.reason}</td></tr>` : ''}
+      </table>`;
   }
 
   private buildRawSection(): HTMLElement {

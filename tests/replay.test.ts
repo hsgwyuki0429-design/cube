@@ -52,6 +52,55 @@ describe('Recorder', () => {
     expect(rec.frameCount).toBe(0);
   });
 
+  it('v2: 追跡情報と trusted フラグを記録する', () => {
+    const rec = new Recorder();
+    rec.start({ name: 's', faces: UF, initialScramble: null, roiMode: 'tracked' });
+    rec.add(
+      {
+        seq: 0, t: 0, procMs: 2,
+        rois: [
+          { lab: new Float32Array(27), rgb: new Float32Array(27), trusted: true },
+          { lab: new Float32Array(27), rgb: new Float32Array(27), trusted: false },
+        ],
+        timing: { samplingMs: 0.4, trackingMs: 5.1, flowMs: 3, homographyMs: 1.5 },
+        tracking: {
+          status: 'DEGRADED', faces: [
+            { id: 'U', corners: [{ x: 1, y: 2 }, { x: 3, y: 4 }, { x: 5, y: 6 }, { x: 7, y: 8 }],
+              confidence: 0.9, visible: true, gridLock: 2.1, inliers: 15, totalPoints: 16,
+              reprojectionError: 0.4, measured: true },
+          ],
+          confidence: 0.5, lastGoodTimestamp: 0, reprojectionError: 0.4,
+          trackedPoints: 15, totalPoints: 48, degradedFrames: 2, reason: 'F 面を観測できません',
+          gridSupport: 1.4, points: [],
+        },
+      },
+      [new Int8Array(9), new Int8Array(9)],
+      [new Float32Array(9), new Float32Array(9)],
+      60,
+    );
+    const back = parseSession(JSON.stringify(rec.stop()!));
+    expect(back.version).toBe(2);
+    expect(back.roiMode).toBe('tracked');
+    const f = back.frames[0];
+    expect(f.rois[0].trusted).toBe(true);
+    expect(f.rois[1].trusted).toBe(false);
+    expect(f.tracking?.status).toBe('DEGRADED');
+    expect(f.tracking?.gridLock).toBe(1.4);
+    expect(f.tracking?.faces[0].corners).toEqual([[1, 2], [3, 4], [5, 6], [7, 8]]);
+    expect(f.trackMs).toBe(5.1);
+  });
+
+  it('v1 の録画もそのまま読める（既存 fixture 互換）', () => {
+    const v1 = {
+      version: 1, name: 'old', createdAt: 0, faces: UF, initialScramble: null,
+      frames: [{ t: 0, rois: [{ cells: Array.from({ length: 9 }, () => [50, 0, 0]), labels: new Array(9).fill(0), conf: new Array(9).fill(1) }], fps: 60, procMs: 1 }],
+    };
+    const back = parseSession(JSON.stringify(v1));
+    expect(back.version).toBe(1);
+    expect(back.frames[0].tracking).toBeUndefined();
+    expect(back.frames[0].rois[0].trusted).toBeUndefined();
+  });
+
   it('壊れた JSON は例外', () => {
     expect(() => parseSession('{}')).toThrow();
     expect(() => parseSession(JSON.stringify({ version: 99, frames: [], faces: [] }))).toThrow();

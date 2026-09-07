@@ -9,12 +9,21 @@ export interface RoiEditorHandle {
 
 const HIT_PX = 26;
 
+export interface RoiEditorOptions {
+  /** false のときは四隅ドラッグを無効にする（追跡モードでは座標を追跡側が供給する） */
+  dragEnabled?: () => boolean;
+  /** ドラッグでなく単なるタップだったときに呼ばれる（正規化座標） */
+  onTap?: (nx: number, ny: number) => void;
+}
+
 export function attachRoiEditor(
   canvas: HTMLCanvasElement,
   getRois: () => RoiConfig[],
   onChange: (final: boolean) => void,
+  opts: RoiEditorOptions = {},
 ): RoiEditorHandle {
   let dragging: { roi: number; corner: number } | null = null;
+  let downAt: { x: number; y: number; t: number } | null = null;
   const handle: RoiEditorHandle = { hover: null, destroy };
 
   const toNorm = (e: PointerEvent) => {
@@ -44,6 +53,8 @@ export function attachRoiEditor(
 
   const onDown = (e: PointerEvent) => {
     const { x, y, rect } = toNorm(e);
+    downAt = { x, y, t: performance.now() };
+    if (opts.dragEnabled && !opts.dragEnabled()) return;
     const hit = pick(x, y, rect);
     if (!hit) return;
     dragging = hit;
@@ -55,7 +66,7 @@ export function attachRoiEditor(
   const onMove = (e: PointerEvent) => {
     const { x, y, rect } = toNorm(e);
     if (!dragging) {
-      handle.hover = pick(x, y, rect);
+      handle.hover = (opts.dragEnabled && !opts.dragEnabled()) ? null : pick(x, y, rect);
       return;
     }
     const c = getRois()[dragging.roi].corners[dragging.corner];
@@ -66,8 +77,18 @@ export function attachRoiEditor(
   };
 
   const onUp = (e: PointerEvent) => {
-    if (!dragging) return;
+    if (!dragging) {
+      // ドラッグでなくタップだったら初期化用に通知する
+      if (downAt && opts.onTap) {
+        const { x, y } = toNorm(e);
+        const moved = Math.hypot(x - downAt.x, y - downAt.y);
+        if (moved < 0.02 && performance.now() - downAt.t < 600) opts.onTap(x, y);
+      }
+      downAt = null;
+      return;
+    }
     dragging = null;
+    downAt = null;
     canvas.releasePointerCapture(e.pointerId);
     onChange(true);
   };

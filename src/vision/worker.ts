@@ -7,12 +7,27 @@
  */
 
 import { rgbToLab } from './color';
-import type { WorkerRequest, WorkerResponse, WorkerRoiConfig, RoiSample } from './types';
+import type {
+  WorkerRequest, WorkerResponse, WorkerRoiConfig, RoiSample, TrackedRoiConfig, FrameTiming,
+} from './types';
+import { CubeTracker, trackedCellSamplePoints } from '../tracking/cubeTracker';
+import type { CubeTrackingState, InitHint } from '../tracking/types';
+import { rgbaToGray, type GrayImage } from '../tracking/opticalFlow';
 
 let canvas: OffscreenCanvas | null = null;
 let ctx: OffscreenCanvasRenderingContext2D | null = null;
 let rois: WorkerRoiConfig[] = [];
 let procWidth = 480;
+
+// --- 姿勢追跡 ---
+// 追跡は Worker 側に置く。メインスレッドでやると同じフレームをもう一度
+// フル解像度で読み戻す必要があり、二重コストになるため。
+let tracker: CubeTracker | null = null;
+let trackingEnabled = false;
+let trackedRois: TrackedRoiConfig[] = [];
+let trackedSamplesPerAxis = 4;
+let pendingInit: InitHint | null = null;
+let grayBuf: GrayImage | null = null;
 
 /** sRGB(0..255) → 線形 の LUT。平均は線形空間で取る（ガンマ空間の平均は暗側に寄る）。 */
 const LIN = new Float32Array(256);
@@ -78,6 +93,51 @@ function sampleRoi(
   return { lab, rgb };
 }
 
+/** 追跡された面から ROI サンプルを作る。既存の手動 ROI と同じ形で返す。 */
+function sampleTrackedRois(
+  tk: CubeTracker,
+  state: CubeTrackingState,
+  data: Uint8ClampedArray,
+  w: number,
+  h: number,
+): RoiSample[] {
+  const homographies = tk.faceHomography;
+  const out: RoiSample[] = [];
+  for (const cfg of trackedRois) {
+    if (!cfg.enabled) continue;
+    const H = homographies[cfg.faceId];
+    const face = state.faces.find((f) => f.id === cfg.faceId);
+    const usable = !!H && !!face && face.visible && state.status !== 'LOST';
+    if (!usable) {
+      // 見失っている面は色を読まない。誤った位置の色を下流へ流すと
+      // 状態機械を壊す（CLAUDE.md 原則 §3）。
+      out.push({ lab: new Float32Array(27), rgb: new Float32Array(27), trusted: false });
+      continue;
+    }
+    const samples = trackedCellSamplePoints(
+      H!, w, h, trackedSamplesPerAxis, tk.config.cellSampleInset, cfg.rotate, cfg.mirror,
+    );
+    const sample = sampleRoi({ samples, samplesPerAxis: trackedSamplesPerAxis }, data, w, h);
+    sample.trusted = true;
+    out.push(sample);
+  }
+  return out;
+}
+
+/** 正規化画像座標で来たヒントを、処理解像度のピクセル座標へ直す。 */
+function denormalizeHint(hint: InitHint, w: number, h: number): InitHint {
+  const pt = (p: { x: number; y: number }) => ({ x: p.x * w, y: p.y * h });
+  const out: InitHint = { kind: hint.kind };
+  if (hint.point) out.point = pt(hint.point);
+  if (hint.radius !== undefined) out.radius = hint.radius * Math.min(w, h);
+  if (hint.box) {
+    out.box = { x: hint.box.x * w, y: hint.box.y * h, w: hint.box.w * w, h: hint.box.h * h };
+  }
+  if (hint.corners) out.corners = hint.corners.map(pt) as InitHint['corners'];
+  if (hint.quads) out.quads = hint.quads.map((q) => q.map(pt) as typeof q);
+  return out;
+}
+
 self.onmessage = (ev: MessageEvent<WorkerRequest>) => {
   const msg = ev.data;
   try {
@@ -85,6 +145,25 @@ self.onmessage = (ev: MessageEvent<WorkerRequest>) => {
       rois = msg.rois;
       procWidth = msg.procWidth;
       post({ type: 'ready' });
+      return;
+    }
+    if (msg.type === 'trackingConfig') {
+      trackingEnabled = msg.enabled;
+      trackedRois = msg.rois;
+      trackedSamplesPerAxis = msg.samplesPerAxis;
+      if (!tracker) tracker = new CubeTracker(msg.config);
+      else tracker.config = msg.config;
+      tracker.collectPoints = msg.collectPoints;
+      post({ type: 'ready' });
+      return;
+    }
+    if (msg.type === 'initTracking') {
+      pendingInit = msg.hint;
+      return;
+    }
+    if (msg.type === 'resetTracking') {
+      tracker?.reset();
+      pendingInit = null;
       return;
     }
     if (msg.type === 'frame') {
@@ -97,13 +176,43 @@ self.onmessage = (ev: MessageEvent<WorkerRequest>) => {
       ctx!.drawImage(bmp, 0, 0, w, h);
       bmp.close();
       const img = ctx!.getImageData(0, 0, w, h);
-      const out: RoiSample[] = rois.map((r) => sampleRoi(r, img.data, w, h));
+
+      const timing: FrameTiming = { samplingMs: 0, trackingMs: 0, flowMs: 0, homographyMs: 0 };
+      let trackingState: CubeTrackingState | undefined;
+      let out: RoiSample[];
+
+      if (trackingEnabled && tracker) {
+        const tTrack = performance.now();
+        grayBuf = rgbaToGray(img.data, w, h, grayBuf ?? undefined);
+        if (pendingInit) {
+          const hint = denormalizeHint(pendingInit, w, h);
+          const ok = tracker.initialize(grayBuf, hint, msg.t);
+          post({ type: 'trackingInit', ok, reason: tracker.snapshot().reason });
+          pendingInit = null;
+        }
+        trackingState = tracker.step(grayBuf, msg.t);
+        timing.trackingMs = performance.now() - tTrack;
+        timing.flowMs = tracker.timing.flowMs;
+        timing.homographyMs = tracker.timing.homographyMs;
+
+        const tSample = performance.now();
+        out = sampleTrackedRois(tracker, trackingState, img.data, w, h);
+        timing.samplingMs = performance.now() - tSample;
+      } else {
+        const tSample = performance.now();
+        out = rois.map((r) => sampleRoi(r, img.data, w, h));
+        timing.samplingMs = performance.now() - tSample;
+      }
+
       const transfer: Transferable[] = [];
       for (const r of out) transfer.push(r.lab.buffer, r.rgb.buffer);
       post(
         {
           type: 'result',
-          frame: { seq: msg.seq, t: msg.t, procMs: performance.now() - t0, rois: out },
+          frame: {
+            seq: msg.seq, t: msg.t, procMs: performance.now() - t0, rois: out,
+            tracking: trackingState, timing,
+          },
         },
         transfer,
       );

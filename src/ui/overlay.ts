@@ -15,6 +15,18 @@ export interface OverlayCellData {
   conf: Float32Array | null;
 }
 
+export interface TrackingOverlay {
+  status: string;
+  confidence: number;
+  faces: { id: string; corners: { x: number; y: number }[]; visible: boolean; gridLock: number }[];
+  points: { x: number; y: number; px: number; py: number; ok: boolean; inlier: boolean }[];
+  showOutlines: boolean;
+  showPoints: boolean;
+  showFlow: boolean;
+  /** 未初期化でタップ待ち */
+  awaitingTap: boolean;
+}
+
 export interface OverlayState {
   rois: RoiConfig[];
   cells: (OverlayCellData | null)[];
@@ -28,6 +40,8 @@ export interface OverlayState {
   candidates: { label: string; score: number }[];
   status: string;
   moveLog: string[];
+  /** 姿勢追跡の可視化（Phase 0.5）。手動モードでは null */
+  tracking: TrackingOverlay | null;
 }
 
 export class Overlay {
@@ -70,6 +84,7 @@ export class Overlay {
       const data = s.cells[i] ?? null;
       this.drawRoi(roi, data, s, i);
     }
+    if (s.tracking) this.drawTracking(s.tracking);
     this.drawHud(s);
   }
 
@@ -187,12 +202,86 @@ export class Overlay {
     g.fillText(label, lx + 12, ly - 6);
   }
 
+  /** 追跡の可視化。面の外枠・特徴点・フローベクトル。 */
+  private drawTracking(t: TrackingOverlay): void {
+    const g = this.ctx;
+
+    if (t.showOutlines) {
+      for (const f of t.faces) {
+        if (f.corners.length < 4) continue;
+        g.beginPath();
+        f.corners.forEach((p, i) => {
+          const [x, y] = this.px(p);
+          i === 0 ? g.moveTo(x, y) : g.lineTo(x, y);
+        });
+        g.closePath();
+        // 見失っている面は赤破線。見えている面は緑実線
+        g.setLineDash(f.visible ? [] : [6, 4]);
+        g.strokeStyle = f.visible ? 'rgba(60,255,140,0.95)' : 'rgba(255,80,80,0.95)';
+        g.lineWidth = 2.5;
+        g.stroke();
+        g.setLineDash([]);
+        const [lx, ly] = this.px(f.corners[0]);
+        g.font = 'bold 12px ui-monospace, monospace';
+        g.textAlign = 'left';
+        g.textBaseline = 'top';
+        const label = `${f.id} ${f.gridLock.toFixed(2)}`;
+        g.strokeStyle = '#000';
+        g.lineWidth = 3;
+        g.strokeText(label, lx + 4, ly + 4);
+        g.fillStyle = f.visible ? '#7fa' : '#f88';
+        g.fillText(label, lx + 4, ly + 4);
+      }
+    }
+
+    if (t.showFlow) {
+      g.strokeStyle = 'rgba(255,220,80,0.8)';
+      g.lineWidth = 1;
+      g.beginPath();
+      for (const p of t.points) {
+        if (!p.ok) continue;
+        const [x0, y0] = this.px({ x: p.px, y: p.py });
+        const [x1, y1] = this.px({ x: p.x, y: p.y });
+        g.moveTo(x0, y0);
+        g.lineTo(x1, y1);
+      }
+      g.stroke();
+    }
+
+    if (t.showPoints) {
+      for (const p of t.points) {
+        const [x, y] = this.px({ x: p.x, y: p.y });
+        g.beginPath();
+        g.arc(x, y, 2.5, 0, Math.PI * 2);
+        // インライア=緑 / 追跡できたが外れ値=黄 / 追跡失敗=赤
+        g.fillStyle = p.inlier ? 'rgba(80,255,120,0.9)'
+          : p.ok ? 'rgba(255,220,60,0.9)' : 'rgba(255,70,70,0.9)';
+        g.fill();
+      }
+    }
+
+    if (t.awaitingTap) {
+      g.font = 'bold 20px system-ui, sans-serif';
+      g.textAlign = 'center';
+      g.textBaseline = 'middle';
+      const msg = 'キューブをタップ';
+      g.strokeStyle = 'rgba(0,0,0,0.8)';
+      g.lineWidth = 5;
+      g.strokeText(msg, this.w / 2, this.h / 2);
+      g.fillStyle = '#fff';
+      g.fillText(msg, this.w / 2, this.h / 2);
+    }
+  }
+
   private drawHud(s: OverlayState): void {
     const g = this.ctx;
     g.font = '11px ui-monospace, monospace';
     g.textAlign = 'left';
     g.textBaseline = 'top';
     const lines: string[] = [`state: ${s.status}`];
+    if (s.tracking) {
+      lines.push(`pose : ${s.tracking.status} ${(s.tracking.confidence * 100).toFixed(0)}%`);
+    }
     for (const c of s.candidates.slice(0, 5)) lines.push(`${c.label.padEnd(4)} ${c.score.toFixed(3)}`);
     if (s.moveLog.length) lines.push('', ...s.moveLog.slice(-6));
     const wBox = 150;
