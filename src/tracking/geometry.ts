@@ -423,6 +423,22 @@ export function smoothQuad(prev: Quad, next: Quad, alpha: number): Quad {
   return out;
 }
 
+/**
+ * 2本のベクトルの対応 (a0->b0, a1->b1) から 2x2 線形変換 [m0 m1; m2 m3] を解く。
+ * 隠れた面を剛体的に予測するのに使う。
+ */
+export function solve2x2Map(a0: Point2D, a1: Point2D, b0: Point2D, b1: Point2D): [number, number, number, number] | null {
+  const det = a0.x * a1.y - a0.y * a1.x;
+  if (!Number.isFinite(det) || Math.abs(det) < 1e-9) return null;
+  // [m0 m1] * [a0.x a1.x; a0.y a1.y] = [b0.x b1.x]
+  const m0 = (b0.x * a1.y - b1.x * a0.y) / det;
+  const m1 = (a0.x * b1.x - a1.x * b0.x) / det;
+  const m2 = (b0.y * a1.y - b1.y * a0.y) / det;
+  const m3 = (a0.x * b1.y - a1.x * b0.y) / det;
+  const out: [number, number, number, number] = [m0, m1, m2, m3];
+  return out.every(Number.isFinite) ? out : null;
+}
+
 export function cloneQuad(q: Quad): Quad {
   return [{ x: q[0].x, y: q[0].y }, { x: q[1].x, y: q[1].y }, { x: q[2].x, y: q[2].y }, { x: q[3].x, y: q[3].y }];
 }
