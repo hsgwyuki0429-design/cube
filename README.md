@@ -5,6 +5,7 @@
 
 判定基準と背景は `docs/cube-vision-plan.md` §6、実装規約は `CLAUDE.md`。
 現時点で分かっていることは `docs/phase0-findings.md`。
+キューブ姿勢追跡（Phase 0.5）は `docs/cube-tracking.md`。
 
 ## 使い方
 
@@ -25,6 +26,10 @@ npm run dev:lan    # スマホ実機用（LAN 公開 + 自己署名HTTPS）
    facelet の (0,0)→(0,2)→(2,2)→(2,0) に対応する。向きが合わないときは `rot` を回す。
    各 ROI にどの空間面が映っているかを選ぶ（カメラは固定なので実行中に変わらない）。
    ROI は 3 枚まで足せる（→ findings の「可視面の枚数」）。
+2b. **自動追跡にする（任意）** — 「キューブ姿勢追跡」パネルで ROI 供給元を
+   「自動追跡」に切り替え、ROI を合わせた状態で [現在の ROI から初期化] を押す。
+   以後はキューブやスマホが多少動いてもグリッドが面に貼り付いたまま追従する。
+   追えなくなったら誤魔化さず LOST にして再取得を求める。詳細は `docs/cube-tracking.md`。
 3. **キャリブレーション** — 完成状態のキューブの U/R/F/D/L/B を順に同じ ROI に見せる。
    6色間の最小距離が出るので、判別困難な配色ならここで警告が出る。
 4. **色分類精度を計測** — 完成キューブを映したまま数十秒。目標 98%。
@@ -48,6 +53,7 @@ npm run dev:lan    # スマホ実機用（LAN 公開 + 自己署名HTTPS）
 | `npm test` | 全ユニットテスト + `fixtures/` の回帰テスト（完走率・誤検出を表示） |
 | `npm run sweep` | 閾値プリセットを全 fixture で横並び比較 |
 | `npm run fixtures` | `fixtures/` の合成録画を再生成 |
+| `npm run video` | ブラウザ統合テスト用の合成キューブ動画（Y4M）を生成 |
 | `npm run typecheck` | 型チェック |
 | `npm run build` | 本番ビルド |
 
@@ -65,11 +71,18 @@ src/dev/recorder.ts     録画
 src/dev/replay.ts       リプレイ・閾値スイープ
 src/dev/synth.ts        合成録画生成（回帰テスト用）
 src/dev/solves.ts       計測結果の集計と Go/No-Go 判定
+src/tracking/geometry.ts     ホモグラフィ推定・RANSAC・四角形の妥当性判定
+src/tracking/opticalFlow.ts  ピラミッド型 Lucas-Kanade
+src/tracking/hexModel.ts     角から見たキューブの六角形モデル・グリッドロック比
+src/tracking/cubeTracker.ts  姿勢追跡の状態機械（純粋モジュール）
+src/dev/cubeRender.ts        合成キューブ映像（追跡の数値評価用）
+src/dev/trackingEval.ts      追跡の数値評価ハーネス
 src/ui/                 素の DOM。オーバーレイと設定パネル
 ```
 
 依存は `typescript / vite / vitest / @vitejs/plugin-basic-ssl / @types/node` のみ。
-React も OpenCV.js も ML も使っていない。
+React も OpenCV.js も ML も使っていない。姿勢追跡（Lucas-Kanade + ホモグラフィ推定）も
+自前実装で、Worker バンドルは 27KB に収まっている（→ `docs/cube-tracking.md` §1）。
 
 ## 注意
 
