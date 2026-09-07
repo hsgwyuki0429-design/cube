@@ -77,6 +77,12 @@ export interface TrackingConfig {
    * 1セル = 1/3 なので、それより小さくする。
    */
   maxReentryJumpRatio: number;
+  /**
+   * 3つの可視面の面積比の上限。立方体を角から見ると3面の面積は同程度になるので、
+   * 片方が極端に膨らんだらモデルが破綻している。
+   * 個々の四角形の検証だけでは、毎フレーム少しずつ膨らむ破綻を止められない。
+   */
+  maxFaceAreaRatio: number;
   /** 予測で置いた面をグリッドに吸着させる */
   snapPredictedFaces: boolean;
   /** 吸着の最大移動量（正規化面座標）。1セル = 1/3 なので半セル未満に保つ */
@@ -132,6 +138,7 @@ export function defaultTrackingConfig(): TrackingConfig {
     minInliersPerFace: 6,
     minInlierSpread: 0.28,
     maxReentryJumpRatio: 0.22,
+    maxFaceAreaRatio: 6,
     snapPredictedFaces: true,
     maxSnapShift: 0.12,
     degradedConfidence: 0.55,

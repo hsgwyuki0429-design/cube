@@ -27,7 +27,16 @@ let trackingEnabled = false;
 let trackedRois: TrackedRoiConfig[] = [];
 let trackedSamplesPerAxis = 4;
 let pendingInit: InitHint | null = null;
-let grayBuf: GrayImage | null = null;
+/**
+ * グレースケールのダブルバッファ。
+ *
+ * buildPyramid はレベル0を**参照で**保持するので、同じバッファを使い回すと
+ * 前フレームのピラミッドの中身が今フレームで上書きされ、
+ * オプティカルフローが同一画像同士を比較することになる。
+ * 毎フレーム確保すると GC を叩くので2枚で回す。
+ */
+const grayBuffers: (GrayImage | null)[] = [null, null];
+let grayIndex = 0;
 
 /** sRGB(0..255) → 線形 の LUT。平均は線形空間で取る（ガンマ空間の平均は暗側に寄る）。 */
 const LIN = new Float32Array(256);
@@ -124,6 +133,23 @@ function sampleTrackedRois(
   return out;
 }
 
+/**
+ * 追跡状態のピクセル座標を正規化画像座標へ直す。
+ * 再投影誤差は診断用なので px のまま残す。
+ */
+function normalizeState(s: CubeTrackingState, w: number, h: number): CubeTrackingState {
+  return {
+    ...s,
+    faces: s.faces.map((f) => ({
+      ...f,
+      corners: f.corners.map((p) => ({ x: p.x / w, y: p.y / h })) as typeof f.corners,
+    })),
+    points: s.points.map((p) => ({
+      ...p, x: p.x / w, y: p.y / h, px: p.px / w, py: p.py / h,
+    })),
+  };
+}
+
 /** 正規化画像座標で来たヒントを、処理解像度のピクセル座標へ直す。 */
 function denormalizeHint(hint: InitHint, w: number, h: number): InitHint {
   const pt = (p: { x: number; y: number }) => ({ x: p.x * w, y: p.y * h });
@@ -183,14 +209,18 @@ self.onmessage = (ev: MessageEvent<WorkerRequest>) => {
 
       if (trackingEnabled && tracker) {
         const tTrack = performance.now();
-        grayBuf = rgbaToGray(img.data, w, h, grayBuf ?? undefined);
+        grayIndex ^= 1;
+        const grayBuf = rgbaToGray(img.data, w, h, grayBuffers[grayIndex] ?? undefined);
+        grayBuffers[grayIndex] = grayBuf;
         if (pendingInit) {
           const hint = denormalizeHint(pendingInit, w, h);
           const ok = tracker.initialize(grayBuf, hint, msg.t);
           post({ type: 'trackingInit', ok, reason: tracker.snapshot().reason });
           pendingInit = null;
         }
-        trackingState = tracker.step(grayBuf, msg.t);
+        // 追跡は処理解像度のピクセル座標で動くが、外へは正規化画像座標で返す。
+        // ROI・オーバーレイ・録画は全て正規化座標で統一されているため。
+        trackingState = normalizeState(tracker.step(grayBuf, msg.t), w, h);
         timing.trackingMs = performance.now() - tTrack;
         timing.flowMs = tracker.timing.flowMs;
         timing.homographyMs = tracker.timing.homographyMs;

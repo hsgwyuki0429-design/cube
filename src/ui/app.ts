@@ -393,7 +393,14 @@ export class App {
     this.busy = false;
     this.lastFrame = frame;
     if (frame.tracking) {
+      const wasLost = this.trackingState?.status === 'LOST';
       this.trackingState = frame.tracking;
+      if (frame.tracking.status === 'LOST' && !wasLost) {
+        // 見失ったら黙って続けない。再取得を要求する
+        this.awaitingTap = true;
+        this.log(`追跡 LOST: ${frame.tracking.reason ?? '不明'}`, 'bad');
+        this.refreshTrackingSection();
+      }
       // 追跡された四角形を ROI にそのまま流し込む。
       // これで既存のオーバーレイ・セル表示・検証がそのまま動く。
       const ids: VisibleFaceId[] = ['U', 'F', 'R'];

@@ -380,7 +380,8 @@ export interface QuadLimits {
 }
 
 export function defaultQuadLimits(): QuadLimits {
-  return { minArea: 200, maxArea: 1e7, maxAreaRatio: 1.8, maxJump: 60, minAspect: 0.25 };
+  // 60fps では1フレームで面積が 35% も変わることはない。1.8 だと毎フレーム倍増を許してしまう
+  return { minArea: 200, maxArea: 1e7, maxAreaRatio: 1.35, maxJump: 60, minAspect: 0.25 };
 }
 
 /**

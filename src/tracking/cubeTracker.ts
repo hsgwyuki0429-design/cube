@@ -334,6 +334,21 @@ export class CubeTracker {
       if (!v.ok) results[fi] = { inliers: results[fi].inliers, error: Infinity };
     }
 
+    // --- モデル全体の形が立方体としてありえるか ---
+    // 立方体の3可視面の面積は同程度になる。片方が極端に膨らんだら、
+    // どこかで当てはめが外れている。個々の面の検証だけでは
+    // ゆっくり膨らむ破綻を止められない（実測で確認）。
+    const areas = accepted.map((q) => (q ? quadArea(q) : 0)).filter((a) => a > 0);
+    if (areas.length >= 2) {
+      const ratio = Math.max(...areas) / Math.max(1e-6, Math.min(...areas));
+      if (ratio > this.config.maxFaceAreaRatio) {
+        for (let fi = 0; fi < accepted.length; fi++) {
+          accepted[fi] = null;
+          results[fi] = { inliers: 0, error: Infinity };
+        }
+      }
+    }
+
     // --- 面ごとに「本当にキューブのグリッドに乗っているか」を確かめる ---
     // 特徴点の整合だけでは、背景のテクスチャや1セルずれた位置にも
     // 自己整合的に貼り付けてしまう。ここで歯止めをかける。
@@ -543,6 +558,11 @@ export class CubeTracker {
       if (qv) { knownNew.push(qv); knownOld.push(prev.q); }
       if (r) { knownNew.push(r); knownOld.push(prev.r); }
       if (knownNew.length < 2) return;
+      // 既知の2ベクトルが平行に近いと 2x2 変換が悪条件になり、
+      // 未知ベクトルが極端に拡大される。そのときは予測しない。
+      const cross = Math.abs(knownOld[0].x * knownOld[1].y - knownOld[0].y * knownOld[1].x);
+      const norms = Math.hypot(knownOld[0].x, knownOld[0].y) * Math.hypot(knownOld[1].x, knownOld[1].y);
+      if (norms < 1e-6 || cross / norms < 0.15) return;
       const M = solve2x2Map(knownOld[0], knownOld[1], knownNew[0], knownNew[1]);
       if (!M) return;
       const apply = (v: Point2D): Point2D => ({ x: M[0] * v.x + M[1] * v.y, y: M[2] * v.x + M[3] * v.y });

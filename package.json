@@ -13,7 +13,8 @@
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "fixtures": "GEN_FIXTURES=1 vitest run tests/fixtures.gen.test.ts",
-    "sweep": "SWEEP=1 vitest run tests/sweep.test.ts"
+    "sweep": "SWEEP=1 vitest run tests/sweep.test.ts",
+    "video": "GEN_VIDEO=1 vitest run tests/video.gen.test.ts"
   },
   "devDependencies": {
     "@types/node": "^26.4.1",
