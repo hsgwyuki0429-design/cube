@@ -18,10 +18,8 @@ import {
   statesEqual,
   viewState,
   F,
-  U,
   R,
   L,
-  B,
   D,
 } from "../src/cube/model";
 

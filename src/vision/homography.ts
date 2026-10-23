@@ -27,7 +27,7 @@ export function mulH(a: Mat3, b: Mat3): Mat3 {
 function smallestEigenvector(M: number[][]): number[] {
   const n = M.length;
   const A = M.map((r) => [...r]);
-  const V = Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_, j) => (i === j ? 1 : 0)));
+  const V: number[][] = Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_, j) => (i === j ? 1 : 0)));
   for (let sweep = 0; sweep < 60; sweep++) {
     let off = 0;
     for (let p = 0; p < n; p++) for (let q = p + 1; q < n; q++) off += A[p][q] * A[p][q];
