@@ -171,6 +171,14 @@ export function layoutFaces(faces: LatticeFace[], opts: LayoutOptions = {}): Pla
         }
       }
     }
+    // アンカーと辺を共有していない面は、キューブの面ではない（背景の格子模様など）
+    {
+      const [e1, e2, a1, a2] = SHARED_EDGE[slot];
+      const p1 = toAnchor(slotPoint({ H, rot: bestRot }, e1[0], e1[1]));
+      const p2 = toAnchor(slotPoint({ H, rot: bestRot }, e2[0], e2[1]));
+      const err = Math.hypot(p1[0] - a1[0], p1[1] - a1[1]) + Math.hypot(p2[0] - a2[0], p2[1] - a2[1]);
+      if (!(err < 1.6)) return;
+    }
     const existing = placed.findIndex((p) => p.slot === slot);
     const entry: PlacedFace = { slot, rot: bestRot, H, found: g.found, latticeIndex: gi, support: H === g.H ? supportOf(g, bestRot) : undefined };
     if (existing < 0) placed.push(entry);

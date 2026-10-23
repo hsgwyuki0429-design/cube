@@ -1,6 +1,6 @@
 // 6面スキャン: 手順、1面の取り込み（安定判定）、54枚の色割り当て、状態の組み立てと自動修正。
 import { B, D, F, FACES, L, R, U, type CubeState } from "../cube/model";
-import { analyzeState, describeProblem, type StateProblem } from "../cube/pattern";
+import { analyzeState, describeProblem, mostLikelyState, type StateProblem } from "../cube/pattern";
 import { type Lab, NAMED_COLORS, colorDistance, meanLab, medianLab } from "../vision/color";
 import { assignBalanced, hungarian } from "./assign";
 
@@ -107,6 +107,8 @@ export interface ScanResult {
   autoFixed: boolean; // 面の向きを自動で直した
   rotations: number[]; // 面ごとに直した回転（90°単位）
   colorWarning?: string;
+  cellLabels: number[]; // スキャンした面 i のセル c（i*9+c）が、どの面のセンターと同じ色か（調査・テスト用）
+  uncertain: number[]; // 読みと違う色にした、または紛らわしいステッカー（facelet 番号。確認してもらう）
 }
 
 // 面のセル番号を 90° 回したときの対応（時計回りに k 回）
@@ -153,53 +155,68 @@ export function assembleScan(scanned: ScannedFace[], scheme: Scheme): ScanResult
   const names = nameIdx.map((i) => NAMED_COLORS[i].id as string);
 
   // 3) 標準配色なら、色名から面の位置を決め直す（スキャンの順番を間違えても直る）
-  let faceOfColor = Array.from({ length: 6 }, (_, c) => c); // 色 c（= スキャンした面 c のセンター色）が属する面
   let placement = Array.from({ length: 6 }, (_, f) => f); // 面 f に置くスキャン結果
   if (scheme === "standard") {
     const target = [U, R, F, D, L, B].map((f) => STANDARD_SCHEME[f]);
     const pos = names.map((n) => target.indexOf(n));
     if (new Set(pos).size === 6 && pos.every((p) => p >= 0)) {
-      faceOfColor = pos;
       placement = Array.from({ length: 6 }, (_, f) => pos.indexOf(f));
     }
   }
-
-  const build = (rot: number[]): CubeState => {
-    const state = new Uint8Array(54);
-    for (let f = 0; f < 6; f++) {
-      const src = placement[f];
-      const cells = Array.from({ length: 9 }, (_, cell) => faceOfColor[labels[src * 9 + cell]]);
-      rotateCells(cells, rot[f]).forEach((c, cell) => (state[f * 9 + cell] = c));
-    }
-    return state;
-  };
 
   const refsByFace = Array.from({ length: 6 }, (_, f) => refs[placement[f]]);
   const namesByFace = Array.from({ length: 6 }, (_, f) => names[placement[f]]);
   const sep = minSeparation(refsByFace);
   const colorWarning = sep.distance < 14 ? `${colorLabel(namesByFace[sep.pair[0]])}と${colorLabel(namesByFace[sep.pair[1]])}の色が近く、見分けにくい可能性があります。照明を明るくしてください。` : undefined;
 
+  // 4) 物理的にありえるキューブのうち、最も読みに合うものを選ぶ（色を 1 枚ずつ決めるのではなく、
+  //    ピースの組み合わせとして決める。白と黄のように紛らわしい色も、ありえるピースの制約で決まる）。
+  //    面の向きの取り違え（90° 回して見せた）も、少しの罰をつけて一緒に探す
+  const dist = Array.from({ length: 6 }, (_, src) => Array.from({ length: 9 }, (_, cell) => refsByFace.map((r) => colorDistance(all[src * 9 + cell], r))));
+  const rotIdx = [0, 1, 2, 3].map((r) => rotateCells([0, 1, 2, 3, 4, 5, 6, 7, 8], r));
+  const ROT_PENALTY = 8;
+  const solve = (rot: number[]) => {
+    const cost = (facelet: number, color: number) => {
+      const f = Math.floor(facelet / 9);
+      return dist[placement[f]][rotIdx[rot[f]][facelet % 9]][color];
+    };
+    const r = mostLikelyState(cost);
+    let lower = 0;
+    for (let i = 0; i < 54; i++) if (i % 9 !== 4) lower += Math.min(...[0, 1, 2, 3, 4, 5].map((c) => cost(i, c)));
+    return { ...r, lower, score: r.cost + ROT_PENALTY * rot.filter(Boolean).length };
+  };
   let rotations = [0, 0, 0, 0, 0, 0];
-  let state = build(rotations);
-  let problems = analyzeState(state).problems;
-  let autoFixed = false;
-  if (problems.length) {
-    // 4) 面の向きの取り違えを探す（回す面が少ない順）
-    const combos: number[][] = [];
-    for (let code = 1; code < 4096; code++) combos.push(Array.from({ length: 6 }, (_, f) => (code >> (2 * f)) & 3));
-    combos.sort((a, b) => a.filter(Boolean).length - b.filter(Boolean).length);
-    for (const rot of combos) {
-      const s = build(rot);
-      if (!analyzeState(s).problems.length) {
-        state = s;
+  let best = solve(rotations);
+  // 読みどおりで辻褄が合っていれば（変えた分が小さければ）そのまま。合わなければ面の向きの取り違えも探す
+  if (best.cost - best.lower > 12) {
+    for (let code = 1; code < 4096; code++) {
+      const rot = Array.from({ length: 6 }, (_, f) => (code >> (2 * f)) & 3);
+      const r = solve(rot);
+      if (r.score < best.score) {
+        best = r;
         rotations = rot;
-        problems = [];
-        autoFixed = true;
-        break;
       }
     }
   }
-  return { state, refs: refsByFace, names: namesByFace, problems, autoFixed, rotations, colorWarning };
+  const state = best.state;
+  const problems = analyzeState(state).problems;
+  const autoFixed = rotations.some(Boolean);
+  // 読みと違う色にしたステッカー（確認してもらう）
+  const uncertain: number[] = [];
+  for (let i = 0; i < 54; i++) {
+    if (i % 9 === 4) continue;
+    const f = Math.floor(i / 9);
+    const d = dist[placement[f]][rotIdx[rotations[f]][i % 9]];
+    const chosen = d[state[i]];
+    const second = Math.min(...d.filter((_, c) => c !== state[i]));
+    if (chosen > Math.min(...d) + 0.01 || second - chosen < 6) uncertain.push(i);
+  }
+  // スキャンした面ごとのセルの色（スキャンした面の番号で）
+  const finalLabels = new Array(54).fill(0);
+  for (let f = 0; f < 6; f++)
+    for (let cell = 0; cell < 9; cell++) finalLabels[placement[f] * 9 + rotIdx[rotations[f]][cell]] = placement[state[f * 9 + cell]];
+  void labels;
+  return { state, refs: refsByFace, names: namesByFace, problems, autoFixed, rotations, colorWarning, cellLabels: finalLabels, uncertain };
 }
 
 function minSeparation(refs: Lab[]) {

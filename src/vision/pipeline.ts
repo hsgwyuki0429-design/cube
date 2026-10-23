@@ -23,7 +23,7 @@ export interface PipelineConfig {
 export const DEFAULT_PIPELINE: PipelineConfig = {
   mode: "auto",
   guideSize: 0.6,
-  region: 0.5,
+  region: 0.6,
   maxSpread: 60,
   quads: DEFAULT_QUADS,
   lattice: {},
@@ -126,6 +126,54 @@ function uniformFaces(img: PixelSource, quads: Quad[]): LatticeFace[] {
   return out;
 }
 
+const chroma = (l: Lab) => Math.hypot(l[1], l[2]);
+
+// 背景の格子模様（チェックのシャツ・キーボード・タイル）を面と取り違えないための確認。
+// 本物の面は、ステッカーの間に黒い隙間があるか（ステッカーのあるキューブ）、色のついたセルがある。
+// 代表色が分かっていれば、セルの色がキューブの 6 色に近いことも確かめる
+function plausibleFaces(img: PixelSource, faces: LatticeFace[], refs: Lab[] | null): LatticeFace[] {
+  const judged = faces.map((f) => {
+    const cells = Array.from({ length: 9 }, (_, k) => pixelLab(img, applyH(f.H, (k % 3) + 0.5, Math.floor(k / 3) + 0.5)));
+    // 隣り合うセルの境界（12 か所）を横切る短い線分で一番暗いところが、両側のセルより十分暗いか
+    let dark = 0;
+    let total = 0;
+    const across = (x0: number, y0: number, dx: number, dy: number, a: Lab | null, b: Lab | null) => {
+      if (!a || !b) return;
+      let minL = Infinity;
+      for (let t = -0.15; t <= 0.151; t += 0.05) {
+        const lab = pixelLab(img, applyH(f.H, x0 + dx * t, y0 + dy * t));
+        if (lab) minL = Math.min(minL, lab[0]);
+      }
+      total++;
+      if (minL < Math.min(a[0], b[0]) * 0.6 && minL < 50) dark++;
+    };
+    for (let r = 0; r < 3; r++) for (let c = 0; c < 2; c++) across(c + 1, r + 0.5, 1, 0, cells[r * 3 + c], cells[r * 3 + c + 1]);
+    for (let r = 0; r < 2; r++) for (let c = 0; c < 3; c++) across(c + 0.5, r + 1, 0, 1, cells[r * 3 + c], cells[(r + 1) * 3 + c]);
+    const colorful = cells.filter((l) => l && chroma(l) > 22).length;
+    // 色の違うセルがあるか（揃った面なら 1 色だが、ステッカーのあるキューブなら隙間で分かる）
+    const known = cells.filter((l): l is Lab => !!l);
+    let diverse = 0;
+    for (let i = 0; i < known.length; i++)
+      for (let j = i + 1; j < known.length; j++) diverse = Math.max(diverse, Math.hypot((known[i][0] - known[j][0]) / 2, known[i][1] - known[j][1], known[i][2] - known[j][2]));
+    const bright = cells.filter((l) => l && l[0] > 62).length;
+    let refOk = true;
+    if (refs) {
+      const match = cells.filter((l) => l && Math.min(...refs.map((r) => Math.hypot((l[0] - r[0]) / 2, l[1] - r[1], l[2] - r[2]))) < 38).length;
+      refOk = match >= 5;
+    }
+    const strong = refOk && ((total > 0 && dark >= total * 0.5) || (colorful >= 2 && diverse > 28));
+    // 一様な面（ステッカーレスの揃った面など。チェックのシャツも一様に見える）は、他に本物の面があるか、大きく画面の中央にあるときだけ
+    const c = applyH(f.H, 1.5, 1.5);
+    const central = Math.abs(c[0] - img.width / 2) < img.width * 0.3 && Math.abs(c[1] - img.height / 2) < img.height * 0.35;
+    const big = faceArea(f.H) > (img.width * img.height) / 40;
+    const weak = refOk && !strong && (bright >= 7 || colorful >= 7);
+    (globalThis as { __cvDebug?: (m: unknown) => void }).__cvDebug?.({ dark, total, colorful, diverse: Math.round(diverse), bright, refOk, strong, weak, central, big, cells: cells.map((l) => l && l.map(Math.round).join("/")) });
+    return { f, strong, weak, centralBig: central && big };
+  });
+  const anyStrong = judged.some((j) => j.strong);
+  return judged.filter((j) => j.strong || (j.weak && (anyStrong || j.centralBig))).map((j) => j.f);
+}
+
 export function processFrame(
   cv: CV | null,
   img: PixelSource & { mat?: unknown },
@@ -164,7 +212,7 @@ export function processFrame(
         ? 4
         : 0;
     };
-    let faces = findFaces(expandBlocks(quads, prevFaces.map((f) => f.H)), config.lattice, scorer, faceScorer);
+    let faces = plausibleFaces(img, findFaces(expandBlocks(quads, prevFaces.map((f) => f.H)), config.lattice, scorer, faceScorer), refs);
     if (!faces.length) faces = uniformFaces(img, largeFaceCandidates(quads, img.width * img.height));
     if (faces.length) {
       // 前のフレームと同じ中心色の面をアンカーに（角から見たときに正面が入れ替わらないように）
