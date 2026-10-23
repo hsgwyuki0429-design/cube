@@ -10,7 +10,57 @@
     <title>CubeVision</title>
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app">
+      <div id="boot" style="font-family: system-ui, sans-serif; padding: 32px 20px; color: #9aa4b8; text-align: center">CubeVision を読み込み中…</div>
+    </div>
+    <!-- 画面が真っ白のままにならないように: 読み込みに失敗したら、理由と対処を表示する（モジュールが動かないブラウザでも動く普通のスクリプト） -->
+    <script>
+      (function () {
+        var errors = [];
+        function show(reason) {
+          if (window.__cvMounted && !reason) return;
+          var box = document.getElementById("boot-error");
+          if (!box) {
+            box = document.createElement("div");
+            box.id = "boot-error";
+            box.style.cssText = "font-family:system-ui,sans-serif;max-width:640px;margin:24px auto;padding:20px;border-radius:12px;background:#fff4f4;color:#5a1a1a;border:1px solid #f0c0c0;line-height:1.6";
+            document.body.insertBefore(box, document.body.firstChild);
+          }
+          box.innerHTML =
+            "<b>CubeVision を起動できませんでした</b>" +
+            "<p>ブラウザが古いか、以前のバージョンのキャッシュが残っている可能性があります。下のボタンで再読み込みしてください。" +
+            "直らないときは、最新の Chrome・Edge・Safari・Firefox で開いてください。</p>" +
+            '<p><button id="boot-reload" style="padding:8px 14px;border-radius:8px;border:1px solid #c88;background:#fff;cursor:pointer">キャッシュを消して再読み込み</button></p>' +
+            '<pre style="white-space:pre-wrap;font-size:12px;background:#fff;padding:8px;border-radius:6px;max-height:200px;overflow:auto"></pre>';
+          box.querySelector("pre").textContent = (reason ? [reason] : []).concat(errors).join("\n") + "\n" + navigator.userAgent;
+          box.querySelector("#boot-reload").onclick = function () {
+            var jobs = [];
+            try {
+              if (navigator.serviceWorker) jobs.push(navigator.serviceWorker.getRegistrations().then(function (rs) { return Promise.all(rs.map(function (r) { return r.unregister(); })); }));
+              if (window.caches) jobs.push(caches.keys().then(function (ks) { return Promise.all(ks.map(function (k) { return caches.delete(k); })); }));
+            } catch (e) {}
+            Promise.all(jobs).then(function () { location.reload(); }, function () { location.reload(); });
+          };
+        }
+        window.__cvBootError = show;
+        window.addEventListener(
+          "error",
+          function (e) {
+            var t = e.target;
+            if (t && t !== window && (t.src || t.href)) errors.push("読み込めないファイル: " + (t.src || t.href));
+            else errors.push((e.message || "error") + (e.filename ? " (" + e.filename.split("/").pop() + ":" + e.lineno + ")" : ""));
+            if (!window.__cvMounted) show();
+          },
+          true,
+        );
+        window.addEventListener("unhandledrejection", function (e) {
+          errors.push("unhandled: " + (e.reason && (e.reason.stack || e.reason.message) || e.reason));
+        });
+        setTimeout(function () {
+          if (!window.__cvMounted) show("15 秒たっても起動しませんでした");
+        }, 15000);
+      })();
+    </script>
     <script type="module" src="./src/main.tsx"></script>
   </body>
 </html>
