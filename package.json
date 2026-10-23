@@ -1,25 +1,35 @@
 {
   "name": "cubevision",
   "private": true,
-  "version": "0.0.0",
+  "version": "1.0.0",
   "type": "module",
-  "description": "CubeVision Phase 0 - technical validation harness",
+  "description": "CubeVision - カメラで普通のルービックキューブの回転を追跡して画面に再現するアプリ",
   "scripts": {
     "dev": "vite",
-    "dev:lan": "vite --host",
+    "dev:lan": "vite --mode lan",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "fixtures": "GEN_FIXTURES=1 vitest run tests/fixtures.gen.test.ts",
-    "sweep": "SWEEP=1 vitest run tests/sweep.test.ts"
+    "e2e": "node scripts/e2e.mjs"
+  },
+  "dependencies": {
+    "@mediapipe/tasks-vision": "^1.1.1",
+    "@techstark/opencv-js": "^5.0.0-release.1",
+    "cubing": "^0.66.1",
+    "preact": "^11.0.1",
+    "three": "^0.170.0"
   },
   "devDependencies": {
-    "@types/node": "^26.4.1",
-    "@vitejs/plugin-basic-ssl": "^2.0.0",
-    "typescript": "^5.6.0",
-    "vite": "^6.0.0",
-    "vitest": "^3.0.0"
+    "@preact/preset-vite": "^2.10.6",
+    "@types/node": "^26.6.5",
+    "@types/three": "^0.170.0",
+    "@vitejs/plugin-basic-ssl": "^2.3.0",
+    "playwright-core": "^1.64.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.5",
+    "vite-plugin-pwa": "^2.0.0",
+    "vitest": "^5.0.5"
   }
 }

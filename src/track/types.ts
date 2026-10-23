@@ -1,0 +1,27 @@
+// 追跡エンジンの入出力型。カメラにも DOM にも依存しない。
+
+export type Lab = [number, number, number];
+
+// 1つの面の観測。slot はカメラフレームの面番号（F=2 がカメラ正面、U=0 が上、R=1 が右…）。
+// cost[cell * 6 + color] = そのセルが color だと仮定したときのペナルティ（0 = 矛盾なし）。
+// 情報のないセル（手で隠れた・読めない）は全色 0。
+export interface FaceObservation {
+  slot: number;
+  cost: Float32Array;
+  labels: Int8Array; // 9 セルの最尤色（-1 = 不明）
+}
+
+export interface Observation {
+  t: number; // この見え方が始まった時刻（ms）
+  tPrevEnd: number; // 前の観測が最後に見えていた時刻（手はこの間に起きた）
+  faces: FaceObservation[];
+}
+
+export interface DecodedMove {
+  move: number; // キューブ固定フレームの手（0..17）
+  t: number; // 推定時刻（ms）
+  orient: number; // その手のときのキューブの姿勢（持ち方基準の表記に使う）
+  inferred?: boolean; // 直接は見えず、後から辻褄合わせで推定した手
+}
+
+export type TrackStatus = "tracking" | "uncertain" | "lost";
