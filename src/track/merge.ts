@@ -1,14 +1,16 @@
 // 表示用: 同じ面を続けて素早く回した手（R R）を1手（R2）にまとめる。
 // 半回転をゆっくり回すと、途中の 90° の状態が一瞬安定して見えて2手に分かれることがあるため。
-// 開始・終了時刻を持つ手（start / end）は、まとめた手の開始を前の手、終了を後の手から取る。
+// 開始・終了時刻を持つ手（start / end）は、まとめた手の開始を前の手、終了を後の手から取る。前の手の回し終わりから
+// 止まらずに（gapMs 以内に）次の手を回し始めていれば、観測の間隔が空いていても（カメラが遅い）まとめる。
 import { moveFace } from "../cube/model";
 import type { DecodedMove } from "./types";
 
-export function mergeQuickRepeats<T extends DecodedMove & { start?: number }>(moves: T[], windowMs = 450): T[] {
+export function mergeQuickRepeats<T extends DecodedMove & { start?: number; end?: number }>(moves: T[], windowMs = 450, gapMs = 100): T[] {
   const out: T[] = [];
   for (const m of moves) {
     const last = out[out.length - 1];
-    if (last && moveFace(last.move) === moveFace(m.move) && m.t - last.t < windowMs) {
+    const continuous = last?.end !== undefined && m.start !== undefined && m.start - last.end < gapMs;
+    if (last && moveFace(last.move) === moveFace(m.move) && (m.t - last.t < windowMs || continuous)) {
       const amount = ((last.move % 3) + 1 + (m.move % 3) + 1) % 4;
       out.pop();
       if (amount) {

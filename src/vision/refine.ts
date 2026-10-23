@@ -175,6 +175,9 @@ export class Refiner {
     const first = timed[0];
     const last = timed[timed.length - 1];
     let endUncertain = !!last?.inferred;
+    // 最初の観測から既にスクランブルの状態と違う（解析の範囲より前に回し始めていた）: 開始は録画から決められない
+    const firstObs = this.engine.observationLog.find((o) => o.faces.length);
+    const beforeWindow = !!first && !!firstObs && (first.t0 ?? first.t) <= firstObs.t;
     const refs = this.engine.colors.refs;
     // 色の読みで静止フレームが見つからなかった（指で層が隠れていた）ときも、観測の時刻を手がかりに画素の差で探す
     if (first && !first.inferred) first.start = refineStart(this.patches, first, first.start, refs) ?? first.start;
@@ -221,7 +224,7 @@ export class Refiner {
       inferred: merged.filter((m) => m.inferred).length,
       forced,
       method: this.method,
-      startUncertain: !!first?.inferred,
+      startUncertain: !!first?.inferred || beforeWindow,
       endUncertain,
       raw: timed.map((m) => ({ move: m.move, t0: m.t0, t: m.t, start: m.start, end: m.end, inferred: m.inferred })),
     };

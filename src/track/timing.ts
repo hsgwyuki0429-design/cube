@@ -27,13 +27,14 @@ export interface TimingOptions {
   restSpread: number; // これ以下のばらつきなら止まっている
   onsetDelta: number; // 静止時からこれ以上色が変わったら動き出した
   searchMs: number; // 観測の前後をどこまで探すか
+  endAfterMs: number; // 回し終わりの前の動きは、観測からこれだけ後までに見え始めたものだけ使う
   // 動き出しを探すのは、前の見え方が最後に確認できた時刻（t0）からこれだけ前まで。層が回り始めても 20〜30° までは
   // 前の見え方のままなので、本当の開始は t0 の少し前にある（それより前の変化は指の動きなど）
   onsetWindowMs: number;
   refs?: Lab[]; // キューブの 6 色。分かっていれば、どの色からも遠いセル（指・手）を判定に使わない
 }
 
-export const DEFAULT_TIMING: TimingOptions = { restSpread: 22, onsetDelta: 9, searchMs: 450, onsetWindowMs: 150 };
+export const DEFAULT_TIMING: TimingOptions = { restSpread: 22, onsetDelta: 9, searchMs: 450, endAfterMs: 200, onsetWindowMs: 150 };
 
 const dot = (a: number[], b: number[]) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 
@@ -196,15 +197,32 @@ export function moveTiming(frames: LoggedFrame[], m: DecodedMove, opts: TimingOp
       exact = true;
     }
   }
-  // 終了: 動き出した後、再び止まった最初のフレーム（観測時刻の少し後まで探す）
+  // 終了: 動き出した後、再び止まった最初のフレーム（観測時刻の少し後まで探す）。回転の後半は観測の後も続くが、
+  // 観測から endAfterMs を過ぎてから動き始めたように見えるのは指などなので使わない。回転の間ずっと層が隠れていたら、
+  // 観測の時刻と、その後はじめて止まって見えたフレームの中間（離れすぎていれば観測の時刻のまま）
   let end = m.t;
   i = restIdx >= 0 ? restIdx + 1 : Math.max(0, indexAtOrBefore(frames, t0));
-  let moving = false;
+  let lastMoving = -1;
+  const restAt = (k: number) => layerAtRest(frames[k], m.orient, face, opts, frames[k + 1]);
+  // 止まって見えたのが 1 フレームだけ（回転途中に見えている 1 枚がたまたま一様だった）なら止まったとしない
+  const confirmed = (k: number) => {
+    for (let j = k + 1; j < frames.length && frames[j].t <= m.t + opts.searchMs + 100; j++) {
+      const r = restAt(j);
+      if (r !== null) return r;
+    }
+    return true;
+  };
   for (let k = i; k < frames.length && frames[k].t <= m.t + opts.searchMs; k++) {
-    const r = layerAtRest(frames[k], m.orient, face, opts, frames[k + 1]);
-    if (r === false) moving = true;
-    else if (r === true && moving && k > 0 && frames[k].t >= start) {
-      end = (frames[k - 1].t + frames[k].t) / 2;
+    const r = restAt(k);
+    if (r === false) {
+      if (lastMoving >= 0 || frames[k].t <= m.t + opts.endAfterMs) lastMoving = k;
+    } else if (r === true && !confirmed(k)) {
+      if (lastMoving >= 0) lastMoving = k;
+    } else if (r === true && lastMoving >= 0 && frames[k].t >= start) {
+      end = (frames[lastMoving].t + frames[k].t) / 2;
+      break;
+    } else if (r === true && lastMoving < 0 && frames[k].t >= m.t) {
+      if (frames[k].t - m.t <= opts.endAfterMs) end = (m.t + frames[k].t) / 2;
       break;
     }
   }

@@ -39,4 +39,20 @@ describe("refine (post-solve analysis)", () => {
     expect(Math.abs(f.start! - r.startTruth)).toBeLessThanOrEqual(18);
     expect(Math.abs(f.end! - r.endTruth)).toBeLessThanOrEqual(18);
   }, 180000);
+
+  it("marks the start uncertain when the solve began before the analysis range", () => {
+    // 最初の手（600〜770ms）が終わった後から解析する: 開始は録画から決められない
+    const r = simulate(cv, { seed: 4, moves: 6, tps: 4, fps: 30, exposureMs: 12, solveTo: true, refine: true, refineFrom: 800 });
+    expect(r.refined!.startUncertain).toBe(true);
+  }, 180000);
+
+  it("times a solve under glare and heavy finger occlusion within about half a frame", () => {
+    // 艶の映り込み・色合い・多くの指・不正確な手の検出（4 手/秒・30fps）
+    const r = simulate(cv, { seed: 1, moves: 10, tps: 4, fps: 30, exposureMs: 12, solveTo: true, refine: true, scene: { harshness: "real", fingers: "heavy", maskQuality: 0.5 } });
+    const f = r.refined!;
+    expect(f.solved).toBe(true);
+    expect(f.startUncertain).toBe(false);
+    expect(Math.abs(f.start! - r.startTruth)).toBeLessThanOrEqual(25);
+    expect(Math.abs(f.end! - r.endTruth)).toBeLessThanOrEqual(40);
+  }, 400000);
 });

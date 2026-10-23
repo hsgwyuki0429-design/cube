@@ -1,7 +1,7 @@
 import { createRequire } from "node:module";
 import { it } from "vitest";
 import { OPPOSITE, moveFace } from "../../src/cube/model";
-import { cellInLayer } from "../../src/track/timing";
+import { DEFAULT_TIMING, cellInLayer, layerAtRest } from "../../src/track/timing";
 import { layerMotion, refineEnd } from "../../src/vision/fineTiming";
 import { initOpenCv } from "../../src/vision/quads";
 import { simulate } from "../speed";
@@ -62,7 +62,9 @@ it("finger timing", async () => {
   // 終わり付近
   const lf = moveFace(last.move);
   const lm = { move: last.move, t0: last.t0, t: last.t, orient: dm[dm.length - 1]?.orient ?? 0 };
-  process.stdout.write(`refineEnd=${refineEnd(P, lm, last.end, eng.colors.refs)} orient=${lm.orient}\n`);
+  process.stdout.write(`refineEnd=${refineEnd(P, lm, last.end, eng.colors.refs)} orient=${lm.orient} timing=${JSON.stringify(eng.timing(lm))}\n`);
+  const fr0 = eng.frames.filter((x) => x.t > r.endTruth - 300 && x.t < r.endTruth + 250);
+  process.stdout.write(`  rest: ${fr0.map((x) => { const k = eng.frames.indexOf(x); return `${x.t.toFixed(0)}:${layerAtRest(x, lm.orient, lf, { ...DEFAULT_TIMING, refs: eng.colors.refs }, eng.frames[k + 1])}`; }).join(" ")}\n`);
   const lo = { ...lm, move: OPPOSITE[lf] * 3 };
   const lot = eng.timing(lo);
   process.stdout.write(`last opposite timing ${JSON.stringify(lot)} refineEnd=${lot ? refineEnd(P, lo, lot.end, eng.colors.refs) : "-"}\n`);

@@ -58,6 +58,7 @@ export interface PipelineMemory {
 
 type KeptFace = PlacedFace & { seenT: number }; // seenT: 最後に実際に検出できた時刻
 
+const SKIP_MS = 300; // 正面が指で隠れたフレームを飛ばすのは、直前に正面が見えてからこの時間まで
 const HOLD_MS = 400; // 何も見つからないとき、直前の面を使い続ける時間
 const CARRY_MS = 2500; // 正面を追えている間、見つからない他の面を運び続ける時間
 
@@ -248,18 +249,19 @@ export function processFrame(
         return nearestNamed(lab);
       };
       const recent = memory.last && t - memory.last.t < 600 ? memory.last : null;
-      // 直前の正面が見つからず、見つかった面がどれも直前の上・横の面の位置にある（指で正面が隠れた）なら、
+      // 直前の正面が見つからず、見つかった面がどれも直前の上・横の面の位置にほぼ止まっている（指で正面が隠れた）なら、
       // その面を正面に格上げしない。格上げすると、上の面の色を正面の色として読み、ありもしない手に見える。
-      // このフレームは読まずに飛ばす（持ち替えで本当に正面が変わったなら、600ms 後には普通に選び直す）
-      if (recent) {
+      // このフレームは読まずに飛ばす。キューブを回して別の面を見せているとき（スキャン・持ち替え）は面が動くので
+      // 当てはまらない。止まったまま正面が見えない状態が続いたら（SKIP_MS）、普通に選び直す
+      if (recent && t - recent.t < SKIP_MS) {
         const prevA = recent.faces.find((f) => f.slot === 2 && !(f as { held?: boolean }).held);
-        const near = (H: Mat3, G: Mat3) => {
+        const dist = (H: Mat3, G: Mat3) => {
           const a = applyH(H, 1.5, 1.5);
           const b = applyH(G, 1.5, 1.5);
-          return Math.hypot(a[0] - b[0], a[1] - b[1]) < recent.pitch * 1.2;
+          return Math.hypot(a[0] - b[0], a[1] - b[1]);
         };
-        const anchorSeen = prevA && faces.some((f) => near(f.H, prevA.H));
-        const onlyOthers = faces.every((f) => recent.faces.some((p) => p.slot !== 2 && near(f.H, p.H)));
+        const anchorSeen = prevA && faces.some((f) => dist(f.H, prevA.H) < recent.pitch * 1.2);
+        const onlyOthers = faces.every((f) => recent.faces.some((p) => p.slot !== 2 && dist(f.H, p.H) < recent.pitch * 0.4));
         if (prevA && !anchorSeen && onlyOthers) return { faces: [], quads: quadsOut };
       }
       let anchor: number | undefined;

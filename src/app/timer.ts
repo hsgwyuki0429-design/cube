@@ -63,7 +63,7 @@ let lookStartT = 0;
 let unexplained = 0;
 
 const POSTROLL_MS = 1200; // 止めた後も録画を続ける時間（最後の手の回し終わりを確かめる）
-const PREROLL_MS = 1500; // 最初の手の前から解析する時間
+const PREROLL_MS = 3000; // 最初の手の前から解析する時間（インスペクション中の録画は直近 4 秒）
 
 // 時刻つきの手（キューブ固定の手、そのときの姿勢、回し始め・回し終わり）
 interface TimedMove {
@@ -326,7 +326,12 @@ async function analyzeRecording(live: LiveSpan, refs: Lab[], endT: number): Prom
     updateSolve(id, { analysis: "failed" });
     return;
   }
-  // 端の手が直接見えていなければ、その端はリアルタイムの追跡の時刻を使う
+  // 端の手が直接見えていなければ、その端はリアルタイムの追跡の時刻を使う。ただし、リアルタイムが最初の数手を
+  // 取りこぼしていた（解析で見つかった最初の手より後に始まっていた）なら、どちらの開始も信用できないので確定しない
+  if (result.startUncertain && live.startT > result.moves[0].end) {
+    updateSolve(id, { analysis: "failed" });
+    return;
+  }
   const begin = result.startUncertain ? live.startT : result.start!;
   const finish = result.endUncertain ? (how === "manual" ? null : live.endT) : result.end!;
   if (finish === null) {

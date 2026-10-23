@@ -33,6 +33,7 @@ export interface SpeedOptions {
   scene?: SceneOptions; // 実物らしい条件（艶の映り込み・色合い・持つ指）。指定すると円の指の代わりに使う
   onFrame?: (t: number, img: { data: Uint8ClampedArray; width: number; height: number }, hands: [number, number][][]) => void; // 調査用
   refine?: boolean; // 精密解析（Refiner）にも全フレームを通す
+  refineFrom?: number; // 精密解析の範囲の始まり（ms。既定 0）
 }
 
 export interface SpeedResult {
@@ -66,7 +67,7 @@ export function simulate(cv: CV, o: SpeedOptions): SpeedResult {
   const total = endTruth + 700;
 
   const engine = new TrackerEngine(start, REFS, o.engine);
-  const refiner = o.refine ? new Refiner(cv, { state: Array.from(start), refs: REFS, from: 0, to: Infinity, startHint: lead, engine: o.engine, pipeline: o.pipeline }) : null;
+  const refiner = o.refine ? new Refiner(cv, { state: Array.from(start), refs: REFS, from: o.refineFrom ?? 0, to: Infinity, startHint: lead, engine: o.engine, pipeline: o.pipeline }) : null;
   const memory = { last: null };
   const eye = o.eye ?? [0.8, 4.5, 9];
   const w = o.width ?? 640;
