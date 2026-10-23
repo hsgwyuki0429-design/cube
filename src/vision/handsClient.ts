@@ -74,8 +74,12 @@ export class HandsClient {
     this.onUpdate?.([]);
   }
 
+  private lastSubmit = 0;
+
+  // 15Hz まで（手の位置は数フレームに1回で十分。遅い端末で認識処理の CPU を奪わないように）
   async submit(video: HTMLVideoElement, t: number): Promise<void> {
-    if (this.status !== "ready" || this.busy || !video.videoWidth || !this.worker) return;
+    if (this.status !== "ready" || this.busy || !video.videoWidth || !this.worker || t - this.lastSubmit < 66) return;
+    this.lastSubmit = t;
     this.busy = true;
     try {
       const w = 320;

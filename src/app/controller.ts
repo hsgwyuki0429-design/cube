@@ -106,7 +106,7 @@ class Controller {
     this.vision.onResult((m) => this.onFrame(m));
     this.camera.onFrame((now) => {
       this.vision?.submit(this.camera.video, now);
-      if (settingsStore.get().handMask) this.hands.submit(this.camera.video, now);
+      if (settingsStore.get().handMask && !this.store.get().demo) this.hands.submit(this.camera.video, now);
     });
     this.hands.onUpdate = (hulls) => this.vision?.setHands(hulls);
     this.statsTimer = window.setInterval(() => {
@@ -130,8 +130,10 @@ class Controller {
     this.vision.workWidth = s.workWidth;
     this.vision.setConfig({ mode: s.detection });
     this.vision.setTrackingOptions(this.engineOptions(s));
-    if (s.handMask && this.hands.status === "off") this.hands.start();
-    if (!s.handMask && this.hands.status !== "off") this.hands.stop();
+    // デモの合成映像には本物の手が映らないので、手の検出は動かさない（CPU を食うだけ）
+    const wantHands = s.handMask && !this.store.get().demo;
+    if (wantHands && this.hands.status === "off") this.hands.start();
+    if (!wantHands && this.hands.status !== "off") this.hands.stop();
   }
 
   engineOptions(s: Settings = settingsStore.get()): Partial<EngineOptions> {
@@ -201,6 +203,7 @@ class Controller {
     syn.setView("front", 0);
     const info = await this.camera.attach(syn.stream());
     this.store.set({ demo: true, camera: "on", cameraInfo: { ...info, label: "デモ（合成カメラ）" }, cameraError: null });
+    this.applySettings(settingsStore.get());
     if (options.autoplay !== false) {
       const { runDemo } = await import("../synthetic/demo");
       runDemo(this, syn, options.seed, options.script);
@@ -213,6 +216,7 @@ class Controller {
     this.synthetic = null;
     this.camera.stop();
     this.store.set({ demo: false, camera: "off" });
+    this.applySettings(settingsStore.get());
   }
 
   // ---- スキャン ----

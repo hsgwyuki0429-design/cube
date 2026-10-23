@@ -84,7 +84,22 @@ try {
     const t0 = Date.now();
     await page.goto(`http://localhost:${PORT}/?demo=e2e&seed=${seed}&moves=${MOVES}&tps=${TPS}&view=${VIEW}${MODE === "timer" ? "&timer=1" : ""}`);
     if (MODE === "timer") {
-      await page.waitForFunction(() => window.__cubevisionTimer?.get().phase === "done", null, { timeout: 300000, polling: 500 });
+      try {
+        await page.waitForFunction(() => window.__cubevisionTimer?.get().phase === "done", null, { timeout: 240000, polling: 500 });
+      } catch (e) {
+        const st = await page.evaluate(() => {
+          const t = window.__cubevisionTimer.get();
+          const tr = window.__cubevision.store.get();
+          return { phase: t.phase, guide: t.guide.length, guideDone: t.guideDone, recomputing: t.recomputing, status: tr.track?.status, moves: tr.track?.moves.length, truth: window.__cubevision.synthetic?.truth.length, stats: tr.stats, scan: !!tr.scan };
+        });
+        console.log(`seed ${seed} timer: TIMEOUT ${JSON.stringify(st)}`);
+        await page.screenshot({ path: `${OUT}/seed${seed}-timer-timeout.png` });
+        console.log(logs.slice(-20).join("\n"));
+        failures++;
+        results.push({ seed, acc: 0, finalOk: false, scanSec: 0 });
+        await page.close();
+        continue;
+      }
       await page.screenshot({ path: `${OUT}/seed${seed}-timer-done.png` });
       const r = await page.evaluate(() => {
         const t = window.__cubevisionTimer.get();
