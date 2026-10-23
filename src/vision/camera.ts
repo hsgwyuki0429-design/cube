@@ -38,6 +38,7 @@ export class CameraSource {
   info: CameraInfo | null = null;
   fps = 0;
   private callbacks = new Set<FrameCallback>();
+  private endedCallbacks = new Set<() => void>();
   private frameTimes: number[] = [];
   private running = false;
   private handle = 0;
@@ -74,6 +75,10 @@ export class CameraSource {
     await this.video.play().catch(() => undefined);
     if (!this.video.videoWidth) await new Promise((r) => this.video.addEventListener("loadedmetadata", r, { once: true }));
     const track = stream.getVideoTracks()[0];
+    // 他のアプリがカメラを使い始めた・カメラが外れた・OS が止めたときに、映像が黒いまま止まらないように知らせる
+    track?.addEventListener("ended", () => {
+      if (this.stream === stream) for (const cb of this.endedCallbacks) cb();
+    });
     const s = track?.getSettings?.() ?? {};
     this.info = {
       width: this.video.videoWidth,
@@ -96,6 +101,11 @@ export class CameraSource {
     this.video.srcObject = null;
     this.frameTimes = [];
     this.fps = 0;
+  }
+
+  onEnded(cb: () => void): () => void {
+    this.endedCallbacks.add(cb);
+    return () => this.endedCallbacks.delete(cb);
   }
 
   onFrame(cb: FrameCallback): () => void {

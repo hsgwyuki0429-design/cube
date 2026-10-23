@@ -97,6 +97,8 @@ class Controller {
   private toastTimer = 0;
   private epoch = 0;
   private preScanTrack: TrackUpdate | null = null;
+  private stalled = 0;
+  private lastRetry = -Infinity;
 
   init(): void {
     if (this.vision) return;
@@ -113,8 +115,13 @@ class Controller {
       if (settingsStore.get().handMask && !this.store.get().demo) this.hands.submit(this.camera.video, t);
     });
     this.hands.onUpdate = (hulls) => this.vision?.setHands(hulls);
+    this.camera.onEnded(() => this.onCameraLost());
     this.statsTimer = window.setInterval(() => {
       const v = this.vision;
+      // カメラは「オン」なのに映像が来ない（Windows のカメラ設定・他のアプリ・USB の接触など）
+      if (this.store.get().camera === "on" && !this.store.get().demo && this.camera.fps === 0) {
+        if (++this.stalled === 6) this.toast("カメラの映像が届いていません。他のアプリがカメラを使っていないか確認してください。", 8000);
+      } else this.stalled = 0;
       this.store.set({
         stats: { camFps: this.camera.fps, procFps: v?.procFps ?? 0, procMs: v?.lastProcMs ?? 0, faces: this.latestFrame?.faces.length ?? 0 },
         hands: this.hands.status,
@@ -187,6 +194,19 @@ class Controller {
         return this.startCamera();
       }
       this.store.set({ camera: "error", cameraError: cameraErrorMessage(e) });
+    }
+  }
+
+  // 映像が途中で止まった: 一度だけ自動でつなぎ直し、だめなら理由を出す
+  private async onCameraLost(): Promise<void> {
+    if (this.store.get().demo || this.store.get().camera !== "on") return;
+    this.camera.stop();
+    const retry = performance.now() - this.lastRetry > 10000;
+    this.lastRetry = performance.now();
+    this.store.set({ camera: "error", cameraError: "カメラの映像が止まりました。他のアプリ（Zoom・Teams など）がカメラを使い始めたか、カメラが外れた可能性があります。" });
+    if (retry) {
+      await new Promise((r) => setTimeout(r, 800));
+      if (this.store.get().camera === "error" && !this.store.get().demo) await this.startCamera();
     }
   }
 
