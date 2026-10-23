@@ -317,16 +317,17 @@ function fitComponent(comp: Node[], rho: number, o: LatticeOptions, scoreCell?: 
     });
   });
   let shift: [number, number] = [0, 0];
-  if (shifts.length > 1 && (scoreCell || scoreFace)) {
+  if (shifts.length > 1) {
     let bestScore = -Infinity;
     for (const [du, dv] of shifts) {
       const Hs = shiftH(H, du, dv);
       let score = scoreFace ? scoreFace(Hs) : 0;
-      for (let cell = 0; cell < 9 && scoreCell; cell++) {
+      for (let cell = 0; cell < 9; cell++) {
         const u = cell % 3;
         const v = Math.floor(cell / 3);
         if (occupied.has((v + dv) * 3 + (u + du))) continue;
-        score += scoreCell(applyH(Hs, u + 0.5, v + 0.5));
+        const pt = applyH(Hs, u + 0.5, v + 0.5);
+        if (scoreCell) score += scoreCell(pt);
       }
       if (score > bestScore + 1e-9) {
         bestScore = score;

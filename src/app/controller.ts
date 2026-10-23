@@ -32,6 +32,7 @@ export interface ScanUi {
   captured: ScannedFace[];
   progress: number;
   reason?: string;
+  covered?: boolean[]; // 正面の各マスについて、読みがそろったか（隠れているマスを画面に示す）
   result?: ScanResult;
   edited?: number[]; // 手で直した状態
   problems?: StateProblem[];
@@ -278,12 +279,13 @@ class Controller {
     const reading = front ? { labs: front.labs, valid: front.valid.map((v, i) => v && !front.masked[i]) } : null;
     const p = this.capture.push(reading, scan.captured.map((c) => c.labs[4]));
     if (!p.labs) {
-      if (Math.abs(p.progress - scan.progress) > 0.05 || p.reason !== scan.reason) this.store.set({ scan: { ...scan, progress: p.progress, reason: p.reason } });
+      const coveredChanged = (p.covered ?? []).join() !== (scan.covered ?? []).join();
+      if (Math.abs(p.progress - scan.progress) > 0.05 || p.reason !== scan.reason || coveredChanged) this.store.set({ scan: { ...scan, progress: p.progress, reason: p.reason, covered: p.covered } });
       return;
     }
     const captured = [...scan.captured, { face: scan.steps[scan.step].face, labs: p.labs }];
     if (captured.length < 6) {
-      this.store.set({ scan: { ...scan, captured, step: scan.step + 1, progress: 0, reason: undefined } });
+      this.store.set({ scan: { ...scan, captured, step: scan.step + 1, progress: 0, reason: undefined, covered: undefined } });
       this.beep(880, 0.08);
       return;
     }

@@ -146,6 +146,25 @@ export function CameraView() {
             ctx.lineWidth = 1;
           }
         }
+        // スキャン中: まだ読みがそろっていないマス（指で隠れているなど）を点線で示す
+        const covered = st.scan && !st.scan.result && anchor ? st.scan.covered : undefined;
+        if (covered && st.scan!.progress > 0.05) {
+          ctx.setLineDash([5, 4]);
+          ctx.strokeStyle = "rgba(255,176,32,0.95)";
+          ctx.lineWidth = 2.5;
+          for (let cell = 0; cell < 9; cell++) {
+            if (covered[cell]) continue;
+            const x = (cell % 3) + 0.5;
+            const y = Math.floor(cell / 3) + 0.5;
+            const pts = [slotPoint(face, x - 0.42, y - 0.42), slotPoint(face, x + 0.42, y - 0.42), slotPoint(face, x + 0.42, y + 0.42), slotPoint(face, x - 0.42, y + 0.42)].map(map);
+            ctx.beginPath();
+            pts.forEach((p, i) => (i ? ctx.lineTo(...p) : ctx.moveTo(...p)));
+            ctx.closePath();
+            ctx.stroke();
+          }
+          ctx.setLineDash([]);
+          ctx.lineWidth = 1;
+        }
         // 正面のラベルは下に（上面と重ならないように）
         if (!debug && !anchor) continue;
         const label = map(slotPoint(face, 1.5, anchor ? 3.3 : -0.3));
@@ -173,7 +192,15 @@ export function CameraView() {
         let text = "";
         if (scanning) {
           const reason = st.scan?.reason;
-          text = reason === "duplicate" ? "その面はスキャン済みです。次の面を見せてください" : reason === "no-face" ? "面が見つかりません。キューブを枠いっぱいに近づけてください" : "そのまま動かさないでください…";
+          const hidden = st.scan?.covered ? st.scan.covered.filter((c) => !c).length : 0;
+          text =
+            reason === "duplicate"
+              ? "その面はスキャン済みです。次の面を見せてください"
+              : reason === "no-face"
+                ? "面が見つかりません。キューブを枠いっぱいに近づけてください"
+                : hidden && (st.scan?.progress ?? 0) > 0.5
+                  ? `点線のマス（${hidden}）が読めていません。指をずらしてください`
+                  : "そのまま動かさないでください…";
         } else if (st.cube && !m.faces.length) text = "キューブが見えていません";
         hint.current.textContent = text;
         hint.current.style.display = text ? "" : "none";

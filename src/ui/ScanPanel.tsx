@@ -3,7 +3,7 @@ import { controller, displayColors } from "../app/controller";
 import { settingsStore } from "../app/settings";
 import { useStore } from "../app/store";
 import { labCss } from "../vision/color";
-import { problemMessages } from "../scan/scan";
+import { isUnknownLab, problemMessages } from "../scan/scan";
 import { NetView } from "./NetView";
 
 export function ScanPanel() {
@@ -23,7 +23,10 @@ export function ScanPanel() {
           {scan.result.autoFixed && !problems.length && <div class="small">見せた向きがずれていた面を自動で補正しました。</div>}
         </div>
         {scan.result.colorWarning && <div class="status-banner warn">{scan.result.colorWarning}</div>}
-        <NetView state={scan.edited} colors={colors} problemFacelets={problemFacelets} onCell={(f) => controller.editScanCell(f)} />
+        <NetView state={scan.edited} colors={colors} problemFacelets={problemFacelets} uncertainFacelets={new Set(scan.result.uncertain)} onCell={(f) => controller.editScanCell(f)} />
+        {scan.result.uncertain.length > 0 && !problems.length && (
+          <p class="muted small">点線のマス（{scan.result.uncertain.length}）は、読み取りに自信がなかったか、指で隠れていてピースの組み合わせから決めたマスです。実物と違っていればタップで直してください。</p>
+        )}
         {problems.length > 0 && (
           <ul class="problems">
             {problemMessages(problems, scan.result.names).map((m, i) => (
@@ -58,7 +61,7 @@ export function ScanPanel() {
 
   const step = scan.steps[scan.step];
   const partial: (string | null)[] = new Array(54).fill(null);
-  for (const c of scan.captured) c.labs.forEach((lab, i) => (partial[c.face * 9 + i] = labCss(lab)));
+  for (const c of scan.captured) c.labs.forEach((lab, i) => (partial[c.face * 9 + i] = isUnknownLab(lab) ? null : labCss(lab)));
   return (
     <div>
       <div class="steps">

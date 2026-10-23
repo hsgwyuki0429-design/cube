@@ -16,6 +16,7 @@ export interface CellSample {
   spread: number; // 点ごとのばらつき（大きい = 境界・指がかかっている。映り込みは除いた後）
   valid: boolean;
   glare: number; // 映り込みとして除いた点の割合
+  clip: number; // 白く飛んだ点の割合（大きいと、白・黄・映り込みの区別がつかない）
 }
 
 const GRID = 7;
@@ -63,7 +64,7 @@ export function sampleFace(img: PixelSource, face: { H: Mat3; rot: number }, reg
     const outside = collect(img, face, cx, cy, region, GRID, R, G, B);
     const n = R.length;
     if (n < 8) {
-      out.push({ lab: [0, 0, 0], spread: Infinity, valid: false, glare: 0 });
+      out.push({ lab: [0, 0, 0], spread: Infinity, valid: false, glare: 0, clip: 0 });
       continue;
     }
     const V = R.map((r, i) => Math.max(r, G[i], B[i]));
@@ -116,7 +117,9 @@ export function sampleFace(img: PixelSource, face: { H: Mat3; rot: number }, reg
     const q1 = rs.length >> 2;
     const q3 = Math.min(rs.length - 1, (3 * rs.length) >> 2);
     const spread = Math.max(rs[q3] - rs[q1], gs[q3] - gs[q1], bs[q3] - bs[q1]);
-    out.push({ lab, spread, valid: outside < GRID * GRID * 0.3, glare: glare / n });
+    let nClip = 0;
+    for (let i = 0; i < n; i++) if (clipped(R[i], G[i], B[i])) nClip++;
+    out.push({ lab, spread, valid: outside < GRID * GRID * 0.3, glare: glare / n, clip: nClip / n });
   }
   return out;
 }

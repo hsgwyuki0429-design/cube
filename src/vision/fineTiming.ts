@@ -9,7 +9,16 @@ import { cellInLayer, cellOnFace } from "../track/timing";
 import type { DecodedMove } from "../track/types";
 import type { Mat3 } from "./homography";
 import { slotPoint } from "./layout";
+import type { Lab } from "./color";
 import type { PixelSource } from "./sampler";
+
+// キューブの色らしいか（指・手が乗ったセルは、どの色からも遠い）
+function cubeLike(lab: Lab | undefined, refs: Lab[] | undefined): boolean {
+  if (!lab || !refs) return true;
+  let best = Infinity;
+  for (const r of refs) best = Math.min(best, Math.hypot((lab[0] - r[0]) / 2, lab[1] - r[1], lab[2] - r[2]));
+  return best < 30;
+}
 
 export const CELL_PX = 10;
 // 面の外側も少し含める: 回り始めた層の角は面の輪郭からはみ出し、反対側では隙間が開く。
@@ -30,6 +39,7 @@ const PIXEL_CELL = (() => {
 
 export interface FacePatch {
   slot: number;
+  labs?: Lab[]; // セルの色（指が乗ったセルを除くのに使う）
   rgb: Uint8Array; // S×S×3（スロットの向き: 列 = x、行 = y。面の外側 MARGIN を含む）
   masked: boolean[];
 }
@@ -39,7 +49,7 @@ export interface PatchFrame {
   faces: FacePatch[];
 }
 
-export function facePatch(img: PixelSource, face: { slot: number; H: Mat3; rot: number; masked: boolean[] }): FacePatch {
+export function facePatch(img: PixelSource, face: { slot: number; H: Mat3; rot: number; masked: boolean[]; labs?: Lab[] }): FacePatch {
   const rgb = new Uint8Array(S * S * 3);
   const { width: w, height: h, data } = img;
   for (let i = 0; i < S; i++) {
@@ -62,7 +72,7 @@ export function facePatch(img: PixelSource, face: { slot: number; H: Mat3; rot: 
       }
     }
   }
-  return { slot: face.slot, rgb, masked: [...face.masked] };
+  return { slot: face.slot, rgb, masked: [...face.masked], labs: face.labs?.map((l) => [...l] as Lab) };
 }
 
 // セルごとの画素の差の合計と画素数（RGB の絶対差。面の外側の縁を含む）
@@ -95,7 +105,7 @@ function centerDiff(a: FacePatch, b: FacePatch): number {
 
 // base と f を比べた「回した層だけの動き」: 層の側面のセル（と外側の縁）の差 − 回していないセルの差。
 // 比べられなければ null
-export function layerMotion(base: PatchFrame, f: PatchFrame, orient: number, face: number): number | null {
+export function layerMotion(base: PatchFrame, f: PatchFrame, orient: number, face: number, refs?: Lab[]): number | null {
   let layer = 0;
   let nLayer = 0;
   let still = 0;
@@ -109,6 +119,8 @@ export function layerMotion(base: PatchFrame, f: PatchFrame, orient: number, fac
     const d = cellDiffs(a, b);
     for (let cell = 0; cell < 9; cell++) {
       if (a.masked[cell] || b.masked[cell] || cellOnFace(orient, a.slot, cell, face)) continue;
+      // 指が乗っているセル（どちらかのフレームでキューブの色でない）は使わない。指の動きを層の動きと取り違えないように
+      if (!cubeLike(a.labs?.[cell], refs) || !cubeLike(b.labs?.[cell], refs)) continue;
       if (cellInLayer(orient, a.slot, cell, face)) {
         layer += d.sum[cell];
         nLayer += d.n[cell];
@@ -138,12 +150,12 @@ const MIN_SIGNAL = 6; // 回転途中の差がこれより小さければ（見�
 const FRACTION = 0.08; // 回転途中の差のこの割合を超えたら動いている
 const BASE_GAP_MS = 80; // 基準の静止フレームを、色の読みの開始・終了からこれだけ離す（近すぎると動き始めを含み、遠すぎるとキューブ全体の動きが混ざる）
 
-function noiseFloor(frames: PatchFrame[], base: PatchFrame, from: number, to: number, m: DecodedMove): number {
+function noiseFloor(frames: PatchFrame[], base: PatchFrame, from: number, to: number, m: DecodedMove, refs?: Lab[]): number {
   const face = moveFace(m.move);
   const v: number[] = [];
   for (const f of frames) {
     if (f === base || f.t < from || f.t > to) continue;
-    const x = layerMotion(base, f, m.orient, face);
+    const x = layerMotion(base, f, m.orient, face, refs);
     if (x !== null) v.push(Math.abs(x));
   }
   v.sort((a, b) => a - b);
@@ -151,7 +163,7 @@ function noiseFloor(frames: PatchFrame[], base: PatchFrame, from: number, to: nu
 }
 
 // 回し始めを詰める: coarse は色の読みから求めた開始（静止フレームと動き出しのフレームの中間）
-export function refineStart(frames: PatchFrame[], m: DecodedMove, coarse: number): number | null {
+export function refineStart(frames: PatchFrame[], m: DecodedMove, coarse: number, refs?: Lab[]): number | null {
   const face = moveFace(m.move);
   const k = firstAfter(frames, coarse); // 色の読みで動き出したフレーム
   if (k <= 0 || k >= frames.length) return null;
@@ -160,15 +172,17 @@ export function refineStart(frames: PatchFrame[], m: DecodedMove, coarse: number
   while (b > 0 && frames[b].t > coarse - BASE_GAP_MS) b--;
   const base = frames[b];
   // 回転がはっきり進んだところ（色の読みで動き出したフレームか、その次）の差を基準の大きさにする
-  const ref = Math.max(layerMotion(base, frames[k], m.orient, face) ?? 0, k + 1 < frames.length ? (layerMotion(base, frames[k + 1], m.orient, face) ?? 0) : 0);
+  const ref = Math.max(layerMotion(base, frames[k], m.orient, face, refs) ?? 0, k + 1 < frames.length ? (layerMotion(base, frames[k + 1], m.orient, face, refs) ?? 0) : 0);
   if (ref < MIN_SIGNAL) return null;
-  const tau = Math.max(FRACTION * ref, noiseFloor(frames, base, base.t - 60, base.t, m) * 2.5, 2.5);
+  // 雑音（手の中でキューブ全体が動く・映り込みの変化）は基準から離れるほど大きいので、調べるフレームと同じだけ離れた範囲で測る
+  const span = Math.max(60, frames[k].t - base.t);
+  const tau = Math.max(FRACTION * ref, noiseFloor(frames, base, base.t - span, base.t, m, refs) * 2.5, 2.5);
   if (tau >= ref) return null;
   // k から遡って、差がしきい値を超え続けている最初のフレーム（比べられないフレームを挟んだら諦める）
   let j = k;
   for (;;) {
     if (j - 1 <= b) return null;
-    const v = layerMotion(base, frames[j - 1], m.orient, face);
+    const v = layerMotion(base, frames[j - 1], m.orient, face, refs);
     if (v === null) return null;
     if (v <= tau) break;
     j--;
@@ -180,7 +194,7 @@ export function refineStart(frames: PatchFrame[], m: DecodedMove, coarse: number
 }
 
 // 回し終わりを詰める: coarse は色の読みから求めた終了（動いていたフレームと止まったフレームの中間）
-export function refineEnd(frames: PatchFrame[], m: DecodedMove, coarse: number): number | null {
+export function refineEnd(frames: PatchFrame[], m: DecodedMove, coarse: number, refs?: Lab[]): number | null {
   const face = moveFace(m.move);
   const e = firstAfter(frames, coarse); // 色の読みで止まったフレーム
   if (e <= 1 || e >= frames.length) return null;
@@ -191,14 +205,15 @@ export function refineEnd(frames: PatchFrame[], m: DecodedMove, coarse: number):
   const base = frames[b];
   // 回転の途中（止まる 1〜3 フレーム前）の差を基準の大きさにする
   let ref = 0;
-  for (let j = Math.max(0, e - 3); j < e; j++) ref = Math.max(ref, layerMotion(base, frames[j], m.orient, face) ?? 0);
+  for (let j = Math.max(0, e - 3); j < e; j++) ref = Math.max(ref, layerMotion(base, frames[j], m.orient, face, refs) ?? 0);
   if (ref < MIN_SIGNAL) return null;
-  const tau = Math.max(FRACTION * ref, noiseFloor(frames, base, base.t, base.t + 60, m) * 2.5, 2.5);
+  const span = Math.max(60, base.t - frames[Math.max(0, e - 3)].t);
+  const tau = Math.max(FRACTION * ref, noiseFloor(frames, base, base.t, base.t + span, m, refs) * 2.5, 2.5);
   if (tau >= ref) return null;
   // 止まる前のフレームから進んで、差がしきい値を下回る直前のフレーム（比べられないフレームを挟んだら諦める）
   let j = -1;
   for (let i = Math.max(0, e - 3); i < b; i++) {
-    const v = layerMotion(base, frames[i], m.orient, face);
+    const v = layerMotion(base, frames[i], m.orient, face, refs);
     if (v === null) {
       if (j >= 0) return null;
       continue;
@@ -207,7 +222,7 @@ export function refineEnd(frames: PatchFrame[], m: DecodedMove, coarse: number):
     else if (j >= 0) break;
   }
   if (j < 0 || j + 1 > b) return null;
-  if (j + 1 < b && layerMotion(base, frames[j + 1], m.orient, face) === null) return null;
+  if (j + 1 < b && layerMotion(base, frames[j + 1], m.orient, face, refs) === null) return null;
   const end = (frames[j].t + frames[j + 1].t) / 2;
   // 色の読みより早くはならず、遅くても 3 フレームまで
   if (end < coarse - 1 || end - frames[e - 1].t > 3.5 * (frames[e].t - frames[e - 1].t)) return null;

@@ -224,7 +224,9 @@ export function processFrame(
         const p = applyH(f.H, 1.5, 1.5);
         return Math.hypot(p[0] - c[0], p[1] - c[1]) < pitch * 0.5;
       })
-        ? 4
+        ? // 直前のフレームの面の位置を強く優先する（指で 1 段隠れたとき、隣の面の段へ窓がずれないように。
+          // 1 フレームの間にキューブが 1 段分動くことはまずない）
+          8
         : 0;
     };
     let faces = findCubeFaces(img, expandBlocks(quads, prevFaces.map((f) => f.H)), config, scorer, faceScorer, refs);
@@ -246,6 +248,20 @@ export function processFrame(
         return nearestNamed(lab);
       };
       const recent = memory.last && t - memory.last.t < 600 ? memory.last : null;
+      // 直前の正面が見つからず、見つかった面がどれも直前の上・横の面の位置にある（指で正面が隠れた）なら、
+      // その面を正面に格上げしない。格上げすると、上の面の色を正面の色として読み、ありもしない手に見える。
+      // このフレームは読まずに飛ばす（持ち替えで本当に正面が変わったなら、600ms 後には普通に選び直す）
+      if (recent) {
+        const prevA = recent.faces.find((f) => f.slot === 2 && !(f as { held?: boolean }).held);
+        const near = (H: Mat3, G: Mat3) => {
+          const a = applyH(H, 1.5, 1.5);
+          const b = applyH(G, 1.5, 1.5);
+          return Math.hypot(a[0] - b[0], a[1] - b[1]) < recent.pitch * 1.2;
+        };
+        const anchorSeen = prevA && faces.some((f) => near(f.H, prevA.H));
+        const onlyOthers = faces.every((f) => recent.faces.some((p) => p.slot !== 2 && near(f.H, p.H)));
+        if (prevA && !anchorSeen && onlyOthers) return { faces: [], quads: quadsOut };
+      }
       let anchor: number | undefined;
       if (recent) {
         const same = faces.map((f, i) => ({ i, k: keyOf(f.H), a: faceArea(f.H) })).filter((x) => x.k === recent.centerKey);
@@ -303,7 +319,8 @@ export function processFrame(
       spread: samples.map((s) => s.spread),
       valid: samples.map((s) => s.valid && s.spread < config.maxSpread),
       // 回転途中の層のステッカーは格子に合わず四角形が見つからないので、推定した位置の色は軽く扱う
-      weight: Array.from({ length: 9 }, (_, i) => (held ? 0.6 : config.mode === "guide" || !p.support || p.support[i] ? 1 : 0.6)),
+      // 白く飛んだセル（強い映り込み）は、白・黄・映り込みの区別がつかないので軽く扱う
+      weight: Array.from({ length: 9 }, (_, i) => (held ? 0.6 : config.mode === "guide" || !p.support || p.support[i] ? 1 : 0.6) * (samples[i].clip > 0.5 ? 0.35 : 1)),
       masked: new Array(9).fill(false),
     };
     maskHands(face, hands);

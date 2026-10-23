@@ -8,6 +8,7 @@ import { cancelTimer, inspectionTick, newScramble, setPenalty, stopManually, tim
 import { MOVE_NAMES, relativeMove } from "../cube/model";
 import type { Solve } from "../app/storage";
 import { TrackStatus } from "./FreePanel";
+import { Cube3D } from "./Cube3D";
 import { viewOrient } from "./notation";
 
 function useTicker(active: boolean): number {
@@ -47,6 +48,116 @@ export function AnalysisBadge({ solve, progress }: { solve: Solve; progress?: nu
   return null;
 }
 
+// 止めた後の結果。「タイム」（止めた瞬間に速報、解析で確定）と「手順の再構成」（全フレームを解析して、
+// 時間がかかっても正確に）を分けて見せる
+function SolveResult({ solve, progress, startedAt, notation }: { solve: Solve; progress: number; startedAt: number; notation: "relative" | "absolute" }) {
+  const now = useTicker(solve.analysis === "pending");
+  const effective = solve.penalty === "DNF" ? Infinity : solve.timeMs + (solve.penalty === "+2" ? 2000 : 0);
+  const pending = solve.analysis === "pending";
+  const elapsed = startedAt ? (now - startedAt) / 1000 : 0;
+  const eta = pending && progress > 0.05 ? Math.max(0, (elapsed * (1 - progress)) / progress) : null;
+  const inferred = solve.moves.filter((m) => m.inferred).length;
+  return (
+    <div>
+      <div class="result-block">
+        <div class="result-head">
+          タイム
+          <span class="spacer" />
+          <AnalysisBadge solve={solve} progress={progress} />
+        </div>
+        <div class="bigtime">
+          {formatTime(effective)}
+          {solve.penalty === "+2" && <span class="small muted"> (+2)</span>}
+        </div>
+        <div class="muted small" style={{ textAlign: "center" }}>
+          最初の手の回し始め 〜 最後の手の回し終わり{solve.provisionalMs !== undefined && solve.analysis === "done" ? `（速報値 ${formatTime(solve.provisionalMs)}）` : ""}
+        </div>
+        <div class="btn-row" style={{ justifyContent: "center", marginTop: 8 }}>
+          <button class="btn small" onClick={() => setPenalty(solve.id, solve.penalty === "+2" ? "" : "+2")}>
+            +2
+          </button>
+          <button class="btn small" onClick={() => setPenalty(solve.id, solve.penalty === "DNF" ? "" : "DNF")}>
+            DNF
+          </button>
+        </div>
+      </div>
+
+      <div class="result-block">
+        <div class="result-head">
+          手順の再構成
+          <span class="spacer" />
+          <span class="muted small">{pending ? "録画を全フレーム解析中" : solve.analysis === "done" ? "全フレームから確定" : solve.analysis === "failed" ? "解析できず（リアルタイムの結果）" : "リアルタイムの結果"}</span>
+        </div>
+        {pending ? (
+          <div>
+            <div class="progress">
+              <div style={{ width: `${Math.round(progress * 100)}%` }} />
+            </div>
+            <div class="muted small" style={{ marginTop: 6 }}>
+              {Math.round(progress * 100)}%{eta !== null ? `・あと約 ${Math.ceil(eta)} 秒` : ""}。指で隠れた手も、スクランブル後と完成の両側から辻褄が合うように解き直しています。
+            </div>
+          </div>
+        ) : (
+          <>
+            <div class="stats">
+              <div class="stat">
+                <div class="k">手数</div>
+                <div class="v">{solve.moves.length}</div>
+              </div>
+              <div class="stat">
+                <div class="k">TPS</div>
+                <div class="v">{solve.tps.toFixed(2)}</div>
+              </div>
+              <div class="stat">
+                <div class="k">推定した手</div>
+                <div class="v small">{inferred ? `${inferred} 手` : "なし"}</div>
+              </div>
+            </div>
+            {solve.splits && (
+              <table class="list split-table small" style={{ marginTop: 10 }}>
+                <tbody>
+                  {solve.splits.map((s, i) => {
+                    const prev = i ? solve.splits![i - 1] : { t: 0, moves: 0 };
+                    return (
+                      <tr key={s.name}>
+                        <td>{s.name}</td>
+                        <td class="muted">{s.moves - prev.moves} 手</td>
+                        <td>{formatTime(s.t - prev.t)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            )}
+            {solve.moves.length > 0 && (
+              <div class="moves" style={{ marginTop: 10, maxHeight: 120 }}>
+                {solve.moves.map((m, i) => (
+                  <span key={i} class={`mv${m.inferred ? " inferred" : ""}`} title={`${(m.t / 1000).toFixed(2)}s${m.inferred ? "（直接は見えず、前後から推定）" : ""}`}>
+                    {notation === "relative" ? m.r : m.m}
+                  </span>
+                ))}
+              </div>
+            )}
+            {solve.moves.length > 0 && solve.scramble && (
+              <div style={{ marginTop: 10 }}>
+                <div class="muted small">3D で再生（スクランブル後から。3D 内の表記はセンター色基準）</div>
+                <div style={{ maxWidth: 320 }}>
+                  <Cube3D key={`${solve.id}-${solve.analysis}`} epoch={0} setupMoves={[]} moves={[]} orient={null} controls setupAlg={solve.scramble} alg={solve.moves.map((m) => m.m).join(" ")} />
+                </div>
+              </div>
+            )}
+          </>
+        )}
+        <div class="btn-row" style={{ marginTop: 10 }}>
+          <button class="btn small" onClick={() => controller.store.set({ screen: "history" })}>
+            履歴
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function TimerPanel() {
   const t = useStore(timerStore, (s) => s);
   const cube = useStore(controller.store, (s) => s.cube);
@@ -75,67 +186,7 @@ export function TimerPanel() {
     <div>
       {(t.phase === "idle" || t.phase === "done") && (
         <>
-          {t.phase === "done" && t.result && (
-            <div>
-              <div class="bigtime">
-                {formatTime(t.result.penalty === "DNF" ? Infinity : t.result.timeMs + (t.result.penalty === "+2" ? 2000 : 0))}
-                {t.result.penalty === "+2" && <span class="small muted"> (+2)</span>}
-              </div>
-              <div style={{ textAlign: "center", marginBottom: 8 }}>
-                <AnalysisBadge solve={t.result} progress={t.analysisProgress} />
-              </div>
-              <div class="stats">
-                <div class="stat">
-                  <div class="k">手数</div>
-                  <div class="v">{t.result.moves.length}</div>
-                </div>
-                <div class="stat">
-                  <div class="k">TPS</div>
-                  <div class="v">{t.result.tps.toFixed(2)}</div>
-                </div>
-                <div class="stat">
-                  <div class="k">計測</div>
-                  <div class="v small">{t.result.tracked ? "自動" : "手動停止"}</div>
-                </div>
-              </div>
-              {t.result.splits && (
-                <table class="list split-table small" style={{ marginTop: 10 }}>
-                  <tbody>
-                    {t.result.splits.map((s, i) => {
-                      const prev = i ? t.result!.splits![i - 1] : { t: 0, moves: 0 };
-                      return (
-                        <tr key={s.name}>
-                          <td>{s.name}</td>
-                          <td class="muted">{s.moves - prev.moves} 手</td>
-                          <td>{formatTime(s.t - prev.t)}</td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              )}
-              {t.result.moves.length > 0 && (
-                <div class="moves" style={{ marginTop: 10, maxHeight: 120 }}>
-                  {t.result.moves.map((m, i) => (
-                    <span key={i} class={`mv${m.inferred ? " inferred" : ""}`} title={`${(m.t / 1000).toFixed(2)}s`}>
-                      {settings.notation === "relative" ? m.r : m.m}
-                    </span>
-                  ))}
-                </div>
-              )}
-              <div class="btn-row" style={{ marginTop: 10 }}>
-                <button class="btn small" onClick={() => setPenalty(t.result!.id, t.result!.penalty === "+2" ? "" : "+2")}>
-                  +2
-                </button>
-                <button class="btn small" onClick={() => setPenalty(t.result!.id, t.result!.penalty === "DNF" ? "" : "DNF")}>
-                  DNF
-                </button>
-                <button class="btn small" onClick={() => controller.store.set({ screen: "history" })}>
-                  リプレイ・履歴
-                </button>
-              </div>
-            </div>
-          )}
+          {t.phase === "done" && t.result && <SolveResult solve={t.result} progress={t.analysisProgress} startedAt={t.analysisStartedAt} notation={settings.notation} />}
           <div class="btn-row" style={{ marginTop: 14 }}>
             <button class="btn primary" onClick={() => newScramble()}>
               {t.phase === "done" ? "次のソルブ" : "スクランブルを出す"}
