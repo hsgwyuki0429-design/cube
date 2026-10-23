@@ -94,7 +94,9 @@ export async function runDemo(app: Controller, syn: SyntheticCube, seed = Date.n
     }
     await waitFor(() => timerStore.get().phase === "inspection", 5000);
     await sleep(1500);
-    for (const m of await solveState(syn.state)) await turn(m);
+    const solution = await solveState(syn.state);
+    syn.solveFrom = syn.truth.length;
+    for (const m of solution) await turn(m);
     await waitFor(() => timerStore.get().phase === "done", 8000);
     return;
   }

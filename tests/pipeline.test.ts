@@ -20,11 +20,14 @@ function session(seed: number, eye: Vec3, moves: number, orient = 0, opts: { gap
   // solveTo: 完成の数手前から始めて、最後は完成させる（ステッカーレスの完成面を検出できるか）
   const ending = opts.solveTo ? Array.from({ length: moves }, (_, i) => i).reduce<number[]>((acc) => [...acc, randomMove(rnd, acc[acc.length - 1], ALL_MOVES)], []) : [];
   let state = opts.solveTo ? applyMoves(solvedState(), invertMoves(ending)) : scrambled(rnd);
-  const engine = new TrackerEngine(state, REFS);
+  const engine = new TrackerEngine(state, REFS, process.env.ENGINE_OPTS ? JSON.parse(process.env.ENGINE_OPTS) : {});
   const memory = { last: null };
   let t = 0;
   let frameSeed = seed * 1000;
   const frame = (occluded: boolean) => {
+    const oc = { center: [300 + rnd() * 60, 250 + rnd() * 60] as [number, number], radius: 70, color: [215, 165, 135] as [number, number, number] };
+    // アプリでは指は MediaPipe で手として隠れる（同じようにマスクとして渡す）
+    const hands = occluded ? [Array.from({ length: 12 }, (_, i) => [oc.center[0] + 80 * Math.cos((i * Math.PI) / 6), oc.center[1] + 80 * Math.sin((i * Math.PI) / 6)] as [number, number])] : [];
     const img = renderCube({
       width: 640,
       height: 480,
@@ -32,11 +35,11 @@ function session(seed: number, eye: Vec3, moves: number, orient = 0, opts: { gap
       orient,
       eye,
       seed: frameSeed++,
-      occluders: occluded ? [{ center: [300 + rnd() * 60, 250 + rnd() * 60], radius: 70, color: [215, 165, 135] }] : [],
+      occluders: occluded ? [oc] : [],
       gap: opts.gap,
       seam: opts.seam,
     });
-    const r = processFrame(cv, img, t, DEFAULT_PIPELINE, memory, REFS);
+    const r = processFrame(cv, img, t, DEFAULT_PIPELINE, memory, REFS, process.env.NO_MASK ? [] : hands);
     engine.push({ t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid })) });
     t += 33;
   };

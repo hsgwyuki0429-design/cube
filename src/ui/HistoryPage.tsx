@@ -4,6 +4,7 @@ import { type Solve, averageOf, effectiveTime, formatTime } from "../app/storage
 import { useStore } from "../app/store";
 import { deleteSolve, replaceSolves, setPenalty, timerStore } from "../app/timer";
 import { Cube3D } from "./Cube3D";
+import { AnalysisBadge } from "./TimerPanel";
 
 function download(name: string, text: string, type: string) {
   const a = document.createElement("a");
@@ -73,6 +74,7 @@ export function HistoryPage() {
           <div class="card-head">
             {new Date(selected.date).toLocaleString()} ・ {formatTime(effectiveTime(selected))}
             {selected.penalty && <span class="chip">{selected.penalty}</span>}
+            <AnalysisBadge solve={selected} />
             <span class="spacer" />
             <button class="btn small" onClick={() => setPenalty(selected.id, selected.penalty === "+2" ? "" : "+2")}>
               +2

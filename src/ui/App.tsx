@@ -11,7 +11,8 @@ import { ScanPanel } from "./ScanPanel";
 import { SettingsPage } from "./SettingsPage";
 import { TimerPanel } from "./TimerPanel";
 import { mergeQuickRepeats } from "../track/merge";
-import { moveLabel as labelOf, viewOrient } from "./notation";
+import { rotateOrientation } from "../cube/model";
+import { moveLabel as labelOf } from "./notation";
 
 function Logo() {
   return (
@@ -53,9 +54,10 @@ function Main() {
   const app = useStore(controller.store, (s) => ({ panel: s.panel, scan: !!s.scan, cube: s.cube, demo: s.demo }));
   const track = useStore(controller.store, (s) => s.track);
   const base = useStore(controller.store, (s) => s.baseMoves);
-  const settings = useStore(settingsStore, (s) => ({ follow: s.follow, viewpoint: s.viewpoint, scheme: s.scheme }));
+  const settings = useStore(settingsStore, (s) => ({ view: s.cube3dView, mirror: s.mirror, scheme: s.scheme }));
   const moves = track?.moves.map((m) => m.move) ?? [];
-  const orient = settings.follow && track ? viewOrient(track.orient, settings) : null;
+  // 連続的な姿勢が来ないとき（ガイド枠モードなど）の、離散的な姿勢での表示
+  const orient = settings.view === "fixed" || !track ? null : settings.view === "user" ? rotateOrientation(track.orient, "y", 2) : track.orient;
 
   return (
     <main class="workspace">
@@ -66,7 +68,15 @@ function Main() {
         <div class="card cube-card">
           <div class="cube-wrap">
             {app.cube ? (
-              <Cube3D epoch={app.cube.epoch} setupMoves={app.cube.setupMoves} moves={moves} orient={orient} colors={settings.scheme === "other" ? app.cube.display : null} />
+              <Cube3D
+                epoch={app.cube.epoch}
+                setupMoves={app.cube.setupMoves}
+                moves={moves}
+                orient={orient}
+                view={settings.view}
+                mirror={settings.view === "camera" && settings.mirror && !app.demo}
+                colors={settings.scheme === "other" ? app.cube.display : null}
+              />
             ) : (
               <div class="cube3d">
                 <div class="loading">スキャンすると、ここに手元のキューブが再現されます</div>

@@ -17,11 +17,17 @@ export function expandBlocks(quads: Quad[], faces: Mat3[], shrink = 0.9): Quad[]
   const inverses = faces.map(invertH);
   const out: Quad[] = [];
   for (const q of quads) {
-    // このブロックが乗っている面（直前のフレーム）
+    // このブロックが乗っている面（直前のフレーム）。隣の面のブロックを別の面の格子で割らないよう、
+    // 中心が面の内側にあり、四隅も面からはみ出さないものに限る
     let fi = -1;
     for (let i = 0; i < faces.length && fi < 0; i++) {
       const [u, v] = applyH(inverses[i], q.center[0], q.center[1]);
-      if (u > -0.2 && u < 3.2 && v > -0.2 && v < 3.2) fi = i;
+      if (u < 0.1 || u > 2.9 || v < 0.1 || v > 2.9) continue;
+      const inside = q.corners.every((c) => {
+        const [cu, cv] = applyH(inverses[i], c[0], c[1]);
+        return cu > -0.3 && cu < 3.3 && cv > -0.3 && cv < 3.3;
+      });
+      if (inside) fi = i;
     }
     if (fi < 0) {
       out.push(q);

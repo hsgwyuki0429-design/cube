@@ -8,7 +8,8 @@ import { type CameraInfo, CameraSource, cameraErrorMessage, listCameras } from "
 import { type Lab, NAMED_COLORS, labToRgb, rgbCss } from "../vision/color";
 import { HandsClient } from "../vision/handsClient";
 import type { FrameMessage } from "../vision/protocol";
-import { VisionClient } from "../vision/visionClient";
+import { FrameRecorder } from "../vision/recorder";
+import { RefineClient, VisionClient } from "../vision/visionClient";
 import { type Settings, settingsStore } from "./settings";
 import { type Calibration, loadCalibration, saveCalibration } from "./storage";
 import { createStore } from "./store";
@@ -85,6 +86,8 @@ class Controller {
   readonly camera = new CameraSource();
   vision: VisionClient | null = null;
   readonly hands = new HandsClient();
+  readonly recorder = new FrameRecorder(); // タイマー計測中の録画（ソルブ後の精密解析用）
+  readonly refiner = new RefineClient();
   private capture = new FaceCapture();
   private frameListeners = new Set<(m: FrameMessage) => void>();
   private trackListeners = new Set<(u: TrackUpdate) => void>();
@@ -104,9 +107,10 @@ class Controller {
       .then(({ opencv, ms }) => this.store.set({ vision: opencv ? "ready" : "guide-only", visionLoadMs: ms }))
       .catch(() => this.store.set({ vision: "guide-only" }));
     this.vision.onResult((m) => this.onFrame(m));
-    this.camera.onFrame((now) => {
-      this.vision?.submit(this.camera.video, now);
-      if (settingsStore.get().handMask && !this.store.get().demo) this.hands.submit(this.camera.video, now);
+    this.camera.onFrame((t) => {
+      this.vision?.submit(this.camera.video, t);
+      if (this.recorder.recording) this.recorder.add(this.camera.video, t);
+      if (settingsStore.get().handMask && !this.store.get().demo) this.hands.submit(this.camera.video, t);
     });
     this.hands.onUpdate = (hulls) => this.vision?.setHands(hulls);
     this.statsTimer = window.setInterval(() => {
@@ -139,7 +143,7 @@ class Controller {
   engineOptions(s: Settings = settingsStore.get()): Partial<EngineOptions> {
     return {
       decoder: { beamWidth: s.beamWidth, maxMovesPerStep: s.maxMovesPerStep, rotationCost: s.rotationCost },
-      observer: { stableFrames: s.stableFrames },
+      observer: { stableMs: s.stableMs },
       colors: { maxDistance: s.maxColorDistance },
     };
   }
@@ -173,7 +177,7 @@ class Controller {
     const s = settingsStore.get();
     this.store.set({ camera: "starting", cameraError: null });
     try {
-      const info = await this.camera.start({ deviceId: s.cameraId || undefined, facingMode: s.facingMode, height: s.resolution });
+      const info = await this.camera.start({ deviceId: s.cameraId || undefined, facingMode: s.facingMode, height: s.resolution, frameRate: s.cameraFps });
       this.store.set({ camera: "on", cameraInfo: info });
       this.refreshCameras();
     } catch (e) {
@@ -345,6 +349,13 @@ class Controller {
     if (!refs || !names) return this.beginScan();
     this.startTrackingFrom(solvedState(), refs, names);
     this.toast("完成状態から追跡し直します");
+  }
+
+  // タイマー用の録画を始める（インスペクション中は直近の数秒だけ残す）
+  async startRecording(keepMs = 4000): Promise<boolean> {
+    if (!settingsStore.get().analyzeSolves || this.store.get().camera !== "on") return false;
+    this.recorder.clear();
+    return this.recorder.start(this.camera.video, settingsStore.get().workWidth, keepMs);
   }
 
   clearMoves(): void {

@@ -38,6 +38,8 @@ export interface DetectedFace {
   labs: Lab[];
   spread: number[];
   valid: boolean[];
+  weight: number[]; // セルの信頼度（四角形が見つかったセル 1、格子から推定したセル・保持した面は低め）
+  masked: boolean[]; // 手で隠れている
 }
 
 export interface FrameResult {
@@ -87,7 +89,10 @@ function maskHands(face: DetectedFace, hands: Pt[][]): void {
       [x - 0.3, y + 0.3],
       [x + 0.3, y + 0.3],
     ].map(([px, py]) => slotPoint(face, px, py));
-    if (hands.some((hull) => probes.some((p) => pointInPolygon(p, hull)))) face.valid[cell] = false;
+    if (hands.some((hull) => probes.some((p) => pointInPolygon(p, hull)))) {
+      face.valid[cell] = false;
+      face.masked[cell] = true;
+    }
   }
 }
 
@@ -234,6 +239,9 @@ export function processFrame(
       labs: samples.map((s) => s.lab),
       spread: samples.map((s) => s.spread),
       valid: samples.map((s) => s.valid && s.spread < config.maxSpread),
+      // 回転途中の層のステッカーは格子に合わず四角形が見つからないので、推定した位置の色は軽く扱う
+      weight: Array.from({ length: 9 }, (_, i) => (held ? 0.6 : config.mode === "guide" || !p.support || p.support[i] ? 1 : 0.6)),
+      masked: new Array(9).fill(false),
     };
     maskHands(face, hands);
     out.push(face);

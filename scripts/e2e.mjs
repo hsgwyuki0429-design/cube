@@ -101,13 +101,42 @@ try {
         continue;
       }
       await page.screenshot({ path: `${OUT}/seed${seed}-timer-done.png` });
+      const live = await page.evaluate(() => window.__cubevisionTimer.get().result);
+      // 録画の精密解析が終わるまで待つ
+      await page.waitForFunction(() => window.__cubevisionTimer.get().result?.analysis !== "pending", null, { timeout: 240000, polling: 500 }).catch(() => undefined);
+      await page.screenshot({ path: `${OUT}/seed${seed}-timer-analyzed.png` });
       const r = await page.evaluate(() => {
         const t = window.__cubevisionTimer.get();
-        return { result: t.result, solves: t.solves.length, solved: window.__cubevision.store.get().track?.solved };
+        const syn = window.__cubevision.synthetic;
+        return { result: t.result, solves: t.solves.length, solved: window.__cubevision.store.get().track?.solved, truth: syn ? syn.truth.slice(syn.solveFrom).map((x) => ({ ...x })) : [] };
       });
-      const ok = r.result && r.result.tracked && r.solved && r.result.timeMs > 0 && r.result.moves.length > 5;
-      console.log(`seed ${seed} timer: ${ok ? "OK" : "NG"} time ${(r.result?.timeMs / 1000).toFixed(2)}s moves ${r.result?.moves.length} tps ${r.result?.tps.toFixed(2)} splits ${JSON.stringify(r.result?.splits?.map((x) => [x.name, x.moves]))}`);
-      results.push({ seed, acc: ok ? 1 : 0, finalOk: !!ok, scanSec: 0 });
+      // 正解: 解き始め（インスペクション後の最初の手）から最後の手まで
+      const n = r.result?.moves.length ?? 0;
+      const sol = r.truth;
+      const truthMs = sol.length ? sol[sol.length - 1].t - sol[0].start : NaN;
+      const ok = r.result && r.result.tracked && r.solved && r.result.timeMs > 0 && n > 5;
+      const analysisOk = r.result?.analysis === "done" || process.env.E2E_ALLOW_NO_ANALYSIS;
+      console.log(
+        `seed ${seed} timer: ${ok ? "OK" : "NG"} live ${(live?.timeMs / 1000).toFixed(3)}s → ${r.result?.analysis} ${(r.result?.timeMs / 1000).toFixed(3)}s (truth ≈ ${(truthMs / 1000).toFixed(3)}s, ${sol.length} moves) moves ${n} tps ${r.result?.tps.toFixed(2)} splits ${JSON.stringify(r.result?.splits?.map((x) => [x.name, x.moves]))}`,
+      );
+      if (process.env.E2E_VERBOSE) {
+        const t0 = sol[0]?.start ?? 0;
+        console.log(`  truth : ${sol.map((x) => `${name(x.move)}@${Math.round(x.start - t0)}-${Math.round(x.t - t0)}`).join(" ")}`);
+        console.log(`  result: ${(r.result?.moves ?? []).map((x) => `${x.m}${x.inferred ? "?" : ""}@${x.s}-${x.t}`).join(" ")}`);
+        console.log(`  live  : ${(live?.moves ?? []).map((x) => `${x.m}@${x.s}-${x.t}`).join(" ")}`);
+        const dbg = await page.evaluate(() => window.__cubevisionAnalysis);
+        const raw = dbg?.result;
+        if (raw) {
+          const b = raw.start;
+          console.log(`  raw   : ${raw.raw.map((x) => `${name(x.move)}${x.inferred ? "?" : ""}[${Math.round(x.t0 - b)},${Math.round(x.t - b)}]@${Math.round(x.start - b)}-${Math.round(x.end - b)}`).join(" ")}`);
+          console.log(`  frames ${raw.frames} status ${raw.status} forced ${raw.forced} recording ${JSON.stringify(dbg.recording)} stats ${JSON.stringify(await page.evaluate(() => window.__cubevision.store.get().stats))}`);
+        }
+      }
+      results.push({ seed, acc: ok && analysisOk ? 1 : 0, finalOk: !!ok, scanSec: 0 });
+      if (ok && !analysisOk) {
+        failures++;
+        console.log(logs.slice(-30).join("\n"));
+      }
       if (!ok) {
         failures++;
         console.log(logs.slice(-30).join("\n"));

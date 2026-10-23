@@ -3,6 +3,7 @@ import { controller } from "../app/controller";
 import { DEFAULT_SETTINGS, type Settings, settingsStore, updateSettings } from "../app/settings";
 import { clearCalibration } from "../app/storage";
 import { useStore } from "../app/store";
+import { FrameRecorder } from "../vision/recorder";
 
 function Field(props: { label: string; desc?: string; children: preact.ComponentChildren }) {
   return (
@@ -73,6 +74,9 @@ export function SettingsPage() {
           <Field label="解像度">
             <Select k="resolution" options={[[720, "720p（推奨）"], [1080, "1080p"]]} />
           </Field>
+          <Field label="フレームレート" desc="速い回転（10手/秒前後）を追うには 60fps を推奨。実際の値は端末とカメラで決まり、画面上部に表示されます">
+            <Select k="cameraFps" options={[[60, "60fps（推奨）"], [30, "30fps"]]} />
+          </Field>
           <Field label="鏡像表示" desc="インカメラで自分を見るときは ON が自然です（認識には影響しません）">
             <Toggle k="mirror" />
           </Field>
@@ -93,14 +97,24 @@ export function SettingsPage() {
           <Field label="手順の表記" desc="持ち方基準: 今の持ち方で見た R/U など。センター色基準: 白=U、緑=F のように色で固定（スマートキューブと同じ）">
             <Select k="notation" options={[["relative", "持ち方基準"], ["absolute", "センター色基準"]]} />
           </Field>
-          <Field label="3D の視点" desc="カメラが自分の方を向いている（インカメラ・PCのカメラ）なら「自分から見た向き」">
+          <Field label="持ち方基準の向き" desc="カメラが自分の方を向いている（インカメラ・PCのカメラ）なら「自分から見た向き」。R・U などの表記がこの向きで決まります">
             <Select k="viewpoint" options={[["user", "自分から見た向き"], ["camera", "カメラから見た向き"]]} />
           </Field>
-          <Field label="3D をキューブの向きに合わせる">
-            <Toggle k="follow" />
+          <Field label="3D キューブの向き" desc="カメラの映像と同じ傾き: 映っているキューブの角度にそのまま追従（鏡像表示なら 3D も鏡像）。自分から見た傾き: 手元で見えている側を同じ角度で表示">
+            <Select k="cube3dView" options={[["camera", "カメラの映像と同じ傾きで追従"], ["user", "自分から見た傾きで追従"], ["fixed", "固定（標準の向き）"]]} />
           </Field>
           <Field label="インスペクション（15秒）">
             <Toggle k="inspection" />
+          </Field>
+          <Field
+            label="ソルブ後に録画を精密解析"
+            desc={
+              FrameRecorder.available()
+                ? "計測中の映像を端末内に一時的に録画し、止めた後で全フレームを1枚ずつ解析して、タイムと手順を確定します（数秒〜数十秒。映像は保存も送信もしません）"
+                : "このブラウザは録画（WebCodecs）に対応していないため、リアルタイムの結果だけを使います"
+            }
+          >
+            <Toggle k="analyzeSolves" />
           </Field>
           <Field label="効果音">
             <Toggle k="sound" />
@@ -120,11 +134,11 @@ export function SettingsPage() {
           <Field label="処理の解像度（横幅 px）" desc="大きいほど小さく映ったキューブも検出できますが重くなります">
             <NumberInput k="workWidth" min={480} max={1280} step={80} />
           </Field>
-          <Field label="安定判定のフレーム数" desc="小さいほど速い回転に追従しますが誤検出が増えます">
-            <NumberInput k="stableFrames" min={2} max={6} step={1} />
+          <Field label="安定判定の時間（ms）" desc="層がそろって見える時間がこれ以上あれば読み取ります。短いほど速い回転に追従しますが、誤読が増えます（30fpsのカメラでは33で1フレーム）">
+            <NumberInput k="stableMs" min={15} max={120} step={1} />
           </Field>
-          <Field label="1回の観測で探す最大手数" desc="速く回す人は 2〜3。3 は重くなります">
-            <NumberInput k="maxMovesPerStep" min={1} max={3} step={1} />
+          <Field label="1回の観測で探す最大手数" desc="観測と観測の間に進んだかもしれない手数。速く回す人は 3〜4（4 は重くなります）">
+            <NumberInput k="maxMovesPerStep" min={1} max={4} step={1} />
           </Field>
           <Field label="ビーム幅（仮説の数）">
             <NumberInput k="beamWidth" min={8} max={96} step={8} />
@@ -142,8 +156,8 @@ export function SettingsPage() {
             <button
               class="btn small"
               onClick={() => {
-                const { detection, handMask, workWidth, stableFrames, maxMovesPerStep, beamWidth, rotationCost, maxColorDistance, debug } = DEFAULT_SETTINGS;
-                settingsStore.set({ detection, handMask, workWidth, stableFrames, maxMovesPerStep, beamWidth, rotationCost, maxColorDistance, debug });
+                const { detection, handMask, workWidth, stableMs, maxMovesPerStep, beamWidth, rotationCost, maxColorDistance, debug } = DEFAULT_SETTINGS;
+                settingsStore.set({ detection, handMask, workWidth, stableMs, maxMovesPerStep, beamWidth, rotationCost, maxColorDistance, debug });
               }}
             >
               認識設定を初期値に戻す

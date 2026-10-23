@@ -9,6 +9,7 @@
 
 フェーズ0（技術検証ハーネス）のコードは削除し、**完成品としてのアプリ**に作り直した。
 スキャン → 追跡 → 3D 再現 → タイマー → 履歴 まで一通り動く。合成カメラ（デモ）での E2E が通ることを品質の基準にしている。
+10 手/秒前後の高速回転、ソルブ後の精密解析によるタイムの確定、3D キューブの傾き追従まで実装済み。
 
 元の企画は `docs/cube-vision-plan.md`（オンライン対戦などはまだ範囲外）。
 
@@ -39,8 +40,10 @@ src/vision Vision             ← 映像 → 面の格子・各セルの Lab
 ### 4. メインスレッドを塞がない
 
 - 画像認識と追跡エンジンは `src/vision/vision.worker.ts`（OpenCV.js 約 13MB もここだけで読む）
+- ソルブ後の精密解析は同じ Worker スクリプトの**別インスタンス**（`RefineClient`）で動かし、リアルタイムの追跡を止めない
 - 手の検出は `src/vision/hands.worker.ts`、ソルバーは `src/cube/solver.worker.ts`
-- フレーム取得は `video.requestVideoFrameCallback`。Worker が処理中のフレームは送らない（間引く）
+- フレーム取得は `video.requestVideoFrameCallback`。Worker が処理中のフレームは送らない（間引く）。
+  フレームの時刻は撮影時刻（`captureTime`）を優先する（`src/vision/camera.ts`）。タイム・手の時刻はすべてこの時間軸
 
 cubing.js のソルバーは自前の Worker を起動する。メインのバンドルから使うと、その Worker がアプリ本体のチャンク
 （DOM を触る）を読み込んで落ちるので、**ブラウザでは必ず `solver.worker.ts` 経由**にすること（`src/cube/solver.ts`）。
@@ -49,7 +52,9 @@ cubing.js のソルバーは自前の Worker を起動する。メインのバ�
 
 - `tests/render.ts`（ソフトウェアレンダラ）で合成画像を作り、OpenCV.js を Node で動かして検出を試験する
 - `src/synthetic/`（three.js の合成カメラ）でアプリ全体をヘッドレス Chromium で動かす（`npm run e2e`）
-- 認識・追跡を触ったら `npm test` と `npm run build && npm run e2e` を回す
+- `tests/speed.ts` で高速回転（回転途中の層・ブラー・指・正確なタイムスタンプ）を再現する。重い計測は
+  `tests/debug/*.debug.test.ts`（`npx vitest run -c vitest.debug.config.ts …`）
+- 認識・追跡を触ったら `npm test` と `npm run build && npm run e2e`（タイマーは `E2E_MODE=timer`）を回す
 
 ---
 
@@ -135,11 +140,40 @@ facelet の直接置換テーブルを手書きすると必ず間違える。**3
 
 ## 追跡の要点（`src/track`）
 
-- 観測器: `stableFrames` 枚同じ読みが続き、前回の観測と違うときだけ観測を出す
-- デコーダ: 仮説 = (状態, 姿勢)。観測の中心色から姿勢候補を絞り、各仮説を 0〜`maxMovesPerStep` 手 + 持ち替えで展開。
+- 観測器: `stableMs`（既定 33ms。30fps で 1 枚、60fps で 2 枚）同じ読みが続き、前回の観測と違うときだけ観測を出す。
+  1 フレームだけの観測は重みを下げる（`singleFrameWeight`）。セルの重み: 四角形が見つかったセル 1、格子から推定・保持した面 0.6
+- デコーダ: 仮説 = (状態, 姿勢)。観測の中心色から姿勢候補を絞り、各仮説を 0〜`maxMovesPerStep`（既定 3）手 + 持ち替えで展開。
+  深さ 3 以上は「コスト下限 < 上位 `beamWidth` 位のコスト」の仮説だけ（TopK で枝刈り）。
   コスト = 手数 × 1.0 + 持ち替え × `rotationCost` + 色の矛盾（ソフト）。上位 `beamWidth` を残す
 - 確定表示は「最良からコスト差 `confirmMargin` 以内の仮説が全て一致する手」まで
 - 矛盾が `lostAfter` 回続いたら、最後に辻褄が合っていた仮説から深さ `recoveryDepth` で復帰探索
+- 最後の状態が分かっているとき（タイマーで完成）は `finish(target)` で、そこにたどり着く仮説を選ぶ（足した手は inferred）
+- 手の時刻（`src/track/timing.ts`）: エンジンはフレームの記録（`logMs`）を残す。回した層の**側面**のステッカー
+  （回している面そのものは格子が追従して動きが見えない）が静止時から変わり始めたフレーム = 開始、再び止まったフレーム = 終了。
+  前後のフレームの中間を時刻にする。手で隠れたセルは使わない
+
+## タイマーと精密解析（`src/app/timer.ts`・`src/vision/refine.ts`）
+
+- タイム = 最初の手の回し始め 〜 最後の手の回し終わり。止めた瞬間はリアルタイムの値（速報値）、止めた 1.2 秒後に
+  その後のフレームも使って更新、録画の解析が終わったら確定（`Solve.analysis`: pending / done / failed）
+- 録画（`src/vision/recorder.ts`）: インスペクション開始から WebCodecs で圧縮して保持（インスペクション中は直近数秒だけ）。
+  H.264（ハードウェア）優先。符号化が詰まったらフレームを間引く。映像は保存も送信もしない
+- 解析（`Refiner`）: 全フレームを `processFrame` + 重い設定のエンジン（beam 64・4 手・ログ無制限）に通し、完成を制約に使う。
+  手の検出は `HandsClient.history`（時刻つき）から各フレームに当てる
+- タイムの両端は `src/vision/fineTiming.ts` で画素レベルに詰める: 面の格子で正規化したパッチ（面の外側 0.35 セルを含む）を
+  フレームごとに残し、層のセルの差 − 回していないセルの差がしきい値を超えた（下回った）フレームを探す。
+  1 色の列は列の中でずれても画素が変わらないので、面の外側の縁が効く
+- 端の手が直接見えていない（inferred）ときはリアルタイムの時刻を使い、手動停止で見えない手を足さないと完成しないときは確定しない。
+  **誤ったタイムを「確定」にしない**ことを優先する
+- 追跡を見失っていても、見えている面がすべて 1 色の状態が数フレーム続いたら止める（`looksSolved`）。追跡が確かなうちは追跡の判定を優先
+
+## 3D の傾き（`src/vision/pose.ts`）
+
+- 認識は面をカメラフレームの面に割り当てるので、求めるのは「カメラフレームに揃ったキューブ → 実際」の残りの回転 R。
+  格子の 9 点 × 見えている面の 3D 座標（`latticePoint`）と画像上の位置から、正面の射影変換の分解を初期値に LM 法で PnP を解く。
+  焦点距離は画像幅の 0.8 倍を仮定
+- キューブ固定 → カメラ = R · ORIENTATIONS[o]。o は毎フレーム `engine.frameOrient`（最良の状態と照合。中心の色でほぼ決まる）
+- 3D（`Cube3D`）は `cube3dView`: camera（映像と同じ傾き。鏡像プレビューなら CSS で鏡像）/ user（さらに y2）/ fixed
 
 閾値は設定画面から実行時に変更できる（`src/app/settings.ts`）。
 

@@ -137,6 +137,12 @@ input {
 .chip.bad .dot {
   background: var(--bad);
 }
+.chip.analysis.pending {
+  color: var(--warn);
+}
+.chip.analysis.done {
+  color: var(--ok);
+}
 
 /* ---- layout ---- */
 .workspace {
@@ -269,6 +275,9 @@ input {
   width: 100%;
   height: 100%;
   object-fit: contain;
+}
+.cube3d.mirrored twisty-player {
+  transform: scaleX(-1);
 }
 .camera video.mirror {
   transform: scaleX(-1);
