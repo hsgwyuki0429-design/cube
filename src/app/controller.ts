@@ -275,8 +275,8 @@ class Controller {
     const scan = this.store.get().scan;
     if (!scan || scan.result) return;
     const front = m.faces.find((f) => f.slot === F);
-    const labs = front && front.valid.filter(Boolean).length >= 8 ? front.labs : null;
-    const p = this.capture.push(labs, scan.captured.map((c) => c.labs[4]));
+    const reading = front ? { labs: front.labs, valid: front.valid.map((v, i) => v && !front.masked[i]) } : null;
+    const p = this.capture.push(reading, scan.captured.map((c) => c.labs[4]));
     if (!p.labs) {
       if (Math.abs(p.progress - scan.progress) > 0.05 || p.reason !== scan.reason) this.store.set({ scan: { ...scan, progress: p.progress, reason: p.reason } });
       return;

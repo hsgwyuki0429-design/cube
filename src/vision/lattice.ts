@@ -147,7 +147,8 @@ export type CellScorer = (pt: Pt) => number;
 // 面の候補（窓の位置）そのものへの加点。直前のフレームの面に近い位置を優先するのに使う
 export type FaceScorer = (H: Mat3) => number;
 
-export function findFaces(quads: Quad[], options: Partial<LatticeOptions> = {}, scoreCell?: CellScorer, scoreFace?: FaceScorer): LatticeFace[] {
+// accept: 見つけた格子がキューブの面らしいか（背景の格子模様を弾く）。弾いた格子は面の数に数えず、次を探す
+export function findFaces(quads: Quad[], options: Partial<LatticeOptions> = {}, scoreCell?: CellScorer, scoreFace?: FaceScorer, accept?: (f: LatticeFace) => boolean): LatticeFace[] {
   const o = { ...DEFAULT_LATTICE, ...options };
   let nodes = quads.map(makeNode).filter((n) => crossZ(n.a, n.b) > 0);
   if (nodes.length < o.minStickers) return [];
@@ -155,11 +156,13 @@ export function findFaces(quads: Quad[], options: Partial<LatticeOptions> = {}, 
   if (!Number.isFinite(rho)) return [];
 
   const faces: LatticeFace[] = [];
-  while (faces.length < o.maxFaces && nodes.length >= o.minStickers) {
+  for (let attempt = 0; attempt < o.maxFaces * 6 && faces.length < o.maxFaces && nodes.length >= o.minStickers; attempt++) {
     const face = extractBestFace(nodes, rho, o, scoreCell, scoreFace);
     if (!face) break;
-    faces.push(face.face);
-    const used = new Set(face.used);
+    const ok = !accept || accept(face.face);
+    if (ok) faces.push(face.face);
+    // 弾いた格子（背景の模様）は、つながっている四角形ごと捨てる（1 面ずつ取り出すと何十回もかかる）
+    const used = new Set(ok ? face.used : (face.component ?? face.used));
     nodes = nodes.filter((n) => !used.has(n.idx) && !face.covers(n.q.center));
   }
   return faces;
@@ -197,6 +200,7 @@ interface Extracted {
   face: LatticeFace;
   used: number[];
   covers: (p: Pt) => boolean;
+  component?: number[]; // 同じ格子につながっている四角形すべて（背景の模様なら丸ごと捨てる）
 }
 
 function extractBestFace(nodes: Node[], rho: number, o: LatticeOptions, scoreCell?: CellScorer, scoreFace?: FaceScorer): Extracted | null {
@@ -204,7 +208,7 @@ function extractBestFace(nodes: Node[], rho: number, o: LatticeOptions, scoreCel
   for (const comp of components(nodes, rho, o)) {
     if (comp.length < o.minStickers) continue;
     const r = fitComponent(comp, rho, o, scoreCell, scoreFace);
-    if (r && (!best || r.face.found > best.face.found || (r.face.found === best.face.found && r.face.residual < best.face.residual))) best = r;
+    if (r && (!best || r.face.found > best.face.found || (r.face.found === best.face.found && r.face.residual < best.face.residual))) best = { ...r, component: comp.map((n) => n.idx) };
   }
   return best;
 }

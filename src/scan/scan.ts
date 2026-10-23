@@ -36,23 +36,43 @@ export function scanSteps(scheme: Scheme): ScanStep[] {
 }
 
 // ---- 1面の取り込み ----
+//
+// 実物では、指がステッカーを隠したり、艶の映り込みが動いたり、面の検出が数フレーム途切れたりする。
+// 1 フレームで 9 マスがそろうのを待つのではなく、マスごとに読めたフレームの色をためて、
+// どのマスも十分な数の一致した読みがそろったら取り込む（隠れたマスは、見えたときの読みで埋まる）。
 
 export interface CaptureOptions {
-  frames: number; // この枚数のあいだ色が安定していたら取り込む
-  tolerance: number; // セルごとの、中央値からの許容色差
+  minFrames: number; // 少なくともこの枚数は見る
+  minSamples: number; // マスごとに、一致した読みがこれだけそろったら確定
+  tolerance: number; // マスの中央値からの許容色差
   minNovelty: number; // 取り込み済みの面の中心色とこれ以上違うこと
+  maxMissing: number; // 面が見えないフレームがこれだけ続いたらやり直す
+  keep: number; // マスごとにためる読みの数
 }
 
-export const DEFAULT_CAPTURE: CaptureOptions = { frames: 12, tolerance: 12, minNovelty: 16 };
+export const DEFAULT_CAPTURE: CaptureOptions = { minFrames: 10, minSamples: 6, tolerance: 14, minNovelty: 16, maxMissing: 24, keep: 30 };
+
+// 読めなかったマス（指でずっと隠れていた）。組み立てのときに、ほかのマスとピースの制約から決める
+export const UNKNOWN_LAB: Lab = [Number.NaN, Number.NaN, Number.NaN];
+export const isUnknownLab = (l: Lab) => Number.isNaN(l[0]);
 
 export interface CaptureProgress {
   progress: number; // 0..1
-  labs?: Lab[]; // 安定したら 9 セルの中央値
+  labs?: Lab[]; // 確定したら 9 マスの色
   reason?: "no-face" | "unstable" | "duplicate";
+  covered?: boolean[]; // マスごとに読みがそろったか（画面に出す）
+}
+
+export interface CaptureReading {
+  labs: Lab[];
+  valid: boolean[]; // 読めた（手で隠れていない）マス
 }
 
 export class FaceCapture {
-  private frames: Lab[][] = [];
+  private cells: Lab[][] = Array.from({ length: 9 }, () => []);
+  private frames = 0;
+  private missing = 0;
+  private switching = 0;
   options: CaptureOptions;
 
   constructor(options: Partial<CaptureOptions> = {}) {
@@ -60,35 +80,64 @@ export class FaceCapture {
   }
 
   reset(): void {
-    this.frames = [];
+    this.cells = Array.from({ length: 9 }, () => []);
+    this.frames = 0;
+    this.missing = 0;
+    this.switching = 0;
   }
 
-  // labs: カメラ正面の面の 9 セル（読めなければ null）、previousCenters: 取り込み済みの面の中心色
-  push(labs: Lab[] | null, previousCenters: Lab[]): CaptureProgress {
-    if (!labs) {
-      this.frames = [];
-      return { progress: 0, reason: "no-face" };
+  private stats() {
+    const { tolerance, minSamples } = this.options;
+    return this.cells.map((samples) => {
+      if (!samples.length) return { med: null as Lab | null, inliers: [] as Lab[], ratio: 0, ok: false };
+      const med = medianLab(samples);
+      const inliers = samples.filter((l) => colorDistance(l, med) <= tolerance);
+      const ratio = inliers.length / samples.length;
+      return { med, inliers, ratio, ok: inliers.length >= minSamples && ratio >= 0.6 };
+    });
+  }
+
+  private progressOf(st: ReturnType<FaceCapture["stats"]>): number {
+    const per = st.map((c) => Math.min(1, c.inliers.length / this.options.minSamples) * (c.ratio >= 0.6 ? 1 : 0.5));
+    return (per.reduce((a, b) => a + b, 0) / 9) * Math.min(1, this.frames / this.options.minFrames);
+  }
+
+  // reading: カメラ正面の面（見つからなければ null）、previousCenters: 取り込み済みの面の中心色
+  push(reading: CaptureReading | null, previousCenters: Lab[]): CaptureProgress {
+    const o = this.options;
+    if (!reading) {
+      if (++this.missing > o.maxMissing) this.reset();
+      const st = this.stats();
+      return { progress: this.progressOf(st), reason: "no-face", covered: st.map((c) => c.ok) };
     }
-    if (previousCenters.some((c) => colorDistance(c, labs[4]) < this.options.minNovelty)) {
-      this.frames = [];
+    this.missing = 0;
+    const center = reading.valid[4] ? reading.labs[4] : null;
+    const st0 = this.stats();
+    const centerMed = st0[4].med;
+    // 別の面に変わった（中心の色が大きく違うフレームが続いた）らやり直す
+    if (center && centerMed && colorDistance(center, centerMed) > o.tolerance * 2.2) {
+      if (++this.switching < 3) return { progress: this.progressOf(st0), reason: "unstable", covered: st0.map((c) => c.ok) };
+      this.reset();
+    } else this.switching = 0;
+    const c = centerMed ?? center;
+    if (c && previousCenters.some((p) => colorDistance(p, c) < o.minNovelty)) {
+      this.reset();
       return { progress: 0, reason: "duplicate" };
     }
-    this.frames.push(labs);
-    if (this.frames.length > this.options.frames) this.frames.shift();
-    // 中央値から外れたフレームがあれば、そのフレーム以前を捨てる
-    const med = Array.from({ length: 9 }, (_, i) => medianLab(this.frames.map((f) => f[i])));
-    for (let k = this.frames.length - 1; k >= 0; k--) {
-      const bad = this.frames[k].some((lab, i) => colorDistance(lab, med[i]) > this.options.tolerance);
-      if (bad) {
-        this.frames = this.frames.slice(k + 1);
-        break;
-      }
-    }
-    const progress = this.frames.length / this.options.frames;
-    if (this.frames.length < this.options.frames) return { progress, reason: "unstable" };
-    const labs9 = Array.from({ length: 9 }, (_, i) => medianLab(this.frames.map((f) => f[i])));
-    this.frames = [];
-    return { progress: 1, labs: labs9 };
+    reading.labs.forEach((lab, i) => {
+      if (!reading.valid[i]) return;
+      this.cells[i].push(lab);
+      if (this.cells[i].length > o.keep) this.cells[i].shift();
+    });
+    this.frames++;
+    const st = this.stats();
+    const covered = st.map((x) => x.ok);
+    // 指でずっと隠れているマスが 2 つまでなら、しばらく待ってから読めないまま取り込む（中心は必須）
+    const partial = this.frames >= o.minFrames * 3 && covered[4] && covered.filter((c) => !c).length <= 2;
+    if (this.frames < o.minFrames || (!covered.every(Boolean) && !partial)) return { progress: this.progressOf(st), reason: "unstable", covered };
+    const labs = st.map((x) => (x.ok ? medianLab(x.inliers) : UNKNOWN_LAB));
+    this.reset();
+    return { progress: 1, labs, covered };
   }
 }
 
@@ -141,13 +190,18 @@ export function assembleScan(scanned: ScannedFace[], scheme: Scheme): ScanResult
   }
   let refs: Lab[] = Array.from({ length: 6 }, (_, f) => byFace.get(f)!.labs[4]);
   let labels: number[] = [];
+  const known = all.map((lab) => !isUnknownLab(lab));
   for (let iter = 0; iter < 4; iter++) {
-    labels = assignBalanced(all.map((lab) => refs.map((r) => colorDistance(lab, r))));
+    // 読めなかったマスはどの色でも同じコスト（各色 9 枚の数合わせだけに使う）
+    labels = assignBalanced(all.map((lab, i) => (known[i] ? refs.map((r) => colorDistance(lab, r)) : [0, 0, 0, 0, 0, 0])));
     // センターは必ず自分の面の色
     owner.forEach((o, i) => {
       if (o.cell === 4) labels[i] = o.face;
     });
-    refs = refs.map((_, c) => meanLab(all.filter((_, i) => labels[i] === c)));
+    refs = refs.map((r, c) => {
+      const members = all.filter((_, i) => known[i] && labels[i] === c);
+      return members.length ? meanLab(members) : r;
+    });
   }
 
   // 2) 色名（標準の6色との対応）
@@ -172,7 +226,14 @@ export function assembleScan(scanned: ScannedFace[], scheme: Scheme): ScanResult
   // 4) 物理的にありえるキューブのうち、最も読みに合うものを選ぶ（色を 1 枚ずつ決めるのではなく、
   //    ピースの組み合わせとして決める。白と黄のように紛らわしい色も、ありえるピースの制約で決まる）。
   //    面の向きの取り違え（90° 回して見せた）も、少しの罰をつけて一緒に探す
-  const dist = Array.from({ length: 6 }, (_, src) => Array.from({ length: 9 }, (_, cell) => refsByFace.map((r) => colorDistance(all[src * 9 + cell], r))));
+  // どの色からも遠い読み（隠しきれなかった指・強い映り込み）は、どの色でも同じくらい合わない＝情報なしとして扱う
+  const CAP = 32;
+  const dist = Array.from({ length: 6 }, (_, src) =>
+    Array.from({ length: 9 }, (_, cell) => {
+      const lab = all[src * 9 + cell];
+      return isUnknownLab(lab) ? [0, 0, 0, 0, 0, 0] : refsByFace.map((r) => Math.min(CAP, colorDistance(lab, r)));
+    }),
+  );
   const rotIdx = [0, 1, 2, 3].map((r) => rotateCells([0, 1, 2, 3, 4, 5, 6, 7, 8], r));
   const ROT_PENALTY = 8;
   const solve = (rot: number[]) => {
@@ -209,7 +270,7 @@ export function assembleScan(scanned: ScannedFace[], scheme: Scheme): ScanResult
     const d = dist[placement[f]][rotIdx[rotations[f]][i % 9]];
     const chosen = d[state[i]];
     const second = Math.min(...d.filter((_, c) => c !== state[i]));
-    if (chosen > Math.min(...d) + 0.01 || second - chosen < 6) uncertain.push(i);
+    if (chosen > Math.min(...d) + 0.01 || second - chosen < 6 || chosen >= CAP) uncertain.push(i);
   }
   // スキャンした面ごとのセルの色（スキャンした面の番号で）
   const finalLabels = new Array(54).fill(0);
