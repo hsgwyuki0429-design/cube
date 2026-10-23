@@ -147,6 +147,7 @@ export function CameraView() {
           }
         }
         // 正面のラベルは下に（上面と重ならないように）
+        if (!debug && !anchor) continue;
         const label = map(slotPoint(face, 1.5, anchor ? 3.3 : -0.3));
         ctx.font = "600 12px system-ui, sans-serif";
         ctx.textAlign = "center";

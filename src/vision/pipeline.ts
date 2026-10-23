@@ -1,8 +1,9 @@
 // 1フレームの処理: ステッカー検出 → 面の格子 → カメラフレームへの配置 → 色サンプリング → 手のマスク。
 // Worker とテストの両方から使う（OpenCV のオブジェクトは呼び出し側が渡す）。
 import { type Lab, nearestNamed } from "./color";
-import { type Mat3, type Pt, applyH } from "./homography";
-import { type LatticeOptions, findFaces } from "./lattice";
+import { type Mat3, type Pt, applyH, fitHomography, mulH } from "./homography";
+import { expandBlocks, largeFaceCandidates } from "./blocks";
+import { type LatticeFace, type LatticeOptions, type Quad, findFaces } from "./lattice";
 import { type PlacedFace, colAngle, faceArea, layoutFaces, slotPoint } from "./layout";
 import { type CV, type QuadOptions, DEFAULT_QUADS, findQuads } from "./quads";
 import { type PixelSource, sampleFace } from "./sampler";
@@ -31,6 +32,7 @@ export const DEFAULT_PIPELINE: PipelineConfig = {
 export interface DetectedFace {
   slot: number;
   rot: number;
+  held?: boolean; // このフレームでは検出できず、直前の位置を使った
   H: Mat3;
   found: number;
   labs: Lab[];
@@ -48,7 +50,14 @@ export interface PipelineMemory {
   t: number;
   angle: number;
   centerKey: number; // 中心色（代表色が分かっていればその番号、なければ名前付き色の番号）
+  pitch: number; // ステッカー間隔（px）。ステッカーレスのブロック分割に使う
+  faces: KeptFace[]; // 直前の面（短時間の保持・ブロック分割・窓の位置の曖昧さの解消に使う）
 }
+
+type KeptFace = PlacedFace & { seenT: number }; // seenT: 最後に実際に検出できた時刻
+
+const HOLD_MS = 400; // 何も見つからないとき、直前の面を使い続ける時間
+const CARRY_MS = 2500; // 正面を追えている間、見つからない他の面を運び続ける時間
 
 export function guideH(width: number, height: number, size: number): Mat3 {
   const s = Math.min(width, height) * size;
@@ -82,6 +91,36 @@ function maskHands(face: DetectedFace, hands: Pt[][]): void {
   }
 }
 
+// 面全体が1色の大きな四角形を 3x3 の面とみなす（ステッカーレスの完成面を初見で拾う救済）
+function uniformFaces(img: PixelSource, quads: Quad[]): LatticeFace[] {
+  const out: LatticeFace[] = [];
+  for (const q of quads.sort((a, b) => b.area - a.area)) {
+    const [cx, cy] = q.center;
+    const p = [...q.corners].sort((a, b) => Math.atan2(a[1] - cy, a[0] - cx) - Math.atan2(b[1] - cy, b[0] - cx));
+    const H = fitHomography(
+      [
+        [0, 0],
+        [3, 0],
+        [3, 3],
+        [0, 3],
+      ],
+      p,
+    );
+    if (!H) continue;
+    // 2x3 などのブロックを面と取り違えないよう、ほぼ正方形（正面から見た面）に限る
+    const sides = p.map((a, i) => Math.hypot(p[(i + 1) % 4][0] - a[0], p[(i + 1) % 4][1] - a[1]));
+    if (Math.min(...sides) / Math.max(...sides) < 0.75) continue;
+    const labs = Array.from({ length: 9 }, (_, i) => pixelLab(img, applyH(H, (i % 3) + 0.5, Math.floor(i / 3) + 0.5)));
+    if (labs.some((l) => !l || stickerScore(l) <= 0)) continue;
+    const ref = labs[4]!;
+    if (labs.some((l) => Math.hypot((l![0] - ref[0]) / 2, l![1] - ref[1], l![2] - ref[2]) > 14)) continue;
+    if (out.some((f) => pointInPolygon(q.center, [applyH(f.H, 0, 0), applyH(f.H, 3, 0), applyH(f.H, 3, 3), applyH(f.H, 0, 3)]))) continue;
+    out.push({ H, found: 9, cellQuad: new Array(9).fill(-1), residual: 0, pitch: Math.sqrt(q.area) / 3, alts: [] });
+    if (out.length >= 3) break;
+  }
+  return out;
+}
+
 export function processFrame(
   cv: CV | null,
   img: PixelSource & { mat?: unknown },
@@ -108,7 +147,20 @@ export function processFrame(
       const lab = pixelLab(img, p);
       return lab ? stickerScore(lab) : -1;
     };
-    const faces = findFaces(quads, config.lattice, scorer);
+    // 直前のフレームで見えていた面（ステッカーレスのブロック分割と、窓の位置の曖昧さの解消に使う）
+    const prevFaces = memory.last && t - memory.last.t < 600 ? memory.last.faces : [];
+    const faceScorer = (H: Mat3) => {
+      const c = applyH(H, 1.5, 1.5);
+      const pitch = memory.last?.pitch ?? 0;
+      return prevFaces.some((f) => {
+        const p = applyH(f.H, 1.5, 1.5);
+        return Math.hypot(p[0] - c[0], p[1] - c[1]) < pitch * 0.5;
+      })
+        ? 4
+        : 0;
+    };
+    let faces = findFaces(expandBlocks(quads, prevFaces.map((f) => f.H)), config.lattice, scorer, faceScorer);
+    if (!faces.length) faces = uniformFaces(img, largeFaceCandidates(quads, img.width * img.height));
     if (faces.length) {
       // 前のフレームと同じ中心色の面をアンカーに（角から見たときに正面が入れ替わらないように）
       const keyOf = (H: Mat3) => {
@@ -133,17 +185,50 @@ export function processFrame(
         const largest = Math.max(...faces.map((f) => faceArea(f.H)));
         if (same.length && same[0].a > largest * 0.45) anchor = same[0].i;
       }
-      placed = layoutFaces(faces, { anchor, anchorAngle: recent && t - recent.t < 300 ? recent.angle : 0 });
+      placed = layoutFaces(faces, { anchor, anchorAngle: recent && t - recent.t < 300 ? recent.angle : undefined });
       const a = placed[0];
-      memory.last = { t, angle: colAngle(a), centerKey: keyOf(a.H) };
+      const key = keyOf(a.H);
+      // 今回見つからなかった面は、正面の動きに合わせて直前の位置から運ぶ
+      // （ステッカーレスで同色がつながった面など。一様な領域なら多少ずれても読む色は同じ）
+      const real: KeptFace[] = placed.map((p) => ({ ...p, seenT: t }));
+      const kept = [...real];
+      const prevA = recent?.faces.find((f) => f.slot === 2);
+      const pc = prevA && applyH(prevA.H, 1.5, 1.5);
+      const cc = applyH(a.H, 1.5, 1.5);
+      // 同じ面が正面のまま、ほぼ動いていないときだけ運ぶ（正面の当てはめがずれたフレームで他の面を引きずらない）
+      const sameAnchor = !!recent && !!pc && Math.hypot(pc[0] - cc[0], pc[1] - cc[1]) < recent.pitch * 0.5;
+      if (recent && sameAnchor && t - recent.t < HOLD_MS) {
+        // 正面の中心の移動量だけ平行移動する（射影変換ごと移すと、正面の当てはめの誤差が外側で増幅される）
+        const transfer: Mat3 = [1, 0, cc[0] - pc![0], 0, 1, cc[1] - pc![1], 0, 0, 1];
+        for (const f of recent.faces) {
+          if (placed.some((p) => p.slot === f.slot) || t - f.seenT > CARRY_MS) continue;
+          const moved: KeptFace = { ...f, H: mulH(transfer, f.H) };
+          kept.push(moved);
+          placed.push({ ...moved, held: true } as PlacedFace);
+        }
+      }
+      memory.last = { t, angle: colAngle(a), centerKey: key, pitch: faces[a.latticeIndex].pitch, faces: kept };
+    } else if (memory.last && t - memory.last.t < HOLD_MS && memory.last.faces.length) {
+      // 何も見つからない: ごく短時間だけ直前の面を使う（下で色がステッカーらしいか確かめる）
+      placed = memory.last.faces.map((f) => ({ ...f, held: true }) as PlacedFace);
     }
   }
 
-  const out: DetectedFace[] = placed.map((p) => {
+  const out: DetectedFace[] = [];
+  for (const p of placed) {
+    const held = !!(p as { held?: boolean }).held;
     const samples = sampleFace(img, p, config.region);
+    // 保持した面は、半分以上のセルがステッカーらしい色のときだけ使う（キューブが画面外に出たら捨てる）。
+    // 指などで隠れてステッカーらしくないセルは読まない
+    if (held) {
+      const ok = samples.map((s) => s.valid && stickerScore(s.lab) > 0);
+      if (ok.filter(Boolean).length < 5) continue;
+      samples.forEach((s, i) => (s.valid = ok[i]));
+    }
     const face: DetectedFace = {
       slot: p.slot,
       rot: p.rot,
+      held,
       H: p.H,
       found: p.found,
       labs: samples.map((s) => s.lab),
@@ -151,7 +236,8 @@ export function processFrame(
       valid: samples.map((s) => s.valid && s.spread < config.maxSpread),
     };
     maskHands(face, hands);
-    return face;
-  });
+    out.push(face);
+  }
+  if (out.length && out[0].slot !== 2) return { faces: [], quads: quadsOut };
   return { faces: out, quads: quadsOut };
 }

@@ -3,6 +3,7 @@ import { cfopSplits } from "../cube/analysis";
 import { type CubeState, MOVE_NAMES, applyMoves, isSolved, relativeMove, rotateOrientation, solvedState, statesEqual } from "../cube/model";
 import { randomScramble, solveBetween } from "../cube/solver";
 import type { TrackUpdate } from "../track/engine";
+import { mergeQuickRepeats } from "../track/merge";
 import { controller } from "./controller";
 import { settingsStore } from "./settings";
 import { type Solve, loadSolves, saveSolves } from "./storage";
@@ -47,7 +48,7 @@ let recomputeTimer = 0;
 let warned8 = false;
 let warned12 = false;
 
-const viewOrient = (o: number) => (settingsStore.get().viewpoint === "user" ? rotateOrientation(o, "y", 2) : o);
+const viewOrient = (o: number) => (settingsStore.get().viewpoint === "user" && !controller.store.get().demo ? rotateOrientation(o, "y", 2) : o);
 
 function setGuide(from: CubeState, moves: number[]): void {
   guideStates = [from];
@@ -122,7 +123,7 @@ function onTrack(u: TrackUpdate): void {
 
 function finish(u: TrackUpdate | null, tracked: boolean): void {
   const s = timerStore.get();
-  const moves = u ? u.moves.slice(s.startIndex) : [];
+  const moves = u ? mergeQuickRepeats(u.moves.slice(s.startIndex)) : [];
   const endT = tracked && moves.length ? moves[moves.length - 1].t : performance.now();
   const timeMs = Math.max(0, endT - s.startT);
   const inspectionMs = s.startT - s.inspectionStart;

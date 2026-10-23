@@ -27,6 +27,7 @@ export interface RenderOptions {
   background?: Rgb;
   faceLight?: number[]; // カメラフレームの面ごとの明るさ
   occluders?: { center: [number, number]; radius: number; color: Rgb }[];
+  seam?: Rgb; // ステッカーレス: 隙間の色（暗い溝）
 }
 
 const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -104,7 +105,7 @@ export function renderCube(o: RenderOptions): { data: Uint8ClampedArray; width: 
     const rd = ROWDIR[c];
     const cd = COLDIR[c];
     const corner = (r: number, s: number): Vec3 => add(faceCenter, add(scale(rd, r), scale(cd, s)));
-    fillPolygon(img, w, h, [corner(-1.5, -1.5), corner(-1.5, 1.5), corner(1.5, 1.5), corner(1.5, -1.5)].map(project), [18, 18, 18], 1);
+    fillPolygon(img, w, h, [corner(-1.5, -1.5), corner(-1.5, 1.5), corner(1.5, 1.5), corner(1.5, -1.5)].map(project), o.seam ?? [18, 18, 18], 1);
     for (let cell = 0; cell < 9; cell++) {
       const row = Math.floor(cell / 3) - 1;
       const col = (cell % 3) - 1;

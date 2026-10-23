@@ -92,21 +92,28 @@ const angleDiff = (a: number, b: number) => Math.abs(Math.atan2(Math.sin(a - b),
 
 export interface LayoutOptions {
   anchor?: number; // アンカーにする面（findFaces の番号）。省略時は最大面積
-  anchorAngle?: number; // アンカーの列方向の基準角（ラジアン）。省略時 0 = 画像の右
+  anchorAngle?: number; // 前フレームのアンカーの列方向（ラジアン）。画像の右から 55° 以内なら維持する
 }
 
 export function layoutFaces(faces: LatticeFace[], opts: LayoutOptions = {}): PlacedFace[] {
   if (!faces.length) return [];
   const anchorIdx = opts.anchor ?? faces.map((f) => faceArea(f.H)).reduce((bi, a, i, arr) => (a > arr[bi] ? i : bi), 0);
   const anchor = faces[anchorIdx];
-  const ref = opts.anchorAngle ?? 0;
+  // 列方向が画像の右（+x）に最も近い向き。ただし前フレームの向きが 55° 以内なら維持する
+  // （斜め 45° 付近で向きがフレームごとに入れ替わらないように。画像の軸から離れすぎない範囲で）
   let rot = 0;
   let bestDiff = Infinity;
   for (let r = 0; r < 4; r++) {
-    const d = angleDiff(colAngle({ H: anchor.H, rot: r }), ref);
+    const d = angleDiff(colAngle({ H: anchor.H, rot: r }), 0);
     if (d < bestDiff) {
       bestDiff = d;
       rot = r;
+    }
+  }
+  if (opts.anchorAngle !== undefined) {
+    for (let r = 0; r < 4; r++) {
+      const a = colAngle({ H: anchor.H, rot: r });
+      if (angleDiff(a, opts.anchorAngle) < Math.PI / 6 && angleDiff(a, 0) < (55 * Math.PI) / 180) rot = r;
     }
   }
   const placed: PlacedFace[] = [{ slot: F, rot, H: anchor.H, found: anchor.found, latticeIndex: anchorIdx }];

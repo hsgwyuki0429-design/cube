@@ -42,6 +42,7 @@ async function waitFor(cond: () => boolean, timeoutMs: number): Promise<boolean>
 
 export interface DemoOptions {
   e2eMoves?: number; // 指定するとその手数だけ回して止まる（テスト用）
+  timer?: boolean; // タイマーの流れ（スクランブル誘導 → 解く）をテストする
   tps?: number;
   view?: "top" | "corner" | "front";
 }
@@ -74,6 +75,29 @@ export async function runDemo(app: Controller, syn: SyntheticCube, seed = Date.n
   await sleep(1500);
   const tps = options.tps ?? 2.2;
   const turn = (m: number) => syn.move(m, Math.min(260, 1000 / tps / 1.6)).then(() => sleep(1000 / tps));
+
+  if (options.timer) {
+    const { newScramble, timerStore } = await import("../app/timer");
+    app.store.set({ panel: "timer" });
+    await newScramble();
+    // 案内された手順どおりに崩す（案内は状態に応じて更新されるので、毎回先頭の未完了の手を回す）
+    for (let guard = 0; guard < 80 && timerStore.get().phase === "scrambling"; guard++) {
+      const t = timerStore.get();
+      if (t.recomputing || t.guideDone >= t.guide.length) {
+        await sleep(200);
+        continue;
+      }
+      const target = t.guide.length;
+      const next = t.guide[t.guideDone];
+      await turn(next);
+      await waitFor(() => timerStore.get().phase !== "scrambling" || timerStore.get().guideDone > t.guideDone || timerStore.get().guide.length !== target, 3000);
+    }
+    await waitFor(() => timerStore.get().phase === "inspection", 5000);
+    await sleep(1500);
+    for (const m of await solveState(syn.state)) await turn(m);
+    await waitFor(() => timerStore.get().phase === "done", 8000);
+    return;
+  }
 
   if (options.e2eMoves) {
     for (const m of randomMoves(options.e2eMoves, rnd)) {

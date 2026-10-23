@@ -7,12 +7,22 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { chromium } from "playwright-core";
 
-const PORT = Number(process.env.E2E_PORT ?? 4179);
+import { createServer } from "node:net";
+
+// 空いているポートを使う（前回のサーバーがポートを離すまでの待ちを避ける）
+const PORT = Number(process.env.E2E_PORT) || (await new Promise((resolve) => {
+  const srv = createServer();
+  srv.listen(0, () => {
+    const { port } = srv.address();
+    srv.close(() => resolve(port));
+  });
+}));
 const VIEW = process.env.E2E_VIEW ?? "top";
 const TPS = Number(process.env.E2E_TPS ?? 2);
 const MOVES = Number(process.env.E2E_MOVES ?? 30);
 const SEEDS = (process.env.E2E_SEEDS ?? "11").split(",").map(Number);
 const OUT = process.env.E2E_OUT ?? "e2e-output";
+const MODE = process.env.E2E_MODE ?? "track"; // track | timer
 const CHROME = process.env.CHROME_PATH ?? (existsSync("/opt/pw-browsers/chromium") ? "/opt/pw-browsers/chromium" : undefined);
 
 if (!existsSync("dist/index.html")) {
@@ -72,7 +82,24 @@ try {
     page.on("console", (m) => logs.push(`[${m.type()}] ${m.text()}`));
     page.on("pageerror", (e) => logs.push(`[pageerror] ${e.message}`));
     const t0 = Date.now();
-    await page.goto(`http://localhost:${PORT}/?demo=e2e&seed=${seed}&moves=${MOVES}&tps=${TPS}&view=${VIEW}`);
+    await page.goto(`http://localhost:${PORT}/?demo=e2e&seed=${seed}&moves=${MOVES}&tps=${TPS}&view=${VIEW}${MODE === "timer" ? "&timer=1" : ""}`);
+    if (MODE === "timer") {
+      await page.waitForFunction(() => window.__cubevisionTimer?.get().phase === "done", null, { timeout: 300000, polling: 500 });
+      await page.screenshot({ path: `${OUT}/seed${seed}-timer-done.png` });
+      const r = await page.evaluate(() => {
+        const t = window.__cubevisionTimer.get();
+        return { result: t.result, solves: t.solves.length, solved: window.__cubevision.store.get().track?.solved };
+      });
+      const ok = r.result && r.result.tracked && r.solved && r.result.timeMs > 0 && r.result.moves.length > 5;
+      console.log(`seed ${seed} timer: ${ok ? "OK" : "NG"} time ${(r.result?.timeMs / 1000).toFixed(2)}s moves ${r.result?.moves.length} tps ${r.result?.tps.toFixed(2)} splits ${JSON.stringify(r.result?.splits?.map((x) => [x.name, x.moves]))}`);
+      results.push({ seed, acc: ok ? 1 : 0, finalOk: !!ok, scanSec: 0 });
+      if (!ok) {
+        failures++;
+        console.log(logs.slice(-30).join("\n"));
+      }
+      await page.close();
+      continue;
+    }
     // スキャン完了（追跡開始）まで
     await page.waitForFunction(() => !!window.__cubevision?.store.get().cube, null, { timeout: 180000, polling: 500 });
     const scanSec = (Date.now() - t0) / 1000;
@@ -91,6 +118,8 @@ try {
         status: t?.status,
         synthState: Array.from(app.synthetic.state),
         trackState: t?.state ?? [],
+        trackOrient: t?.orient,
+        synthOrient: app.synthetic.orient,
         observations: t?.observations,
         recoveries: t?.recoveries,
         stats: app.store.get().stats,
@@ -100,11 +129,12 @@ try {
     const b = canonical(r.truth);
     const acc = 1 - editDistance(a, b) / Math.max(1, b.length);
     const finalOk = r.synthState.join() === r.trackState.join();
+    const orientOk = r.trackOrient === r.synthOrient;
     results.push({ seed, acc, finalOk, scanSec });
-    console.log(`seed ${seed}: scan ${scanSec.toFixed(1)}s  accuracy ${(acc * 100).toFixed(1)}%  final ${finalOk ? "OK" : "NG"}  status ${r.status}  obs ${r.observations}  recov ${r.recoveries}  inferred ${r.inferred}  camFps ${r.stats.camFps} procFps ${r.stats.procFps} procMs ${r.stats.procMs.toFixed(1)}`);
+    console.log(`seed ${seed}: scan ${scanSec.toFixed(1)}s  accuracy ${(acc * 100).toFixed(1)}%  final ${finalOk ? "OK" : "NG"}  orient ${orientOk ? "OK" : `NG(${r.trackOrient}/${r.synthOrient})`}  status ${r.status}  obs ${r.observations}  recov ${r.recoveries}  inferred ${r.inferred}  camFps ${r.stats.camFps} procFps ${r.stats.procFps} procMs ${r.stats.procMs.toFixed(1)}`);
     console.log(`  truth  : ${r.truth.map(name).join(" ")}`);
     console.log(`  decoded: ${r.decoded.map(name).join(" ")}`);
-    if (!finalOk || acc < 0.9) {
+    if (!finalOk || !orientOk || acc < 0.9) {
       failures++;
       console.log(logs.slice(-30).join("\n"));
     }

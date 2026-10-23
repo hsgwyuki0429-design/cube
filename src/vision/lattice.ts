@@ -144,7 +144,10 @@ function relation(i: Node, j: Node, rho: number, o: LatticeOptions, basis?: [Pt,
 // 見つかったステッカーが少なくて 3x3 の窓の位置が決まらないときに使う。
 export type CellScorer = (pt: Pt) => number;
 
-export function findFaces(quads: Quad[], options: Partial<LatticeOptions> = {}, scoreCell?: CellScorer): LatticeFace[] {
+// 面の候補（窓の位置）そのものへの加点。直前のフレームの面に近い位置を優先するのに使う
+export type FaceScorer = (H: Mat3) => number;
+
+export function findFaces(quads: Quad[], options: Partial<LatticeOptions> = {}, scoreCell?: CellScorer, scoreFace?: FaceScorer): LatticeFace[] {
   const o = { ...DEFAULT_LATTICE, ...options };
   let nodes = quads.map(makeNode).filter((n) => crossZ(n.a, n.b) > 0);
   if (nodes.length < o.minStickers) return [];
@@ -153,7 +156,7 @@ export function findFaces(quads: Quad[], options: Partial<LatticeOptions> = {}, 
 
   const faces: LatticeFace[] = [];
   while (faces.length < o.maxFaces && nodes.length >= o.minStickers) {
-    const face = extractBestFace(nodes, rho, o, scoreCell);
+    const face = extractBestFace(nodes, rho, o, scoreCell, scoreFace);
     if (!face) break;
     faces.push(face.face);
     const used = new Set(face.used);
@@ -196,11 +199,11 @@ interface Extracted {
   covers: (p: Pt) => boolean;
 }
 
-function extractBestFace(nodes: Node[], rho: number, o: LatticeOptions, scoreCell?: CellScorer): Extracted | null {
+function extractBestFace(nodes: Node[], rho: number, o: LatticeOptions, scoreCell?: CellScorer, scoreFace?: FaceScorer): Extracted | null {
   let best: Extracted | null = null;
   for (const comp of components(nodes, rho, o)) {
     if (comp.length < o.minStickers) continue;
-    const r = fitComponent(comp, rho, o, scoreCell);
+    const r = fitComponent(comp, rho, o, scoreCell, scoreFace);
     if (r && (!best || r.face.found > best.face.found || (r.face.found === best.face.found && r.face.residual < best.face.residual))) best = r;
   }
   return best;
@@ -211,7 +214,7 @@ export function shiftH(H: Mat3, du: number, dv: number): Mat3 {
   return [H[0], H[1], H[0] * du + H[1] * dv + H[2], H[3], H[4], H[3] * du + H[4] * dv + H[5], H[6], H[7], H[6] * du + H[7] * dv + H[8]];
 }
 
-function fitComponent(comp: Node[], rho: number, o: LatticeOptions, scoreCell?: CellScorer): Extracted | null {
+function fitComponent(comp: Node[], rho: number, o: LatticeOptions, scoreCell?: CellScorer, scoreFace?: FaceScorer): Extracted | null {
   // 次数の大きいものを基準に
   const degree = comp.map((i) => comp.filter((j) => j !== i && relation(i, j, rho, o)).length);
   const seed = comp[degree.indexOf(Math.max(...degree))];
@@ -310,12 +313,12 @@ function fitComponent(comp: Node[], rho: number, o: LatticeOptions, scoreCell?: 
     });
   });
   let shift: [number, number] = [0, 0];
-  if (shifts.length > 1 && scoreCell) {
+  if (shifts.length > 1 && (scoreCell || scoreFace)) {
     let bestScore = -Infinity;
     for (const [du, dv] of shifts) {
       const Hs = shiftH(H, du, dv);
-      let score = 0;
-      for (let cell = 0; cell < 9; cell++) {
+      let score = scoreFace ? scoreFace(Hs) : 0;
+      for (let cell = 0; cell < 9 && scoreCell; cell++) {
         const u = cell % 3;
         const v = Math.floor(cell / 3);
         if (occupied.has((v + dv) * 3 + (u + du))) continue;

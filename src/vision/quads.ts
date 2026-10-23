@@ -21,7 +21,7 @@ export const DEFAULT_QUADS: QuadOptions = {
   cannyHigh: 60,
   colorEdges: true,
   minAreaFrac: 1 / 4000,
-  maxAreaFrac: 1 / 25,
+  maxAreaFrac: 1 / 3, // ステッカーレスで同色がつながったブロック（最大で面全体）も拾う
   minSideRatio: 0.18,
   grow: 2,
 };

@@ -139,7 +139,13 @@ export function SettingsPage() {
             <Toggle k="debug" />
           </Field>
           <div class="btn-row">
-            <button class="btn small" onClick={() => settingsStore.set({ ...DEFAULT_SETTINGS, cameraId: settingsStore.get().cameraId })}>
+            <button
+              class="btn small"
+              onClick={() => {
+                const { detection, handMask, workWidth, stableFrames, maxMovesPerStep, beamWidth, rotationCost, maxColorDistance, debug } = DEFAULT_SETTINGS;
+                settingsStore.set({ detection, handMask, workWidth, stableFrames, maxMovesPerStep, beamWidth, rotationCost, maxColorDistance, debug });
+              }}
+            >
               認識設定を初期値に戻す
             </button>
             {cal && (

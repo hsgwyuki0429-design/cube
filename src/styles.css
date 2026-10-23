@@ -708,3 +708,13 @@ input[type="range"] {
 .split-table td:last-child {
   text-align: right;
 }
+
+/* カメラ未開始時の暗い背景の上のボタン */
+.camera .placeholder .btn:not(.primary) {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.28);
+  color: #fff;
+}
+.camera .placeholder .btn:not(.primary):hover {
+  background: rgba(255, 255, 255, 0.2);
+}

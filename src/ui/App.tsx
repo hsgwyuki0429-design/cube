@@ -10,6 +10,7 @@ import { HistoryPage } from "./HistoryPage";
 import { ScanPanel } from "./ScanPanel";
 import { SettingsPage } from "./SettingsPage";
 import { TimerPanel } from "./TimerPanel";
+import { mergeQuickRepeats } from "../track/merge";
 import { moveLabel as labelOf, viewOrient } from "./notation";
 
 function Logo() {
@@ -119,9 +120,11 @@ function Main() {
 
 function RecentMoves() {
   const track = useStore(controller.store, (s) => s.track);
-  const count = useStore(controller.store, (s) => (s.track?.moves.length ?? 0) - s.baseMoves);
+  const base = useStore(controller.store, (s) => s.baseMoves);
   const settings = useStore(settingsStore, (s) => ({ notation: s.notation, viewpoint: s.viewpoint }));
-  const last = (track?.moves ?? []).slice(-7);
+  const merged = mergeQuickRepeats((track?.moves ?? []).slice(base));
+  const count = merged.length;
+  const last = merged.slice(-7);
   if (!last.length) return null;
   return (
     <div class="recent">

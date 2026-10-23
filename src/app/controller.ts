@@ -93,6 +93,7 @@ class Controller {
   private statsTimer = 0;
   private toastTimer = 0;
   private epoch = 0;
+  private preScanTrack: TrackUpdate | null = null;
 
   init(): void {
     if (this.vision) return;
@@ -218,6 +219,7 @@ class Controller {
 
   beginScan(): void {
     this.init();
+    this.preScanTrack = this.store.get().track;
     this.vision?.stopTracking();
     this.vision?.setRefs(null);
     this.capture.reset();
@@ -227,7 +229,11 @@ class Controller {
   cancelScan(): void {
     this.store.set({ scan: null });
     const cube = this.store.get().cube;
-    if (cube) this.restartTracking(cube.state, cube.refs);
+    if (!cube) return;
+    // スキャン前に追跡していた最新の状態から再開する
+    const last = this.preScanTrack;
+    if (last) this.startTrackingFrom(Uint8Array.from(last.state), last.refs, cube.names);
+    else this.restartTracking(cube.state, cube.refs);
   }
 
   retakeFace(step: number): void {

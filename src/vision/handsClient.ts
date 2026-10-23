@@ -1,10 +1,9 @@
 // 手の検出クライアント。21点の凸包を少し膨らませた多角形（正規化座標）を返す。
 import type { Pt } from "./homography";
 
-const MODEL_URLS = [
-  `${import.meta.env.BASE_URL}mediapipe/hand_landmarker.task`,
-  "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task",
-];
+// Worker 内の相対 URL は Worker のスクリプトの場所から解決されるので、ページ基準の絶対 URL にして渡す
+const pageUrl = (path: string) => new URL(`${import.meta.env.BASE_URL}${path}`, document.baseURI).href;
+const MODEL_URLS = () => [pageUrl("mediapipe/hand_landmarker.task"), "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task"];
 
 export function convexHull(points: Pt[]): Pt[] {
   const pts = [...points].sort((a, b) => a[0] - b[0] || a[1] - b[1]);
@@ -62,7 +61,7 @@ export class HandsClient {
         this.onUpdate?.(this.hulls);
       }
     };
-    this.worker.postMessage({ type: "init", wasmBase: `${import.meta.env.BASE_URL}mediapipe/wasm`, modelUrls: MODEL_URLS });
+    this.worker.postMessage({ type: "init", wasmBase: pageUrl("mediapipe/wasm"), modelUrls: MODEL_URLS() });
   }
 
   stop(): void {

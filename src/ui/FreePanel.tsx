@@ -5,9 +5,26 @@ import { settingsStore } from "../app/settings";
 import { useStore } from "../app/store";
 import { type CubeState, MOVE_NAMES, applyMoves, isSolved, relativeMove, statesEqual } from "../cube/model";
 import { solveState } from "../cube/solver";
+import { mergeQuickRepeats } from "../track/merge";
 import { viewOrient } from "./notation";
 
+// カメラの実測 fps が低いと速い回転を取りこぼす（暗い場所ではカメラが露光を伸ばして fps が落ちる）
+function FpsWarning() {
+  const w = useStore(controller.store, (s) => s.camera === "on" && !s.demo && s.stats.camFps > 0 && s.stats.camFps < 20);
+  if (!w) return null;
+  return <div class="status-banner warn small">カメラの fps が低くなっています。部屋を明るくすると、速い回転も追いやすくなります。</div>;
+}
+
 export function TrackStatus() {
+  return (
+    <>
+      <TrackStatusBanner />
+      <FpsWarning />
+    </>
+  );
+}
+
+function TrackStatusBanner() {
   const t = useStore(controller.store, (s) => ({ status: s.track?.status ?? "tracking", solved: s.track?.solved ?? false, faces: s.stats.faces, has: !!s.track }));
   if (t.status === "lost")
     return (
@@ -113,7 +130,7 @@ export function FreePanel() {
   const track = useStore(controller.store, (s) => s.track);
   const base = useStore(controller.store, (s) => s.baseMoves);
   const moves = track?.moves ?? [];
-  const recent = moves.slice(base);
+  const recent = mergeQuickRepeats(moves.slice(base));
   const startT = recent[0]?.t ?? 0;
   const lastT = recent[recent.length - 1]?.t ?? 0;
   const running = recent.length > 0 && !track?.solved;
