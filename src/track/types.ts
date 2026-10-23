@@ -19,7 +19,8 @@ export interface Observation {
 
 export interface DecodedMove {
   move: number; // キューブ固定フレームの手（0..17）
-  t: number; // 推定時刻（ms）
+  t0?: number; // 回し始めの推定時刻（ms）。この手の前の見え方が最後に確認できた時刻以降
+  t: number; // 回し終わりの推定時刻（ms）。回した後の見え方が安定して見え始めた時刻
   orient: number; // その手のときのキューブの姿勢（持ち方基準の表記に使う）
   inferred?: boolean; // 直接は見えず、後から辻褄合わせで推定した手
 }

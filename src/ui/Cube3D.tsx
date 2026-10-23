@@ -1,15 +1,18 @@
 // 3D キューブ（cubing.js の <twisty-player>）。追跡した手を順にアニメーションし、
-// 必要ならキューブの持ち方（姿勢）に合わせて全体を回す。
+// キューブの姿勢（カメラに映っている傾き）に合わせて全体を回す。
 import { useEffect, useRef } from "preact/hooks";
 import { Color, Matrix4, Quaternion, type Object3D } from "three";
 import type { TwistyPlayer } from "cubing/twisty";
-import { MOVE_NAMES, ORIENTATIONS } from "../cube/model";
+import { controller } from "../app/controller";
+import { MOVE_NAMES, ORIENTATIONS, ROTATION, mul } from "../cube/model";
 
 export interface Cube3DProps {
   epoch: number; // 変わったら setup からやり直す
   setupMoves: number[] | null;
   moves: number[]; // キューブ固定フレームの手（開始から）
-  orient: number | null; // 表示する向き（キューブ固定 → 表示）。null なら標準の向き
+  orient: number | null; // 連続的な姿勢が来ないときに表示する向き（キューブ固定 → 表示）。null なら標準の向き
+  view?: "camera" | "user" | "fixed"; // camera / user: 毎フレームの姿勢（傾き）に追従する
+  mirror?: boolean; // 鏡像で表示（インカメラの鏡像プレビューに合わせる）
   colors?: string[] | null; // 面 U R F D L B の色（標準配色以外のとき）
   controls?: boolean; // 再生コントロール（履歴のリプレイ用）
   setupAlg?: string;
@@ -49,6 +52,8 @@ export function Cube3D(props: Cube3DProps) {
   const puzzleObj = useRef<Object3D | null>(null);
   const targetQ = useRef(new Quaternion());
   const raf = useRef(0);
+  const lastPoseAt = useRef(0);
+  const following = () => !props.controls && (props.view === "camera" || props.view === "user");
 
   useEffect(() => {
     let cancelled = false;
@@ -64,8 +69,9 @@ export function Cube3D(props: Cube3DProps) {
         backView: "none",
         experimentalDragInput: props.controls ? "auto" : "none",
         tempoScale: props.controls ? 1 : 3,
-        cameraLatitude: 28,
-        cameraLongitude: 32,
+        // 追従するときは正面から（カメラと同じ視点）。固定のときは 3 面が見える標準の角度
+        cameraLatitude: following() ? 0 : 28,
+        cameraLongitude: following() ? 0 : 32,
       });
       host.current.appendChild(p);
       player.current = p;
@@ -101,7 +107,7 @@ export function Cube3D(props: Cube3DProps) {
     const step = () => {
       const obj = puzzleObj.current;
       if (!obj) return;
-      obj.quaternion.slerp(targetQ.current, 0.18);
+      obj.quaternion.slerp(targetQ.current, following() ? 0.3 : 0.18);
       scheduleRender();
       if (obj.quaternion.angleTo(targetQ.current) > 0.002) raf.current = requestAnimationFrame(step);
       else {
@@ -147,9 +153,43 @@ export function Cube3D(props: Cube3DProps) {
   }, [props.colors?.join()]);
 
   useEffect(() => {
+    // 連続的な姿勢が届いている間は、それに任せる
+    if (following() && performance.now() - lastPoseAt.current < 600) return;
     targetQ.current = props.orient === null ? new Quaternion() : matToQuat(ORIENTATIONS[props.orient]);
     animateOrientation();
   }, [props.orient]);
+
+  // 毎フレームの姿勢に追従: キューブ固定 → カメラ = R（傾き）· ORIENTATIONS[orient]。自分視点はさらに y2
+  useEffect(() => {
+    const p = player.current;
+    if (p) {
+      p.cameraLatitude = following() ? 0 : 28;
+      p.cameraLongitude = following() ? 0 : 32;
+    }
+    if (!following()) {
+      targetQ.current = props.orient === null ? new Quaternion() : matToQuat(ORIENTATIONS[props.orient]);
+      animateOrientation();
+      return;
+    }
+    let cur = -1;
+    let pending = -1;
+    let count = 0;
+    return controller.onFrameResult((m) => {
+      if (!m.pose) return;
+      let o = m.pose.orient;
+      // 持ち替えの判定は 2 フレーム続いてから（1 フレームの誤読で 90° 跳ねないように）
+      if (cur >= 0 && o !== cur) {
+        count = o === pending ? count + 1 : 1;
+        pending = o;
+        if (count < 2) o = cur;
+      }
+      cur = o;
+      const M = mul(m.pose.R, ORIENTATIONS[o]);
+      targetQ.current = matToQuat(props.view === "user" ? mul(mul(ROTATION.y, ROTATION.y), M) : M);
+      lastPoseAt.current = performance.now();
+      animateOrientation();
+    });
+  }, [props.view, props.controls]);
 
   useEffect(() => {
     const p = player.current;
@@ -159,7 +199,7 @@ export function Cube3D(props: Cube3DProps) {
   }, [props.setupAlg, props.alg]);
 
   return (
-    <div class="cube3d" ref={host}>
+    <div class={`cube3d${props.mirror ? " mirrored" : ""}`} ref={host}>
       {props.setupMoves === null && !props.controls && <div class="loading">3D表示を準備中…</div>}
     </div>
   );

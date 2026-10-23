@@ -11,7 +11,8 @@ export interface Calibration {
 export interface SolveMove {
   m: string; // キューブ固定（センター色基準）の表記
   r: string; // 持ち方基準の表記
-  t: number; // 計測開始からの ms
+  t: number; // 計測開始から、この手を回し終わるまでの ms
+  s?: number; // 計測開始から、この手を回し始めるまでの ms
   inferred?: boolean;
 }
 
@@ -25,6 +26,9 @@ export interface Solve {
   tps: number;
   splits?: { name: string; t: number; moves: number }[];
   tracked: boolean; // カメラ追跡で計測したか（手動停止なら false）
+  // 録画の精密解析: pending = 解析中（表示は速報値）/ done = 全フレームから確定 / failed = 解析できず速報値のまま
+  analysis?: "pending" | "done" | "failed";
+  provisionalMs?: number; // 解析前の速報値
 }
 
 const CAL_KEY = "cubevision.calibration.v1";
@@ -58,7 +62,8 @@ export const clearCalibration = () => {
   }
 };
 
-export const loadSolves = () => read<Solve[]>(SOLVES_KEY, []);
+// 解析中に閉じたソルブは録画が残っていないので、速報値のまま
+export const loadSolves = () => read<Solve[]>(SOLVES_KEY, []).map((s) => (s.analysis === "pending" ? { ...s, analysis: "failed" as const } : s));
 export const saveSolves = (s: Solve[]) => write(SOLVES_KEY, s);
 
 export const effectiveTime = (s: Solve) => (s.penalty === "DNF" ? Infinity : s.timeMs + (s.penalty === "+2" ? 2000 : 0));

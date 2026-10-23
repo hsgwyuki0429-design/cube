@@ -7,9 +7,12 @@
 //
 // 映像から直接手順を組み立てるのではなく、「候補手を状態機械で適用し、予測される見え方と照合する」。
 //
+// 高速回転（〜10TPS）では観測の間に3〜4手進むことがあるので、展開は深さ優先ではなく
+// 「どんな子孫もこれ以上安くならない」下限（現在のコスト + 手数）でビームの外を刈り込みながら深くする。
+//
 // 参考: AllefDouglasDev/rubik-cube (MIT) の app/src/tracking/decoder.ts のビームサーチを基に、
-// 姿勢（24通り）を仮説に含め、ソフトな色コストと見失い検出・復帰を加えたもの。
-import { MOVE_SRC, NUM_MOVES, NUM_ORIENTATIONS, OPPOSITE, VIEW, type CubeState, cubeFaceAt, moveFace } from "../cube/model";
+// 姿勢（24通り）を仮説に含め、ソフトな色コスト・下限による刈り込み・見失い検出と復帰を加えたもの。
+import { MOVE_SRC, NUM_MOVES, NUM_ORIENTATIONS, OPPOSITE, VIEW, type CubeState, cubeFaceAt, moveFace, statesEqual } from "../cube/model";
 import type { DecodedMove, Observation, TrackStatus } from "./types";
 
 export interface DecoderOptions {
@@ -28,17 +31,18 @@ export interface DecoderOptions {
 
 export const DEFAULT_DECODER: DecoderOptions = {
   beamWidth: 32,
-  maxMovesPerStep: 2,
+  maxMovesPerStep: 3,
   moveCost: 1,
   rotationCost: 1.5,
   confirmMargin: 2.5,
   uncertainCost: 3.2,
   lostAfter: 3,
-  recoveryDepth: 3,
+  recoveryDepth: 4,
 };
 
 interface MoveNode {
   move: number;
+  t0: number;
   t: number;
   orient: number;
   inferred: boolean;
@@ -67,55 +71,51 @@ function hashState(s: Uint8Array): [number, number] {
 }
 const combineKey = (h: [number, number], o: number) => (h[0] & 0x1fffff) * 0x100000000 + (((h[1] ^ Math.imul(o + 1, 0x9e3779b1)) >>> 0));
 
-function* moveSequences(depth: number): Generator<number[]> {
-  yield [];
-  if (depth < 1) return;
-  for (let a = 0; a < NUM_MOVES; a++) {
-    yield [a];
-    if (depth < 2) continue;
-    const fa = moveFace(a);
-    for (let b = 0; b < NUM_MOVES; b++) {
-      const fb = moveFace(b);
-      if (fb === fa || (OPPOSITE[fa] === fb && fa > fb)) continue;
-      yield [a, b];
-      if (depth < 3) continue;
-      for (let c = 0; c < NUM_MOVES; c++) {
-        const fc = moveFace(c);
-        if (fc === fb || (OPPOSITE[fb] === fc && fb > fc)) continue;
-        yield [a, b, c];
-        if (depth < 4) continue;
-        for (let d = 0; d < NUM_MOVES; d++) {
-          const fd = moveFace(d);
-          if (fd === fc || (OPPOSITE[fc] === fd && fc > fd)) continue;
-          yield [a, b, c, d];
-        }
-      }
-    }
-  }
-}
-
-// 展開する手順の木（深さごとに親子で再利用するため、前計算しておく）
+// 展開する手順の木（深さごとに並べ、親の状態から1手だけ進めて子の状態を作る）。
+// 同じ面の連続（R R）と、反対面の並べ替え（L R と R L）は同じ状態になるので片方だけ作る。
 interface SeqTree {
-  seqs: number[][];
+  move: Int8Array; // 最後の手
   parent: Int32Array; // 1手短い親の番号（深さ0は -1）
+  levelStart: number[]; // levelStart[d] .. levelStart[d+1]-1 が深さ d
 }
 const treeCache = new Map<number, SeqTree>();
 function sequenceTree(depth: number): SeqTree {
   let t = treeCache.get(depth);
-  if (!t) {
-    const seqs = [...moveSequences(depth)];
-    const index = new Map(seqs.map((s, i) => [s.join(","), i]));
-    const parent = new Int32Array(seqs.length);
-    seqs.forEach((s, i) => (parent[i] = s.length ? index.get(s.slice(0, -1).join(","))! : -1));
-    t = { seqs, parent };
-    treeCache.set(depth, t);
+  if (t) return t;
+  const move: number[] = [-1];
+  const parent: number[] = [-1];
+  const levelStart = [0, 1];
+  for (let d = 1; d <= depth; d++) {
+    const from = levelStart[d - 1];
+    const to = levelStart[d];
+    for (let p = from; p < to; p++) {
+      const last = move[p];
+      for (let m = 0; m < NUM_MOVES; m++) {
+        if (last >= 0) {
+          const fa = moveFace(last);
+          const fb = moveFace(m);
+          if (fb === fa || (OPPOSITE[fa] === fb && fa > fb)) continue;
+        }
+        move.push(m);
+        parent.push(p);
+      }
+    }
+    levelStart.push(move.length);
   }
+  t = { move: Int8Array.from(move), parent: Int32Array.from(parent), levelStart };
+  treeCache.set(depth, t);
   return t;
+}
+
+function seqOf(tree: SeqTree, node: number): number[] {
+  const out: number[] = [];
+  for (let n = node; n > 0; n = tree.parent[n]) out.push(tree.move[n]);
+  return out.reverse();
 }
 
 function toList(tail: MoveNode | null): DecodedMove[] {
   const out: DecodedMove[] = [];
-  for (let n = tail; n; n = n.prev) out.push({ move: n.move, t: n.t, orient: n.orient, ...(n.inferred ? { inferred: true } : {}) });
+  for (let n = tail; n; n = n.prev) out.push({ move: n.move, t0: n.t0, t: n.t, orient: n.orient, ...(n.inferred ? { inferred: true } : {}) });
   return out.reverse();
 }
 
@@ -148,6 +148,41 @@ function evalCost(state: Uint8Array, c: CompiledObs): number {
   return sum;
 }
 
+// 大きさ k の「小さい方から k 個」のコストを保つ（k 番目 = 刈り込みのしきい値）
+class TopK {
+  private heap: number[] = []; // 最大ヒープ
+  constructor(private readonly k: number) {}
+  get threshold(): number {
+    return this.heap.length < this.k ? Infinity : this.heap[0];
+  }
+  push(v: number): void {
+    const h = this.heap;
+    if (h.length < this.k) {
+      h.push(v);
+      let i = h.length - 1;
+      while (i > 0) {
+        const p = (i - 1) >> 1;
+        if (h[p] >= h[i]) break;
+        [h[p], h[i]] = [h[i], h[p]];
+        i = p;
+      }
+    } else if (v < h[0]) {
+      h[0] = v;
+      let i = 0;
+      for (;;) {
+        const l = 2 * i + 1;
+        const r = l + 1;
+        let m = i;
+        if (l < h.length && h[l] > h[m]) m = l;
+        if (r < h.length && h[r] > h[m]) m = r;
+        if (m === i) break;
+        [h[m], h[i]] = [h[i], h[m]];
+        i = m;
+      }
+    }
+  }
+}
+
 export class MoveDecoder {
   readonly options: DecoderOptions;
   private beam: Hypothesis[];
@@ -157,6 +192,7 @@ export class MoveDecoder {
   observations = 0;
   lastObservationCost = 0;
   recoveries = 0;
+  lastExpanded = 0; // 直近の観測で評価した候補数（性能の目安）
 
   // orients を省略すると 24 姿勢すべてから始める（最初の観測で決まる）
   constructor(start: CubeState, options: Partial<DecoderOptions> = {}, orients?: number[]) {
@@ -171,7 +207,7 @@ export class MoveDecoder {
   }
 
   // 観測の中心色から、ありうる姿勢を絞る（センターは動かないので、見えている中心色で姿勢がほぼ決まる）
-  private orientationCandidates(obs: Observation): { orients: number[]; centerCost: Float64Array } {
+  private orientationCandidates(obs: Observation): number[] {
     const centerCost = new Float64Array(NUM_ORIENTATIONS);
     let min = Infinity;
     for (let o = 0; o < NUM_ORIENTATIONS; o++) {
@@ -182,12 +218,12 @@ export class MoveDecoder {
     }
     const orients: number[] = [];
     for (let o = 0; o < NUM_ORIENTATIONS; o++) if (centerCost[o] <= min + 0.75) orients.push(o);
-    return { orients, centerCost };
+    return orients;
   }
 
   private expand(beam: Hypothesis[], obs: Observation, depth: number, inferred: boolean): Hypothesis[] {
     const { moveCost, rotationCost, beamWidth } = this.options;
-    const { orients } = this.orientationCandidates(obs);
+    const orients = this.orientationCandidates(obs);
     const compiled = new Map<number, CompiledObs>();
     const getCompiled = (o: number) => {
       let c = compiled.get(o);
@@ -195,45 +231,82 @@ export class MoveDecoder {
       return c;
     };
     const tree = sequenceTree(depth);
-    const nSeq = tree.seqs.length;
-    const states = Array.from({ length: nSeq }, () => new Uint8Array(54));
+    const nodes = tree.move.length;
+    const states = Array.from({ length: nodes }, () => new Uint8Array(54));
+    const top = new TopK(beamWidth);
 
     interface Cand {
       cost: number;
       obsCost: number;
       hyp: number;
-      seq: number;
+      node: number;
       orient: number;
-      key: number;
       moves: number;
     }
     const best = new Map<number, Cand>();
-    beam.forEach((h, hi) => {
-      states[0].set(h.state);
-      for (let si = 1; si < nSeq; si++) {
-        const seq = tree.seqs[si];
-        const p = MOVE_SRC[seq[seq.length - 1]];
-        const src = states[tree.parent[si]];
-        const dst = states[si];
-        for (let i = 0; i < 54; i++) dst[i] = src[p[i]];
-      }
+    let evaluated = 0;
+    const order = beam.map((h, i) => ({ h, i })).sort((a, b) => a.h.cost - b.h.cost);
+
+    // 深さ d の節点を、仮説 h について評価する（親の深さ d-1 の状態は states に入っている前提）
+    const evalLevel = (h: Hypothesis, hi: number, d: number) => {
       const os = orients.includes(h.orient) ? orients : [...orients, h.orient];
       const prevLen = h.tail?.len ?? 0;
-      for (let si = 0; si < nSeq; si++) {
-        const hash = hashState(states[si]);
-        const seqLen = tree.seqs[si].length;
+      const from = tree.levelStart[d];
+      const to = tree.levelStart[d + 1];
+      for (let node = from; node < to; node++) {
+        const dst = states[node];
+        if (d === 0) dst.set(h.state);
+        else {
+          const p = MOVE_SRC[tree.move[node]];
+          const src = states[tree.parent[node]];
+          for (let i = 0; i < 54; i++) dst[i] = src[p[i]];
+        }
+        let hash: [number, number] | null = null;
         for (const o of os) {
-          const obsCost = evalCost(states[si], getCompiled(o));
-          const cost = h.cost + seqLen * moveCost + (o === h.orient ? 0 : rotationCost) + obsCost;
+          const base = h.cost + d * moveCost + (o === h.orient ? 0 : rotationCost);
+          if (base >= top.threshold) continue;
+          const obsCost = evalCost(dst, getCompiled(o));
+          evaluated++;
+          const cost = base + obsCost;
+          if (cost >= top.threshold) continue;
+          hash ??= hashState(dst);
           const key = combineKey(hash, o);
           const prev = best.get(key);
-          const moves = prevLen + seqLen;
+          const moves = prevLen + d;
           if (!prev || cost < prev.cost - 1e-9 || (Math.abs(cost - prev.cost) <= 1e-9 && moves < prev.moves)) {
-            best.set(key, { cost, obsCost, hyp: hi, seq: si, orient: o, key, moves });
+            if (!prev) top.push(cost);
+            best.set(key, { cost, obsCost, hyp: hi, node, orient: o, moves });
           }
         }
       }
-    });
+    };
+
+    // 1) 全仮説を浅く（深さ 2 まで）
+    const shallow = Math.min(depth, 2);
+    for (const { h, i } of order) for (let d = 0; d <= shallow; d++) evalLevel(h, i, d);
+    // 2) 下限がしきい値より安い仮説だけ深く
+    for (const { h, i } of order) {
+      if (depth <= shallow || h.cost + (shallow + 1) * moveCost >= top.threshold) continue;
+      for (let d = 0; d <= shallow; d++) {
+        // 深さ 2 までの状態を作り直す（評価は済んでいるので状態だけ）
+        const from = tree.levelStart[d];
+        const to = tree.levelStart[d + 1];
+        for (let node = from; node < to; node++) {
+          if (d === 0) states[node].set(h.state);
+          else {
+            const p = MOVE_SRC[tree.move[node]];
+            const src = states[tree.parent[node]];
+            const dst = states[node];
+            for (let k = 0; k < 54; k++) dst[k] = src[p[k]];
+          }
+        }
+      }
+      for (let d = shallow + 1; d <= depth; d++) {
+        if (h.cost + d * moveCost >= top.threshold) break;
+        evalLevel(h, i, d);
+      }
+    }
+    this.lastExpanded = evaluated;
 
     const sorted = [...best.values()].sort((a, b) => a.cost - b.cost || a.moves - b.moves);
     const kept = sorted.slice(0, beamWidth);
@@ -242,7 +315,7 @@ export class MoveDecoder {
     const base = kept.length ? kept[0].cost : 0;
     return kept.map((c) => {
       const h = beam[c.hyp];
-      const seq = tree.seqs[c.seq];
+      const seq = seqOf(tree, c.node);
       let state = h.state;
       let tail = h.tail;
       seq.forEach((m, k) => {
@@ -250,8 +323,10 @@ export class MoveDecoder {
         const p = MOVE_SRC[m];
         for (let i = 0; i < 54; i++) next[i] = state[p[i]];
         state = next;
-        const t = seq.length === 1 ? (t0 + t1) / 2 : t0 + ((t1 - t0) * (k + 1)) / (seq.length + 1);
-        tail = { move: m, t, orient: c.orient, inferred, prev: tail, len: (tail?.len ?? 0) + 1 };
+        // 1観測に複数手が入るときは、前の観測の終わりから今回の観測までを等分する
+        const a = t0 + ((t1 - t0) * k) / seq.length;
+        const b = t0 + ((t1 - t0) * (k + 1)) / seq.length;
+        tail = { move: m, t0: a, t: b, orient: c.orient, inferred, prev: tail, len: (tail?.len ?? 0) + 1 };
       });
       return { state: seq.length ? state : h.state, orient: c.orient, cost: c.cost - base, obsCost: c.obsCost, tail };
     });
@@ -276,7 +351,7 @@ export class MoveDecoder {
     if (this.uncertainStreak >= this.options.lostAfter) {
       // 見失い: 最後に辻褄が合っていた時点から、より深く探す
       const seeds = this.lastGoodBeam.slice(0, 6);
-      const recovered = this.expand(seeds, obs, this.options.recoveryDepth, true);
+      const recovered = this.expand(seeds, obs, Math.max(this.options.recoveryDepth, this.options.maxMovesPerStep), true);
       if (recovered.length && recovered[0].obsCost <= this.options.uncertainCost) {
         this.beam = recovered;
         this.lastGoodBeam = recovered;
@@ -287,6 +362,35 @@ export class MoveDecoder {
         this.status = "lost";
       }
     }
+  }
+
+  // 最後の状態が分かっている（タイマーで完成を検出したなど）: 有力な仮説のうち、
+  // その状態にたどり着く（必要なら maxExtra 手まで足す）最も安いものを選ぶ。足した手は inferred。
+  finish(target: CubeState, t: number, maxExtra = 2, margin = 6): DecodedMove[] | null {
+    const tree = sequenceTree(maxExtra);
+    let bestCost = Infinity;
+    let bestMoves: DecodedMove[] | null = null;
+    const base = this.beam[0]?.cost ?? 0;
+    for (const h of this.beam) {
+      if (h.cost > base + margin) continue;
+      const states = Array.from({ length: tree.move.length }, () => new Uint8Array(54));
+      for (let node = 0; node < tree.move.length; node++) {
+        if (node === 0) states[0].set(h.state);
+        else {
+          const p = MOVE_SRC[tree.move[node]];
+          const src = states[tree.parent[node]];
+          for (let i = 0; i < 54; i++) states[node][i] = src[p[i]];
+        }
+        let d = 0;
+        for (let n = node; n > 0; n = tree.parent[n]) d++;
+        const cost = h.cost + d * this.options.moveCost;
+        if (cost < bestCost && statesEqual(states[node], target)) {
+          bestCost = cost;
+          bestMoves = [...toList(h.tail), ...seqOf(tree, node).map((m) => ({ move: m, t0: t, t, orient: h.orient, inferred: true }))];
+        }
+      }
+    }
+    return bestMoves;
   }
 
   best(): Hypothesis {

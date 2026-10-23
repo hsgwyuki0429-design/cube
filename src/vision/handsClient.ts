@@ -35,7 +35,10 @@ function grow(poly: Pt[], margin: number): Pt[] {
 export class HandsClient {
   private worker: Worker | null = null;
   private busy = false;
+  private pendingT = 0;
   hulls: Pt[][] = [];
+  // 検出結果の履歴（フレームの時刻つき）。ソルブ後の精密解析で、各フレームの手を隠すのに使う
+  history: { t: number; hulls: Pt[][] }[] = [];
   landmarks: Pt[][] = [];
   status: "off" | "loading" | "ready" | "error" = "off";
   error: string | null = null;
@@ -58,6 +61,8 @@ export class HandsClient {
         this.busy = false;
         this.landmarks = m.hands;
         this.hulls = (m.hands as Pt[][]).map((h) => grow(convexHull(h), 0.025));
+        this.history.push({ t: this.pendingT, hulls: this.hulls });
+        while (this.history.length && this.pendingT - this.history[0].t > 150000) this.history.shift();
         this.onUpdate?.(this.hulls);
       }
     };
@@ -70,6 +75,7 @@ export class HandsClient {
     this.status = "off";
     this.hulls = [];
     this.landmarks = [];
+    this.history = [];
     this.busy = false;
     this.onUpdate?.([]);
   }
@@ -77,9 +83,14 @@ export class HandsClient {
   private lastSubmit = 0;
 
   // 15Hz まで（手の位置は数フレームに1回で十分。遅い端末で認識処理の CPU を奪わないように）
+  historyBetween(t0: number, t1: number): { t: number; hulls: Pt[][] }[] {
+    return this.history.filter((h) => h.t >= t0 - 300 && h.t <= t1 + 300);
+  }
+
   async submit(video: HTMLVideoElement, t: number): Promise<void> {
     if (this.status !== "ready" || this.busy || !video.videoWidth || !this.worker || t - this.lastSubmit < 66) return;
     this.lastSubmit = t;
+    this.pendingT = t;
     this.busy = true;
     try {
       const w = 320;

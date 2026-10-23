@@ -6,6 +6,7 @@ import { averageOf, formatTime } from "../app/storage";
 import { useStore } from "../app/store";
 import { cancelTimer, inspectionTick, newScramble, setPenalty, stopManually, timerStore } from "../app/timer";
 import { MOVE_NAMES, relativeMove } from "../cube/model";
+import type { Solve } from "../app/storage";
 import { TrackStatus } from "./FreePanel";
 import { viewOrient } from "./notation";
 
@@ -22,6 +23,28 @@ function useTicker(active: boolean): number {
     return () => cancelAnimationFrame(raf);
   }, [active]);
   return now;
+}
+
+export function AnalysisBadge({ solve, progress }: { solve: Solve; progress?: number }) {
+  if (solve.analysis === "pending")
+    return (
+      <span class="chip analysis pending" title="録画を1フレームずつ解析しています。終わるとタイムと手順が確定します">
+        解析中{progress !== undefined && progress > 0 ? ` ${Math.round(progress * 100)}%` : "…"}（速報値）
+      </span>
+    );
+  if (solve.analysis === "done")
+    return (
+      <span class="chip analysis done" title={solve.provisionalMs !== undefined ? `速報値 ${formatTime(solve.provisionalMs)}` : undefined}>
+        確定（全フレーム解析）
+      </span>
+    );
+  if (solve.analysis === "failed")
+    return (
+      <span class="chip analysis failed" title="録画から完成までをたどれなかったため、リアルタイムの結果のままです">
+        速報値
+      </span>
+    );
+  return null;
 }
 
 export function TimerPanel() {
@@ -58,6 +81,9 @@ export function TimerPanel() {
                 {formatTime(t.result.penalty === "DNF" ? Infinity : t.result.timeMs + (t.result.penalty === "+2" ? 2000 : 0))}
                 {t.result.penalty === "+2" && <span class="small muted"> (+2)</span>}
               </div>
+              <div style={{ textAlign: "center", marginBottom: 8 }}>
+                <AnalysisBadge solve={t.result} progress={t.analysisProgress} />
+              </div>
               <div class="stats">
                 <div class="stat">
                   <div class="k">手数</div>
@@ -87,6 +113,15 @@ export function TimerPanel() {
                     })}
                   </tbody>
                 </table>
+              )}
+              {t.result.moves.length > 0 && (
+                <div class="moves" style={{ marginTop: 10, maxHeight: 120 }}>
+                  {t.result.moves.map((m, i) => (
+                    <span key={i} class={`mv${m.inferred ? " inferred" : ""}`} title={`${(m.t / 1000).toFixed(2)}s`}>
+                      {settings.notation === "relative" ? m.r : m.m}
+                    </span>
+                  ))}
+                </div>
               )}
               <div class="btn-row" style={{ marginTop: 10 }}>
                 <button class="btn small" onClick={() => setPenalty(t.result!.id, t.result!.penalty === "+2" ? "" : "+2")}>
@@ -123,6 +158,7 @@ export function TimerPanel() {
           </div>
           <p class="muted small">
             スクランブルどおりに崩すと自動でインスペクションに入り、最初の1手でタイマーが始まり、揃った瞬間に止まります（スマートキューブと同じ流れ）。
+            タイムは最初の手の回し始めから最後の手の回し終わりまでで、止めた後に録画を全フレーム解析して確定します。
           </p>
         </>
       )}

@@ -9,17 +9,19 @@ export interface Settings {
   mirror: boolean; // プレビューを鏡像表示（インカメラ向け）
   scheme: Scheme;
   notation: "relative" | "absolute"; // 持ち方基準 / 色（センター）基準
-  viewpoint: "user" | "camera"; // 3D 表示を自分から見た向きにするか、カメラから見た向きにするか
-  follow: boolean; // 3D をキューブの向きに追従させる
+  viewpoint: "user" | "camera"; // 持ち方基準の表記を、自分から見た向きにするか、カメラから見た向きにするか
+  cube3dView: "camera" | "user" | "fixed"; // 3D: カメラの映像と同じ傾きで追従 / 自分から見た傾きで追従 / 固定
   detection: "auto" | "guide";
   handMask: boolean;
   debug: boolean;
   inspection: boolean;
   sound: boolean;
+  analyzeSolves: boolean; // ソルブ中を録画し、後で全フレームを解析して時間と手順を確定する
   workWidth: number;
   beamWidth: number;
   maxMovesPerStep: number;
-  stableFrames: number;
+  stableMs: number;
+  cameraFps: number;
   rotationCost: number;
   maxColorDistance: number;
 }
@@ -32,16 +34,18 @@ export const DEFAULT_SETTINGS: Settings = {
   scheme: "standard",
   notation: "relative",
   viewpoint: "user",
-  follow: true,
+  cube3dView: "camera",
   detection: "auto",
   handMask: true,
   debug: false,
   inspection: true,
   sound: true,
+  analyzeSolves: true,
   workWidth: 800,
   beamWidth: 32,
-  maxMovesPerStep: 2,
-  stableFrames: 3,
+  maxMovesPerStep: 3,
+  stableMs: 33,
+  cameraFps: 60,
   rotationCost: 1.5,
   maxColorDistance: 32,
 };
@@ -51,7 +55,16 @@ const KEY = "cubevision.settings.v1";
 function load(): Settings {
   try {
     const raw = localStorage.getItem(KEY);
-    if (raw) return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+    if (raw) {
+      const saved = JSON.parse(raw);
+      // 旧版（高速回転対応前）の認識設定は新しい既定値に置き換える
+      if (saved.stableMs === undefined) delete saved.maxMovesPerStep;
+      delete saved.stableFrames;
+      // 旧版の「3D をキューブの向きに合わせる」
+      if (saved.follow === false && saved.cube3dView === undefined) saved.cube3dView = "fixed";
+      delete saved.follow;
+      return { ...DEFAULT_SETTINGS, ...saved };
+    }
   } catch {
     // 保存領域が使えない（プライベートモードなど）
   }

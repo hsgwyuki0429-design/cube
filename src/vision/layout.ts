@@ -14,6 +14,15 @@ export interface PlacedFace {
   H: Mat3;
   found: number;
   latticeIndex: number;
+  support?: boolean[]; // スロットのセルごとに、ステッカーの四角形が実際に見つかったか
+}
+
+// 格子セルの四角形の有無を、スロットのセル順に並べ直す
+function supportOf(face: LatticeFace, rot: number): boolean[] {
+  return Array.from({ length: 9 }, (_, cell) => {
+    const [lu, lv] = latticeCell(rot, Math.floor(cell / 3), cell % 3);
+    return face.cellQuad[lv * 3 + lu] >= 0;
+  });
 }
 
 // スロットのセル (row, col) → 格子セル (lu, lv)
@@ -116,7 +125,7 @@ export function layoutFaces(faces: LatticeFace[], opts: LayoutOptions = {}): Pla
       if (angleDiff(a, opts.anchorAngle) < Math.PI / 6 && angleDiff(a, 0) < (55 * Math.PI) / 180) rot = r;
     }
   }
-  const placed: PlacedFace[] = [{ slot: F, rot, H: anchor.H, found: anchor.found, latticeIndex: anchorIdx }];
+  const placed: PlacedFace[] = [{ slot: F, rot, H: anchor.H, found: anchor.found, latticeIndex: anchorIdx, support: supportOf(anchor, rot) }];
   const inv = invertH(anchor.H);
   const toAnchor = (p: Pt): Pt => {
     const [u, v] = applyH(inv, p[0], p[1]);
@@ -163,7 +172,7 @@ export function layoutFaces(faces: LatticeFace[], opts: LayoutOptions = {}): Pla
       }
     }
     const existing = placed.findIndex((p) => p.slot === slot);
-    const entry = { slot, rot: bestRot, H, found: g.found, latticeIndex: gi };
+    const entry: PlacedFace = { slot, rot: bestRot, H, found: g.found, latticeIndex: gi, support: H === g.H ? supportOf(g, bestRot) : undefined };
     if (existing < 0) placed.push(entry);
     else if (placed[existing].slot !== F && placed[existing].found < g.found) placed[existing] = entry;
   });

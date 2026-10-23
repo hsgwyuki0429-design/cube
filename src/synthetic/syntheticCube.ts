@@ -55,7 +55,8 @@ export class SyntheticCube {
   private camAnim: { start: number; duration: number; to: THREE.Vector3 } | null = null;
   state: CubeState = solvedState();
   orient = 0;
-  truth: { move: number; t: number }[] = [];
+  truth: { move: number; t: number; start: number }[] = []; // start / t: 回し始め・回し終わり（performance.now()）
+  solveFrom = -1; // タイマーのテストで、解き始めた手の位置（truth の添字）
   busy = false;
 
   constructor(options: SyntheticOptions = {}) {
@@ -254,7 +255,7 @@ export class SyntheticCube {
         for (const c of a.cubies!) this.group.attach(c.obj);
         this.group.remove(a.pivot!);
         this.bake(a.cubies!, a.move!);
-        this.truth.push({ move: a.move!, t: now });
+        this.truth.push({ move: a.move!, t: now, start: a.start! });
       }
       this.current = null;
       a.resolve();

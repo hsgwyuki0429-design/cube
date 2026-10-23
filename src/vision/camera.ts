@@ -29,7 +29,8 @@ export function cameraErrorMessage(e: unknown): string {
   return `カメラを開始できませんでした（${name ?? String(e)}）。`;
 }
 
-type FrameCallback = (now: number) => void;
+// t: フレームの時刻（ms、performance.now() の時間軸）。撮影時刻が分かればそれ（表示のタイミングの揺れを含まない）
+type FrameCallback = (t: number) => void;
 
 export class CameraSource {
   readonly video: HTMLVideoElement;
@@ -40,6 +41,8 @@ export class CameraSource {
   private frameTimes: number[] = [];
   private running = false;
   private handle = 0;
+  private captureOffset: number | null = null;
+  private lastT = 0;
 
   constructor(video?: HTMLVideoElement) {
     this.video = video ?? document.createElement("video");
@@ -100,17 +103,34 @@ export class CameraSource {
     return () => this.callbacks.delete(cb);
   }
 
+  // 撮影時刻（captureTime）があればそれを使う。表示の時刻（now）は画面の更新に合わせて最大 1 コマ分揺れる。
+  // 撮影時刻が来ないフレームは、直前までのずれを引いて同じ時間軸にそろえる
+  private frameTime(now: number, meta?: VideoFrameCallbackMetadata): number {
+    const cap = (meta as { captureTime?: number } | undefined)?.captureTime;
+    let t: number;
+    if (cap !== undefined && cap > now - 1000 && cap <= now + 1) {
+      this.captureOffset = now - cap;
+      t = cap;
+    } else t = this.captureOffset !== null ? now - this.captureOffset : now;
+    t = Math.max(t, this.lastT + 0.1);
+    this.lastT = t;
+    return t;
+  }
+
   private loop(): void {
-    const tick = (now: number) => {
+    this.captureOffset = null;
+    this.lastT = 0;
+    const tick = (now: number, meta?: VideoFrameCallbackMetadata) => {
       if (!this.running) return;
       this.frameTimes.push(now);
       while (this.frameTimes.length && now - this.frameTimes[0] > 1000) this.frameTimes.shift();
       this.fps = this.frameTimes.length;
-      for (const cb of this.callbacks) cb(now);
+      const t = this.frameTime(now, meta);
+      for (const cb of this.callbacks) cb(t);
       schedule();
     };
     const schedule = () => {
-      if ("requestVideoFrameCallback" in this.video) this.handle = this.video.requestVideoFrameCallback((now) => tick(now));
+      if ("requestVideoFrameCallback" in this.video) this.handle = this.video.requestVideoFrameCallback((now, meta) => tick(now, meta));
       else requestAnimationFrame((now) => tick(now)); // 古いブラウザ向け
     };
     schedule();

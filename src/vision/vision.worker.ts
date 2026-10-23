@@ -2,10 +2,13 @@
 // メインスレッドは描画と UI だけを受け持つ。
 import cvModule from "@techstark/opencv-js";
 import { TrackerEngine } from "../track/engine";
+import { decodeRecording } from "./decode";
+import { estimatePose } from "./pose";
+import { Refiner } from "./refine";
 import type { Lab } from "./color";
 import type { Pt } from "./homography";
 import { DEFAULT_PIPELINE, type PipelineConfig, type PipelineMemory, processFrame } from "./pipeline";
-import type { FromWorker, ToWorker } from "./protocol";
+import type { FrameMessage, FromWorker, ToWorker } from "./protocol";
 import { type CV, initOpenCv } from "./quads";
 
 let cv: CV | null = null;
@@ -55,6 +58,32 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
       case "track-stop":
         engine = null;
         return;
+      case "track-query":
+        post({ type: "track-snapshot", id: msg.id, track: engine ? engine.snapshot() : null });
+        return;
+      case "refine": {
+        // ソルブ後の精密解析（タイマー用の別の Worker で動かす。リアルタイムの追跡は止めない）
+        const { recording, input, id } = msg;
+        try {
+          const refiner = new Refiner(cv, { ...input, pipeline: { ...config, ...input.pipeline } });
+          const total = recording.chunks.filter((c) => c.timestamp / 1000 >= input.from && c.timestamp / 1000 <= input.to).length;
+          let done = 0;
+          let lastPost = 0;
+          await decodeRecording(recording, (img, t) => {
+            if (t < input.from || t > input.to) return;
+            refiner.push(img, t);
+            done++;
+            if (performance.now() - lastPost > 200) {
+              lastPost = performance.now();
+              post({ type: "refine-progress", id, done, total });
+            }
+          });
+          post({ type: "refine-result", id, result: refiner.result() });
+        } catch (e) {
+          post({ type: "refine-error", id, message: e instanceof Error ? e.message : String(e) });
+        }
+        return;
+      }
       case "frame": {
         const t0 = performance.now();
         const { bitmap } = msg;
@@ -66,8 +95,17 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
         const img = ctx!.getImageData(0, 0, w, h);
         const handsPx = hands.map((hull) => hull.map(([x, y]) => [x * w, y * h] as Pt));
         const result = processFrame(cv, img, msg.t, config, memory, engine ? engine.colors.refs : refs, handsPx);
-        const track = engine?.push({ t: msg.t, faces: result.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid })) }) ?? undefined;
-        post({ type: "frame", id: msg.id, t: msg.t, width: w, height: h, faces: result.faces, quads: result.quads, procMs: performance.now() - t0, track });
+        const reading = { t: msg.t, faces: result.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked })) };
+        const track = engine?.push(reading) ?? undefined;
+        let looksSolved: boolean | undefined;
+        let pose: FrameMessage["pose"];
+        if (engine && reading.faces.length) {
+          const labels = engine.labelsOf(reading);
+          looksSolved = engine.looksSolved(reading, labels);
+          const p = estimatePose(result.faces, w, h);
+          if (p && p.err < Math.max(4, w / 100)) pose = { R: p.R, err: p.err, orient: engine.frameOrient(reading, labels) };
+        }
+        post({ type: "frame", id: msg.id, t: msg.t, width: w, height: h, faces: result.faces, quads: result.quads, procMs: performance.now() - t0, track, looksSolved, pose });
         return;
       }
     }
