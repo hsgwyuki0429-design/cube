@@ -27,6 +27,10 @@ export interface PipelineConfig {
   // 隣の面の傾きを、共有する辺を蝶番にして画像に合うよう探す（ライブ）。ソルブ後の解析では求めた姿勢のまま射影し、
   // ステッカーらしさで捨てない（実際の動画で、探すと前後からつなげなくなった）
   hingeSearch: boolean;
+  // 窓の位置が曖昧な面は、ずらした格子での読みも付ける（ソルブ後の解析）。前後からつなぐ解析では、実際の T-perm の
+  // 動画（8 秒）がこれでつながる。ライブの前向きの追跡では、選べる読みが増えると雑音を誤った手で説明しやすくなり、
+  // 同じ動画で 14 手正しかったのが 7 手目以降で崩れたので使わない
+  altReadings: boolean;
   // 面が見つからないとき、溝で区切った候補でやり直す（1 フレームの処理が 2〜5 倍になるので、ソルブ後の解析だけ）
   grooveRetry: boolean;
   // 画像が大きなフレームの一部（切り出し）のとき、そのフレーム全体のこの画像の座標での位置と大きさ。フレームに対する
@@ -52,6 +56,7 @@ export const DEFAULT_PIPELINE: PipelineConfig = {
   predictFaces: true,
   minFacing: 0.15,
   hingeSearch: true,
+  altReadings: false,
   grooveRetry: false,
 };
 
@@ -439,7 +444,7 @@ export function processFrame(
       }
       placed = layoutFaces(faces, { anchor, anchorAngle: recent && t - recent.t < 300 ? recent.angle : undefined });
       // 窓の位置が曖昧な面は、ずらした格子も読みの候補にする（指で 1 段隠れた面と、隣の面の段を取り違えない）
-      for (const p of placed) {
+      for (const p of config.altReadings ? placed : []) {
         const g = faces[p.latticeIndex];
         if (!g?.alts.length) continue;
         const alt = [g.H, ...g.alts].filter((h) => h !== p.H).slice(0, MAX_ALTS);
