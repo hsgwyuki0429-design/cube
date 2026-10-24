@@ -1,6 +1,6 @@
 // 6面スキャン: 手順、1面の取り込み（安定判定）、54枚の色割り当て、状態の組み立てと自動修正。
 import { B, D, F, FACES, L, R, U, type CubeState } from "../cube/model";
-import { analyzeState, describeProblem, type StateProblem } from "../cube/pattern";
+import { analyzeState, describeProblem, mostLikelyState, type StateProblem } from "../cube/pattern";
 import { type Lab, NAMED_COLORS, colorDistance, meanLab, medianLab } from "../vision/color";
 import { assignBalanced, hungarian } from "./assign";
 
@@ -36,23 +36,43 @@ export function scanSteps(scheme: Scheme): ScanStep[] {
 }
 
 // ---- 1面の取り込み ----
+//
+// 実物では、指がステッカーを隠したり、艶の映り込みが動いたり、面の検出が数フレーム途切れたりする。
+// 1 フレームで 9 マスがそろうのを待つのではなく、マスごとに読めたフレームの色をためて、
+// どのマスも十分な数の一致した読みがそろったら取り込む（隠れたマスは、見えたときの読みで埋まる）。
 
 export interface CaptureOptions {
-  frames: number; // この枚数のあいだ色が安定していたら取り込む
-  tolerance: number; // セルごとの、中央値からの許容色差
+  minFrames: number; // 少なくともこの枚数は見る
+  minSamples: number; // マスごとに、一致した読みがこれだけそろったら確定
+  tolerance: number; // マスの中央値からの許容色差
   minNovelty: number; // 取り込み済みの面の中心色とこれ以上違うこと
+  maxMissing: number; // 面が見えないフレームがこれだけ続いたらやり直す
+  keep: number; // マスごとにためる読みの数
 }
 
-export const DEFAULT_CAPTURE: CaptureOptions = { frames: 12, tolerance: 12, minNovelty: 16 };
+export const DEFAULT_CAPTURE: CaptureOptions = { minFrames: 10, minSamples: 6, tolerance: 14, minNovelty: 16, maxMissing: 24, keep: 30 };
+
+// 読めなかったマス（指でずっと隠れていた）。組み立てのときに、ほかのマスとピースの制約から決める
+export const UNKNOWN_LAB: Lab = [Number.NaN, Number.NaN, Number.NaN];
+export const isUnknownLab = (l: Lab) => Number.isNaN(l[0]);
 
 export interface CaptureProgress {
   progress: number; // 0..1
-  labs?: Lab[]; // 安定したら 9 セルの中央値
+  labs?: Lab[]; // 確定したら 9 マスの色
   reason?: "no-face" | "unstable" | "duplicate";
+  covered?: boolean[]; // マスごとに読みがそろったか（画面に出す）
+}
+
+export interface CaptureReading {
+  labs: Lab[];
+  valid: boolean[]; // 読めた（手で隠れていない）マス
 }
 
 export class FaceCapture {
-  private frames: Lab[][] = [];
+  private cells: Lab[][] = Array.from({ length: 9 }, () => []);
+  private frames = 0;
+  private missing = 0;
+  private switching = 0;
   options: CaptureOptions;
 
   constructor(options: Partial<CaptureOptions> = {}) {
@@ -60,35 +80,64 @@ export class FaceCapture {
   }
 
   reset(): void {
-    this.frames = [];
+    this.cells = Array.from({ length: 9 }, () => []);
+    this.frames = 0;
+    this.missing = 0;
+    this.switching = 0;
   }
 
-  // labs: カメラ正面の面の 9 セル（読めなければ null）、previousCenters: 取り込み済みの面の中心色
-  push(labs: Lab[] | null, previousCenters: Lab[]): CaptureProgress {
-    if (!labs) {
-      this.frames = [];
-      return { progress: 0, reason: "no-face" };
+  private stats() {
+    const { tolerance, minSamples } = this.options;
+    return this.cells.map((samples) => {
+      if (!samples.length) return { med: null as Lab | null, inliers: [] as Lab[], ratio: 0, ok: false };
+      const med = medianLab(samples);
+      const inliers = samples.filter((l) => colorDistance(l, med) <= tolerance);
+      const ratio = inliers.length / samples.length;
+      return { med, inliers, ratio, ok: inliers.length >= minSamples && ratio >= 0.6 };
+    });
+  }
+
+  private progressOf(st: ReturnType<FaceCapture["stats"]>): number {
+    const per = st.map((c) => Math.min(1, c.inliers.length / this.options.minSamples) * (c.ratio >= 0.6 ? 1 : 0.5));
+    return (per.reduce((a, b) => a + b, 0) / 9) * Math.min(1, this.frames / this.options.minFrames);
+  }
+
+  // reading: カメラ正面の面（見つからなければ null）、previousCenters: 取り込み済みの面の中心色
+  push(reading: CaptureReading | null, previousCenters: Lab[]): CaptureProgress {
+    const o = this.options;
+    if (!reading) {
+      if (++this.missing > o.maxMissing) this.reset();
+      const st = this.stats();
+      return { progress: this.progressOf(st), reason: "no-face", covered: st.map((c) => c.ok) };
     }
-    if (previousCenters.some((c) => colorDistance(c, labs[4]) < this.options.minNovelty)) {
-      this.frames = [];
+    this.missing = 0;
+    const center = reading.valid[4] ? reading.labs[4] : null;
+    const st0 = this.stats();
+    const centerMed = st0[4].med;
+    // 別の面に変わった（中心の色が大きく違うフレームが続いた）らやり直す
+    if (center && centerMed && colorDistance(center, centerMed) > o.tolerance * 2.2) {
+      if (++this.switching < 3) return { progress: this.progressOf(st0), reason: "unstable", covered: st0.map((c) => c.ok) };
+      this.reset();
+    } else this.switching = 0;
+    const c = centerMed ?? center;
+    if (c && previousCenters.some((p) => colorDistance(p, c) < o.minNovelty)) {
+      this.reset();
       return { progress: 0, reason: "duplicate" };
     }
-    this.frames.push(labs);
-    if (this.frames.length > this.options.frames) this.frames.shift();
-    // 中央値から外れたフレームがあれば、そのフレーム以前を捨てる
-    const med = Array.from({ length: 9 }, (_, i) => medianLab(this.frames.map((f) => f[i])));
-    for (let k = this.frames.length - 1; k >= 0; k--) {
-      const bad = this.frames[k].some((lab, i) => colorDistance(lab, med[i]) > this.options.tolerance);
-      if (bad) {
-        this.frames = this.frames.slice(k + 1);
-        break;
-      }
-    }
-    const progress = this.frames.length / this.options.frames;
-    if (this.frames.length < this.options.frames) return { progress, reason: "unstable" };
-    const labs9 = Array.from({ length: 9 }, (_, i) => medianLab(this.frames.map((f) => f[i])));
-    this.frames = [];
-    return { progress: 1, labs: labs9 };
+    reading.labs.forEach((lab, i) => {
+      if (!reading.valid[i]) return;
+      this.cells[i].push(lab);
+      if (this.cells[i].length > o.keep) this.cells[i].shift();
+    });
+    this.frames++;
+    const st = this.stats();
+    const covered = st.map((x) => x.ok);
+    // 指でずっと隠れているマスが 2 つまでなら、しばらく待ってから読めないまま取り込む（中心は必須）
+    const partial = this.frames >= o.minFrames * 3 && covered[4] && covered.filter((c) => !c).length <= 2;
+    if (this.frames < o.minFrames || (!covered.every(Boolean) && !partial)) return { progress: this.progressOf(st), reason: "unstable", covered };
+    const labs = st.map((x) => (x.ok ? medianLab(x.inliers) : UNKNOWN_LAB));
+    this.reset();
+    return { progress: 1, labs, covered };
   }
 }
 
@@ -107,6 +156,8 @@ export interface ScanResult {
   autoFixed: boolean; // 面の向きを自動で直した
   rotations: number[]; // 面ごとに直した回転（90°単位）
   colorWarning?: string;
+  cellLabels: number[]; // スキャンした面 i のセル c（i*9+c）が、どの面のセンターと同じ色か（調査・テスト用）
+  uncertain: number[]; // 読みと違う色にした、または紛らわしいステッカー（facelet 番号。確認してもらう）
 }
 
 // 面のセル番号を 90° 回したときの対応（時計回りに k 回）
@@ -139,13 +190,18 @@ export function assembleScan(scanned: ScannedFace[], scheme: Scheme): ScanResult
   }
   let refs: Lab[] = Array.from({ length: 6 }, (_, f) => byFace.get(f)!.labs[4]);
   let labels: number[] = [];
+  const known = all.map((lab) => !isUnknownLab(lab));
   for (let iter = 0; iter < 4; iter++) {
-    labels = assignBalanced(all.map((lab) => refs.map((r) => colorDistance(lab, r))));
+    // 読めなかったマスはどの色でも同じコスト（各色 9 枚の数合わせだけに使う）
+    labels = assignBalanced(all.map((lab, i) => (known[i] ? refs.map((r) => colorDistance(lab, r)) : [0, 0, 0, 0, 0, 0])));
     // センターは必ず自分の面の色
     owner.forEach((o, i) => {
       if (o.cell === 4) labels[i] = o.face;
     });
-    refs = refs.map((_, c) => meanLab(all.filter((_, i) => labels[i] === c)));
+    refs = refs.map((r, c) => {
+      const members = all.filter((_, i) => known[i] && labels[i] === c);
+      return members.length ? meanLab(members) : r;
+    });
   }
 
   // 2) 色名（標準の6色との対応）
@@ -153,53 +209,75 @@ export function assembleScan(scanned: ScannedFace[], scheme: Scheme): ScanResult
   const names = nameIdx.map((i) => NAMED_COLORS[i].id as string);
 
   // 3) 標準配色なら、色名から面の位置を決め直す（スキャンの順番を間違えても直る）
-  let faceOfColor = Array.from({ length: 6 }, (_, c) => c); // 色 c（= スキャンした面 c のセンター色）が属する面
   let placement = Array.from({ length: 6 }, (_, f) => f); // 面 f に置くスキャン結果
   if (scheme === "standard") {
     const target = [U, R, F, D, L, B].map((f) => STANDARD_SCHEME[f]);
     const pos = names.map((n) => target.indexOf(n));
     if (new Set(pos).size === 6 && pos.every((p) => p >= 0)) {
-      faceOfColor = pos;
       placement = Array.from({ length: 6 }, (_, f) => pos.indexOf(f));
     }
   }
-
-  const build = (rot: number[]): CubeState => {
-    const state = new Uint8Array(54);
-    for (let f = 0; f < 6; f++) {
-      const src = placement[f];
-      const cells = Array.from({ length: 9 }, (_, cell) => faceOfColor[labels[src * 9 + cell]]);
-      rotateCells(cells, rot[f]).forEach((c, cell) => (state[f * 9 + cell] = c));
-    }
-    return state;
-  };
 
   const refsByFace = Array.from({ length: 6 }, (_, f) => refs[placement[f]]);
   const namesByFace = Array.from({ length: 6 }, (_, f) => names[placement[f]]);
   const sep = minSeparation(refsByFace);
   const colorWarning = sep.distance < 14 ? `${colorLabel(namesByFace[sep.pair[0]])}と${colorLabel(namesByFace[sep.pair[1]])}の色が近く、見分けにくい可能性があります。照明を明るくしてください。` : undefined;
 
+  // 4) 物理的にありえるキューブのうち、最も読みに合うものを選ぶ（色を 1 枚ずつ決めるのではなく、
+  //    ピースの組み合わせとして決める。白と黄のように紛らわしい色も、ありえるピースの制約で決まる）。
+  //    面の向きの取り違え（90° 回して見せた）も、少しの罰をつけて一緒に探す
+  // どの色からも遠い読み（隠しきれなかった指・強い映り込み）は、どの色でも同じくらい合わない＝情報なしとして扱う
+  const CAP = 32;
+  const dist = Array.from({ length: 6 }, (_, src) =>
+    Array.from({ length: 9 }, (_, cell) => {
+      const lab = all[src * 9 + cell];
+      return isUnknownLab(lab) ? [0, 0, 0, 0, 0, 0] : refsByFace.map((r) => Math.min(CAP, colorDistance(lab, r)));
+    }),
+  );
+  const rotIdx = [0, 1, 2, 3].map((r) => rotateCells([0, 1, 2, 3, 4, 5, 6, 7, 8], r));
+  const ROT_PENALTY = 8;
+  const solve = (rot: number[]) => {
+    const cost = (facelet: number, color: number) => {
+      const f = Math.floor(facelet / 9);
+      return dist[placement[f]][rotIdx[rot[f]][facelet % 9]][color];
+    };
+    const r = mostLikelyState(cost);
+    let lower = 0;
+    for (let i = 0; i < 54; i++) if (i % 9 !== 4) lower += Math.min(...[0, 1, 2, 3, 4, 5].map((c) => cost(i, c)));
+    return { ...r, lower, score: r.cost + ROT_PENALTY * rot.filter(Boolean).length };
+  };
   let rotations = [0, 0, 0, 0, 0, 0];
-  let state = build(rotations);
-  let problems = analyzeState(state).problems;
-  let autoFixed = false;
-  if (problems.length) {
-    // 4) 面の向きの取り違えを探す（回す面が少ない順）
-    const combos: number[][] = [];
-    for (let code = 1; code < 4096; code++) combos.push(Array.from({ length: 6 }, (_, f) => (code >> (2 * f)) & 3));
-    combos.sort((a, b) => a.filter(Boolean).length - b.filter(Boolean).length);
-    for (const rot of combos) {
-      const s = build(rot);
-      if (!analyzeState(s).problems.length) {
-        state = s;
+  let best = solve(rotations);
+  // 読みどおりで辻褄が合っていれば（変えた分が小さければ）そのまま。合わなければ面の向きの取り違えも探す
+  if (best.cost - best.lower > 12) {
+    for (let code = 1; code < 4096; code++) {
+      const rot = Array.from({ length: 6 }, (_, f) => (code >> (2 * f)) & 3);
+      const r = solve(rot);
+      if (r.score < best.score) {
+        best = r;
         rotations = rot;
-        problems = [];
-        autoFixed = true;
-        break;
       }
     }
   }
-  return { state, refs: refsByFace, names: namesByFace, problems, autoFixed, rotations, colorWarning };
+  const state = best.state;
+  const problems = analyzeState(state).problems;
+  const autoFixed = rotations.some(Boolean);
+  // 読みと違う色にしたステッカー（確認してもらう）
+  const uncertain: number[] = [];
+  for (let i = 0; i < 54; i++) {
+    if (i % 9 === 4) continue;
+    const f = Math.floor(i / 9);
+    const d = dist[placement[f]][rotIdx[rotations[f]][i % 9]];
+    const chosen = d[state[i]];
+    const second = Math.min(...d.filter((_, c) => c !== state[i]));
+    if (chosen > Math.min(...d) + 0.01 || second - chosen < 6 || chosen >= CAP) uncertain.push(i);
+  }
+  // スキャンした面ごとのセルの色（スキャンした面の番号で）
+  const finalLabels = new Array(54).fill(0);
+  for (let f = 0; f < 6; f++)
+    for (let cell = 0; cell < 9; cell++) finalLabels[placement[f] * 9 + rotIdx[rotations[f]][cell]] = placement[state[f * 9 + cell]];
+  void labels;
+  return { state, refs: refsByFace, names: namesByFace, problems, autoFixed, rotations, colorWarning, cellLabels: finalLabels, uncertain };
 }
 
 function minSeparation(refs: Lab[]) {

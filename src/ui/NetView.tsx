@@ -9,10 +9,11 @@ export interface NetViewProps {
   colors: string[]; // 色（面番号）→ CSS
   partial?: (string | null)[]; // スキャン途中: facelet ごとの CSS 色
   problemFacelets?: Set<number>;
+  uncertainFacelets?: Set<number>; // 読みに自信がない・ピースの組み合わせから決めたマス
   onCell?: (facelet: number) => void;
 }
 
-export function NetView({ state, colors, partial, problemFacelets, onCell }: NetViewProps) {
+export function NetView({ state, colors, partial, problemFacelets, uncertainFacelets, onCell }: NetViewProps) {
   const cells: preact.JSX.Element[] = [];
   for (let row = 0; row < 9; row++) {
     for (let col = 0; col < 12; col++) {
@@ -30,7 +31,7 @@ export function NetView({ state, colors, partial, problemFacelets, onCell }: Net
         <button
           type="button"
           key={facelet}
-          class={`cell${onCell && !center ? " editable" : ""}${problemFacelets?.has(facelet) ? " problem" : ""}${center ? " center" : ""}`}
+          class={`cell${onCell && !center ? " editable" : ""}${problemFacelets?.has(facelet) ? " problem" : uncertainFacelets?.has(facelet) ? " uncertain" : ""}${center ? " center" : ""}`}
           style={{ background: color, borderStyle: color === "transparent" ? "dashed" : "solid" }}
           onClick={() => onCell?.(facelet)}
           aria-label={`facelet ${facelet}`}

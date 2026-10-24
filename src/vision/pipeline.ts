@@ -23,7 +23,7 @@ export interface PipelineConfig {
 export const DEFAULT_PIPELINE: PipelineConfig = {
   mode: "auto",
   guideSize: 0.6,
-  region: 0.5,
+  region: 0.6,
   maxSpread: 60,
   quads: DEFAULT_QUADS,
   lattice: {},
@@ -58,6 +58,7 @@ export interface PipelineMemory {
 
 type KeptFace = PlacedFace & { seenT: number }; // seenT: 最後に実際に検出できた時刻
 
+const SKIP_MS = 300; // 正面が指で隠れたフレームを飛ばすのは、直前に正面が見えてからこの時間まで
 const HOLD_MS = 400; // 何も見つからないとき、直前の面を使い続ける時間
 const CARRY_MS = 2500; // 正面を追えている間、見つからない他の面を運び続ける時間
 
@@ -126,6 +127,69 @@ function uniformFaces(img: PixelSource, quads: Quad[]): LatticeFace[] {
   return out;
 }
 
+const chroma = (l: Lab) => Math.hypot(l[1], l[2]);
+
+// 背景の格子模様（チェックのシャツ・キーボード・タイル）を面と取り違えないための確認。
+// 本物の面は、ステッカーの間に黒い隙間があるか（ステッカーのあるキューブ）、色の違うセルがある。
+// 代表色が分かっていれば、セルの色がキューブの 6 色に近いことも確かめる
+interface FaceJudgement {
+  strong: boolean; // キューブの面らしい
+  weak: boolean; // 一様な面（ステッカーレスの揃った面か、背景の模様）
+  centralBig: boolean;
+}
+
+function judgeFace(img: PixelSource, f: LatticeFace, refs: Lab[] | null): FaceJudgement {
+  const cells = Array.from({ length: 9 }, (_, k) => pixelLab(img, applyH(f.H, (k % 3) + 0.5, Math.floor(k / 3) + 0.5)));
+  // 隣り合うセルの境界（12 か所）を横切る短い線分で一番暗いところが、両側のセルより十分暗いか
+  let dark = 0;
+  let total = 0;
+  const across = (x0: number, y0: number, dx: number, dy: number, a: Lab | null, b: Lab | null) => {
+    if (!a || !b) return;
+    let minL = Infinity;
+    for (let t = -0.15; t <= 0.151; t += 0.05) {
+      const lab = pixelLab(img, applyH(f.H, x0 + dx * t, y0 + dy * t));
+      if (lab) minL = Math.min(minL, lab[0]);
+    }
+    total++;
+    if (minL < Math.min(a[0], b[0]) * 0.6 && minL < 50) dark++;
+  };
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 2; c++) across(c + 1, r + 0.5, 1, 0, cells[r * 3 + c], cells[r * 3 + c + 1]);
+  for (let r = 0; r < 2; r++) for (let c = 0; c < 3; c++) across(c + 0.5, r + 1, 0, 1, cells[r * 3 + c], cells[(r + 1) * 3 + c]);
+  const colorful = cells.filter((l) => l && chroma(l) > 22).length;
+  const bright = cells.filter((l) => l && l[0] > 62).length;
+  // 色の違うセルがあるか（揃った面なら 1 色だが、ステッカーのあるキューブなら隙間で分かる）
+  const known = cells.filter((l): l is Lab => !!l);
+  let diverse = 0;
+  for (let i = 0; i < known.length; i++)
+    for (let j = i + 1; j < known.length; j++) diverse = Math.max(diverse, Math.hypot((known[i][0] - known[j][0]) / 2, known[i][1] - known[j][1], known[i][2] - known[j][2]));
+  let refOk = true;
+  if (refs) {
+    const match = cells.filter((l) => l && Math.min(...refs.map((r) => Math.hypot((l[0] - r[0]) / 2, l[1] - r[1], l[2] - r[2]))) < 38).length;
+    refOk = match >= 5;
+  }
+  const strong = refOk && ((total > 0 && dark >= total * 0.5) || (colorful >= 2 && diverse > 28));
+  // 一様な面（ステッカーレスの揃った面など。チェックのシャツも一様に見える）は、他に本物の面があるか、大きく画面の中央にあるときだけ
+  const c = applyH(f.H, 1.5, 1.5);
+  const central = Math.abs(c[0] - img.width / 2) < img.width * 0.3 && Math.abs(c[1] - img.height / 2) < img.height * 0.35;
+  const big = faceArea(f.H) > (img.width * img.height) / 40;
+  const weak = refOk && !strong && (bright >= 7 || colorful >= 7);
+  (globalThis as { __cvDebug?: (m: unknown) => void }).__cvDebug?.({ dark, total, colorful, diverse: Math.round(diverse), bright, refOk, strong, weak, central, big });
+  return { strong, weak, centralBig: central && big };
+}
+
+function findCubeFaces(img: PixelSource, quads: Quad[], config: PipelineConfig, scorer: (p: Pt) => number, faceScorer: (H: Mat3) => number, refs: Lab[] | null): LatticeFace[] {
+  // 面の数に数えるのはキューブの面らしいものだけ。一様な格子は脇に置き、本物の面が見つかったか、
+  // 大きく中央にあるときだけ足す（チェックのシャツの格子がいくつあっても、キューブの面の探索を邪魔しない）
+  const aside: { f: LatticeFace; j: FaceJudgement }[] = [];
+  const faces = findFaces(quads, config.lattice, scorer, faceScorer, (f) => {
+    const j = judgeFace(img, f, refs);
+    if (!j.strong && j.weak) aside.push({ f, j });
+    return j.strong;
+  });
+  const extra = aside.filter((a) => faces.length > 0 || a.j.centralBig).map((a) => a.f);
+  return [...faces, ...extra].slice(0, Math.max(faces.length, config.lattice.maxFaces ?? 3));
+}
+
 export function processFrame(
   cv: CV | null,
   img: PixelSource & { mat?: unknown },
@@ -161,10 +225,12 @@ export function processFrame(
         const p = applyH(f.H, 1.5, 1.5);
         return Math.hypot(p[0] - c[0], p[1] - c[1]) < pitch * 0.5;
       })
-        ? 4
+        ? // 直前のフレームの面の位置を強く優先する（指で 1 段隠れたとき、隣の面の段へ窓がずれないように。
+          // 1 フレームの間にキューブが 1 段分動くことはまずない）
+          8
         : 0;
     };
-    let faces = findFaces(expandBlocks(quads, prevFaces.map((f) => f.H)), config.lattice, scorer, faceScorer);
+    let faces = findCubeFaces(img, expandBlocks(quads, prevFaces.map((f) => f.H)), config, scorer, faceScorer, refs);
     if (!faces.length) faces = uniformFaces(img, largeFaceCandidates(quads, img.width * img.height));
     if (faces.length) {
       // 前のフレームと同じ中心色の面をアンカーに（角から見たときに正面が入れ替わらないように）
@@ -183,6 +249,21 @@ export function processFrame(
         return nearestNamed(lab);
       };
       const recent = memory.last && t - memory.last.t < 600 ? memory.last : null;
+      // 直前の正面が見つからず、見つかった面がどれも直前の上・横の面の位置にほぼ止まっている（指で正面が隠れた）なら、
+      // その面を正面に格上げしない。格上げすると、上の面の色を正面の色として読み、ありもしない手に見える。
+      // このフレームは読まずに飛ばす。キューブを回して別の面を見せているとき（スキャン・持ち替え）は面が動くので
+      // 当てはまらない。止まったまま正面が見えない状態が続いたら（SKIP_MS）、普通に選び直す
+      if (recent && t - recent.t < SKIP_MS) {
+        const prevA = recent.faces.find((f) => f.slot === 2 && !(f as { held?: boolean }).held);
+        const dist = (H: Mat3, G: Mat3) => {
+          const a = applyH(H, 1.5, 1.5);
+          const b = applyH(G, 1.5, 1.5);
+          return Math.hypot(a[0] - b[0], a[1] - b[1]);
+        };
+        const anchorSeen = prevA && faces.some((f) => dist(f.H, prevA.H) < recent.pitch * 1.2);
+        const onlyOthers = faces.every((f) => recent.faces.some((p) => p.slot !== 2 && dist(f.H, p.H) < recent.pitch * 0.4));
+        if (prevA && !anchorSeen && onlyOthers) return { faces: [], quads: quadsOut };
+      }
       let anchor: number | undefined;
       if (recent) {
         const same = faces.map((f, i) => ({ i, k: keyOf(f.H), a: faceArea(f.H) })).filter((x) => x.k === recent.centerKey);
@@ -240,7 +321,8 @@ export function processFrame(
       spread: samples.map((s) => s.spread),
       valid: samples.map((s) => s.valid && s.spread < config.maxSpread),
       // 回転途中の層のステッカーは格子に合わず四角形が見つからないので、推定した位置の色は軽く扱う
-      weight: Array.from({ length: 9 }, (_, i) => (held ? 0.6 : config.mode === "guide" || !p.support || p.support[i] ? 1 : 0.6)),
+      // 白く飛んだセル（強い映り込み）は、白・黄・映り込みの区別がつかないので軽く扱う
+      weight: Array.from({ length: 9 }, (_, i) => (held ? 0.6 : config.mode === "guide" || !p.support || p.support[i] ? 1 : 0.6) * (samples[i].clip > 0.5 ? 0.35 : 1)),
       masked: new Array(9).fill(false),
     };
     maskHands(face, hands);

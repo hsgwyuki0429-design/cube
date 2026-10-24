@@ -5,7 +5,7 @@ import type { Lab } from "../vision/color";
 import { ColorModel, type ColorModelOptions } from "./colorModel";
 import { type DecoderOptions, MoveDecoder } from "./decoder";
 import { FaceObserver, type FrameReading, type ObserverOptions } from "./observer";
-import { type LoggedFrame, type MoveTiming, moveTiming } from "./timing";
+import { DEFAULT_TIMING, type LoggedFrame, type MoveTiming, moveTiming } from "./timing";
 import type { DecodedMove, Observation, TrackStatus } from "./types";
 
 export interface EngineOptions {
@@ -13,6 +13,7 @@ export interface EngineOptions {
   observer: Partial<ObserverOptions>;
   colors: Partial<ColorModelOptions>;
   logMs: number; // 手の正確な時刻を求めるために残すフレームの記録（ms。Infinity で全部）
+  keepObservations?: boolean; // 観測をすべて残す（ソルブ後の再構成で、前後両方向から解き直すため）
 }
 
 export interface TrackUpdate {
@@ -36,13 +37,16 @@ export class TrackerEngine {
   readonly observer: FaceObserver;
   readonly decoder: MoveDecoder;
   readonly frames: LoggedFrame[] = [];
+  readonly observationLog: Observation[] = [];
   logMs: number;
+  private keepObservations: boolean;
 
   constructor(start: CubeState, refs: Lab[], options: Partial<EngineOptions> = {}, orients?: number[]) {
     this.colors = new ColorModel(refs, options.colors);
     this.observer = new FaceObserver(this.colors, options.observer);
     this.decoder = new MoveDecoder(start, options.decoder, orients);
     this.logMs = options.logMs ?? 12000;
+    this.keepObservations = !!options.keepObservations;
   }
 
   setOptions(options: Partial<EngineOptions>): void {
@@ -62,6 +66,7 @@ export class TrackerEngine {
     while (this.frames.length && frame.t - this.frames[0].t > this.logMs) this.frames.shift();
     const obs = this.observer.push(frame);
     if (!obs) return null;
+    if (this.keepObservations) this.observationLog.push(obs);
     return this.observe(obs, frame);
   }
 
@@ -130,7 +135,7 @@ export class TrackerEngine {
   // 手の開始・終了時刻（フレームの記録から）
   timing(m: DecodedMove): MoveTiming | null {
     if (!this.frames.length || (m.t0 ?? m.t) < this.frames[0].t) return null;
-    return moveTiming(this.frames, m);
+    return moveTiming(this.frames, m, { ...DEFAULT_TIMING, refs: this.colors.refs });
   }
 
   snapshot(obs?: Observation): TrackUpdate {

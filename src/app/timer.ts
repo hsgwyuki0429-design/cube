@@ -31,6 +31,7 @@ export interface TimerState {
   solves: Solve[];
   message: string | null;
   analysisProgress: number; // 精密解析の進み具合（0..1）
+  analysisStartedAt: number; // 精密解析を始めた時刻（残り時間の目安に使う）
 }
 
 export const timerStore = createStore<TimerState>({
@@ -47,6 +48,7 @@ export const timerStore = createStore<TimerState>({
   solves: loadSolves(),
   message: null,
   analysisProgress: 0,
+  analysisStartedAt: 0,
 });
 
 let target: CubeState | null = null;
@@ -58,9 +60,10 @@ let warned12 = false;
 let recording = false;
 let lookRun = 0;
 let lookStartT = 0;
+let unexplained = 0;
 
 const POSTROLL_MS = 1200; // 止めた後も録画を続ける時間（最後の手の回し終わりを確かめる）
-const PREROLL_MS = 1500; // 最初の手の前から解析する時間
+const PREROLL_MS = 3000; // 最初の手の前から解析する時間（インスペクション中の録画は直近 4 秒）
 
 // 時刻つきの手（キューブ固定の手、そのときの姿勢、回し始め・回し終わり）
 interface TimedMove {
@@ -130,6 +133,7 @@ function onTrack(u: TrackUpdate): void {
   if (s.phase === "scrambling" && target) {
     if (statesEqual(state, target)) {
       readyMoves = u.moves.length;
+      unexplained = 0;
       warned8 = warned12 = false;
       controller.beep(660, 0.15);
       timerStore.set({ phase: "inspection", inspectionStart: performance.now(), guideDone: s.guide.length, recomputing: false });
@@ -143,6 +147,17 @@ function onTrack(u: TrackUpdate): void {
     return;
   }
   if (s.phase === "inspection") {
+    // 最初の手を追跡で読めなくても（指で隠れた・速すぎた）、見え方がスクランブルの状態と合わなくなったら始める。
+    // 正確な開始時刻は、止めた後の精密解析で録画から決め直す
+    if (u.status !== "tracking" && u.observations > 0 && !(target && statesEqual(state, target))) unexplained++;
+    else unexplained = 0;
+    if (unexplained >= 2 && u.moves.length <= readyMoves) {
+      timerStore.set({ phase: "solving", startT: u.observation.t, startIndex: readyMoves, liveMoves: 0 });
+      controller.recorder.keepMs = 150000;
+      lookRun = 0;
+      controller.beep(990, 0.08);
+      return;
+    }
     if (u.moves.length > readyMoves && !(target && statesEqual(state, target))) {
       const first = u.moves[readyMoves];
       // 回し始め（フレームの記録から）。分からなければ観測の時刻
@@ -281,6 +296,7 @@ async function analyzeRecording(live: LiveSpan, refs: Lab[], endT: number): Prom
   }
   const s = settingsStore.get();
   let result: RefineResult;
+  timerStore.set({ analysisStartedAt: performance.now(), analysisProgress: 0 });
   try {
     result = await controller.refiner.run(
       recording,
@@ -310,7 +326,12 @@ async function analyzeRecording(live: LiveSpan, refs: Lab[], endT: number): Prom
     updateSolve(id, { analysis: "failed" });
     return;
   }
-  // 端の手が直接見えていなければ、その端はリアルタイムの追跡の時刻を使う
+  // 端の手が直接見えていなければ、その端はリアルタイムの追跡の時刻を使う。ただし、リアルタイムが最初の数手を
+  // 取りこぼしていた（解析で見つかった最初の手より後に始まっていた）なら、どちらの開始も信用できないので確定しない
+  if (result.startUncertain && live.startT > result.moves[0].end) {
+    updateSolve(id, { analysis: "failed" });
+    return;
+  }
   const begin = result.startUncertain ? live.startT : result.start!;
   const finish = result.endUncertain ? (how === "manual" ? null : live.endT) : result.end!;
   if (finish === null) {

@@ -11,4 +11,12 @@ describe("mergeQuickRepeats", () => {
     expect(mergeQuickRepeats([mv("R", 0), mv("R", 900)]).length).toBe(2);
     expect(mergeQuickRepeats([mv("U", 0), mv("R", 100), mv("R", 300), mv("U'", 500)]).map((m) => m.move)).toEqual([moveIndex("U"), moveIndex("R2"), moveIndex("U'")]);
   });
+
+  it("観測の間隔が空いても（遅いカメラ）、止まらずに続けて回していれば 1 手にまとめる", () => {
+    const timed = (name: string, start: number, end: number) => ({ ...mv(name, end), start, end });
+    const merged = mergeQuickRepeats([timed("F", 1490, 1730), timed("F", 1730, 2210)]);
+    expect(merged.map((m) => [m.move, m.start, m.end])).toEqual([[moveIndex("F2"), 1490, 2210]]);
+    // 一度止まってから回したなら別の手
+    expect(mergeQuickRepeats([timed("F", 0, 300), timed("F", 900, 1200)]).length).toBe(2);
+  });
 });

@@ -1,9 +1,10 @@
 // ソルブ後の精密解析: 録画した全フレームを1枚ずつ、リアルタイムより重い設定で認識・追跡し直す。
 // 手順と、各手の開始・終了時刻（フレームの記録から求めた、誤差はフレーム間隔の半分程度）を出す。
 // OpenCV のオブジェクトは呼び出し側が渡すので、Worker でもテスト（Node）でも同じコードが動く。
-import { type CubeState, isSolved, solvedState, statesEqual } from "../cube/model";
+import { type CubeState, OPPOSITE, isSolved, moveFace, solvedState, statesEqual } from "../cube/model";
 import { type EngineOptions, TrackerEngine } from "../track/engine";
 import { mergeQuickRepeats } from "../track/merge";
+import { DEFAULT_OFFLINE, decodeOffline } from "../track/offline";
 import type { TrackStatus } from "../track/types";
 import type { Lab } from "./color";
 import { type PatchFrame, facePatch, refineEnd, refineStart } from "./fineTiming";
@@ -47,9 +48,24 @@ export interface RefineResult {
   status: TrackStatus;
   inferred: number;
   forced: number; // 完成にたどり着くために最後に足した手の数（直接は見えていない）
+  method?: string; // 再構成の方法（meet = 前後からつないだ / forward-finish / forward）
   startUncertain: boolean; // 最初の手が直接見えておらず、開始時刻をフレームから決められなかった
   endUncertain: boolean; // 最後の手が直接見えておらず、終了時刻をフレームから決められなかった
   raw?: { move: number; t0?: number; t: number; start: number; end: number; inferred?: boolean }[]; // まとめる前の手（調査用）
+}
+
+// 反対の面の層の動きを、タイムの端として採る範囲（それより離れた動きは別の手）
+const OPPOSITE_WINDOW_MS = 250;
+
+// moves[from] から dir の向きに続く同じ軸の手のまとまりに、両方の面の手があるか
+function bothFacesAt(moves: { move: number }[], from: number, dir: 1 | -1): boolean {
+  const face = moveFace(moves[from].move);
+  for (let i = from + dir; i >= 0 && i < moves.length; i += dir) {
+    const f = moveFace(moves[i].move);
+    if (f === OPPOSITE[face]) return true;
+    if (f !== face) return false;
+  }
+  return false;
 }
 
 // 重い設定: 全フレームを処理するので、1回の観測で起きる手は少ないが、取りこぼしを深く探し直せるように
@@ -67,6 +83,7 @@ export class Refiner {
   readonly looks: { t: number; solved: boolean }[] = []; // フレームごとの「完成して見えるか」
   frames = 0;
   lastT = 0;
+  method = "";
 
   constructor(
     private cv: CV | null,
@@ -77,6 +94,7 @@ export class Refiner {
       ...opts,
       decoder: { ...opts.decoder, ...REFINE_ENGINE.decoder },
       logMs: Infinity,
+      keepObservations: true,
     }, input.orients);
     this.config = { ...DEFAULT_PIPELINE, ...input.pipeline, quads: { ...DEFAULT_PIPELINE.quads, ...(input.pipeline?.quads ?? {}) } };
   }
@@ -101,7 +119,7 @@ export class Refiner {
     const reading = { t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked })) };
     this.engine.push(reading);
     this.looks.push({ t, solved: reading.faces.length > 0 && this.engine.looksSolved(reading) });
-    this.patches.push({ t, faces: r.faces.map((f) => facePatch(img, f)) });
+    this.patches.push({ t, faces: r.faces.map((f) => facePatch(img, { ...f, labs: f.labs })) });
     this.prunePatches(t);
     this.frames++;
     this.lastT = t;
@@ -119,20 +137,36 @@ export class Refiner {
     if (j - i > 30) P.splice(i, j - i);
   }
 
+  // m と同じ時刻・姿勢で、同じ軸の反対の面を回す手（その層の動きを調べるため）
+  private opposite(m: { move: number; t0?: number; t: number; orient: number }) {
+    return { move: OPPOSITE[moveFace(m.move)] * 3, t0: m.t0, t: m.t, orient: m.orient };
+  }
+
   // target: 最後の状態が分かっていれば（タイマーなら完成）、それにたどり着く仮説を選ぶ
   result(target: CubeState | null = solvedState()): RefineResult {
     const dec = this.engine.decoder;
-    let moves = dec.bestMoves();
-    let solved = isSolved(dec.best().state);
-    let forced = 0;
-    if (target && !statesEqual(dec.best().state, target)) {
-      const fixed = dec.finish(target, this.lastT, 2);
-      if (fixed) {
-        forced = fixed.filter((m) => m.inferred && m.t === this.lastT).length;
-        moves = fixed;
-        solved = isSolved(target);
+    // 前向き（スクランブル後から）と後ろ向き（完成から）の両方で解き直し、辻褄の合う所でつなぐ
+    const off = decodeOffline(this.engine.observationLog, Uint8Array.from(this.input.state), target, this.lastT, {
+      decoder: { ...this.input.engine?.decoder, ...DEFAULT_OFFLINE.decoder },
+    });
+    let moves = off.moves;
+    let solved = target ? off.reachedEnd && isSolved(target) : isSolved(dec.best().state);
+    let forced = off.method === "forward-finish" ? off.moves.filter((m) => m.inferred && m.t === this.lastT).length : 0;
+    if (!off.reachedEnd) {
+      // 再構成で終わりに届かなければ、リアルタイムと同じ前向きの結果に戻す
+      moves = dec.bestMoves();
+      solved = isSolved(dec.best().state);
+      forced = 0;
+      if (target && !statesEqual(dec.best().state, target)) {
+        const fixed = dec.finish(target, this.lastT, 2);
+        if (fixed) {
+          forced = fixed.filter((m) => m.inferred && m.t === this.lastT).length;
+          moves = fixed;
+          solved = isSolved(target);
+        }
       }
     }
+    this.method = off.method;
     const timed = moves.map((m) => {
       const tm = this.engine.timing(m);
       return { ...m, start: tm?.start ?? m.t0 ?? m.t, end: tm?.end ?? m.t, exact: !!tm?.exact };
@@ -141,9 +175,33 @@ export class Refiner {
     const first = timed[0];
     const last = timed[timed.length - 1];
     let endUncertain = !!last?.inferred;
-    if (first?.exact && !first.inferred) first.start = refineStart(this.patches, first, first.start) ?? first.start;
-    if (last?.exact && !last.inferred) last.end = refineEnd(this.patches, last, last.end) ?? last.end;
-    else if (last?.inferred && solved) {
+    // 最初の観測から既にスクランブルの状態と違う（解析の範囲より前に回し始めていた）: 開始は録画から決められない
+    const firstObs = this.engine.observationLog.find((o) => o.faces.length);
+    const beforeWindow = !!first && !!firstObs && (first.t0 ?? first.t) <= firstObs.t;
+    const refs = this.engine.colors.refs;
+    // 色の読みで静止フレームが見つからなかった（指で層が隠れていた）ときも、観測の時刻を手がかりに画素の差で探す
+    if (first && !first.inferred) first.start = refineStart(this.patches, first, first.start, refs) ?? first.start;
+    if (last && !last.inferred) last.end = refineEnd(this.patches, last, last.end, refs) ?? last.end;
+    // 最初（最後）にある同じ軸の手のまとまりに両方の面の手があれば（D' U' など）、反対の面の層の動きも見る。
+    // 同じ軸の手は順番を入れ替えても同じ状態になるので、間の状態が見えない（速い・指で隠れた）と「U D' U2」が
+    // 「D' U'」と読まれ、本当は先に動いた U の層を見落とす。まとまりに反対の面の手がなければ、その層は動いていない
+    if (first && !first.inferred && bothFacesAt(timed, 0, 1)) {
+      const o = this.opposite(first);
+      const tm = this.engine.timing(o);
+      if (tm?.moved) {
+        const s = refineStart(this.patches, o, tm.start, refs) ?? tm.start;
+        if (s < first.start && s > first.start - OPPOSITE_WINDOW_MS) first.start = s;
+      }
+    }
+    if (last && !last.inferred && bothFacesAt(timed, timed.length - 1, -1)) {
+      const o = this.opposite(last);
+      const tm = this.engine.timing(o);
+      if (tm?.moved) {
+        const e = refineEnd(this.patches, o, tm.end, refs) ?? tm.end;
+        if (e > last.end && e < last.end + OPPOSITE_WINDOW_MS) last.end = e;
+      }
+    }
+    if (last?.inferred && solved) {
       // 最後の手が見えていない（完成にたどり着くために足した手）: 直接見えた最後の手の後で、
       // 完成して見え始めたフレームを回し終わりとする
       const seen = [...timed].reverse().find((m) => !m.inferred);
@@ -165,7 +223,8 @@ export class Refiner {
       status: dec.status,
       inferred: merged.filter((m) => m.inferred).length,
       forced,
-      startUncertain: !!first?.inferred,
+      method: this.method,
+      startUncertain: !!first?.inferred || beforeWindow,
       endUncertain,
       raw: timed.map((m) => ({ move: m.move, t0: m.t0, t: m.t, start: m.start, end: m.end, inferred: m.inferred })),
     };

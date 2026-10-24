@@ -32,6 +32,7 @@ export interface ScanUi {
   captured: ScannedFace[];
   progress: number;
   reason?: string;
+  covered?: boolean[]; // 正面の各マスについて、読みがそろったか（隠れているマスを画面に示す）
   result?: ScanResult;
   edited?: number[]; // 手で直した状態
   problems?: StateProblem[];
@@ -97,6 +98,8 @@ class Controller {
   private toastTimer = 0;
   private epoch = 0;
   private preScanTrack: TrackUpdate | null = null;
+  private stalled = 0;
+  private lastRetry = -Infinity;
 
   init(): void {
     if (this.vision) return;
@@ -113,8 +116,13 @@ class Controller {
       if (settingsStore.get().handMask && !this.store.get().demo) this.hands.submit(this.camera.video, t);
     });
     this.hands.onUpdate = (hulls) => this.vision?.setHands(hulls);
+    this.camera.onEnded(() => this.onCameraLost());
     this.statsTimer = window.setInterval(() => {
       const v = this.vision;
+      // カメラは「オン」なのに映像が来ない（Windows のカメラ設定・他のアプリ・USB の接触など）
+      if (this.store.get().camera === "on" && !this.store.get().demo && this.camera.fps === 0) {
+        if (++this.stalled === 6) this.toast("カメラの映像が届いていません。他のアプリがカメラを使っていないか確認してください。", 8000);
+      } else this.stalled = 0;
       this.store.set({
         stats: { camFps: this.camera.fps, procFps: v?.procFps ?? 0, procMs: v?.lastProcMs ?? 0, faces: this.latestFrame?.faces.length ?? 0 },
         hands: this.hands.status,
@@ -190,6 +198,19 @@ class Controller {
     }
   }
 
+  // 映像が途中で止まった: 一度だけ自動でつなぎ直し、だめなら理由を出す
+  private async onCameraLost(): Promise<void> {
+    if (this.store.get().demo || this.store.get().camera !== "on") return;
+    this.camera.stop();
+    const retry = performance.now() - this.lastRetry > 10000;
+    this.lastRetry = performance.now();
+    this.store.set({ camera: "error", cameraError: "カメラの映像が止まりました。他のアプリ（Zoom・Teams など）がカメラを使い始めたか、カメラが外れた可能性があります。" });
+    if (retry) {
+      await new Promise((r) => setTimeout(r, 800));
+      if (this.store.get().camera === "error" && !this.store.get().demo) await this.startCamera();
+    }
+  }
+
   stopCamera(): void {
     this.camera.stop();
     this.store.set({ camera: "off" });
@@ -255,15 +276,16 @@ class Controller {
     const scan = this.store.get().scan;
     if (!scan || scan.result) return;
     const front = m.faces.find((f) => f.slot === F);
-    const labs = front && front.valid.filter(Boolean).length >= 8 ? front.labs : null;
-    const p = this.capture.push(labs, scan.captured.map((c) => c.labs[4]));
+    const reading = front ? { labs: front.labs, valid: front.valid.map((v, i) => v && !front.masked[i]) } : null;
+    const p = this.capture.push(reading, scan.captured.map((c) => c.labs[4]));
     if (!p.labs) {
-      if (Math.abs(p.progress - scan.progress) > 0.05 || p.reason !== scan.reason) this.store.set({ scan: { ...scan, progress: p.progress, reason: p.reason } });
+      const coveredChanged = (p.covered ?? []).join() !== (scan.covered ?? []).join();
+      if (Math.abs(p.progress - scan.progress) > 0.05 || p.reason !== scan.reason || coveredChanged) this.store.set({ scan: { ...scan, progress: p.progress, reason: p.reason, covered: p.covered } });
       return;
     }
     const captured = [...scan.captured, { face: scan.steps[scan.step].face, labs: p.labs }];
     if (captured.length < 6) {
-      this.store.set({ scan: { ...scan, captured, step: scan.step + 1, progress: 0, reason: undefined } });
+      this.store.set({ scan: { ...scan, captured, step: scan.step + 1, progress: 0, reason: undefined, covered: undefined } });
       this.beep(880, 0.08);
       return;
     }

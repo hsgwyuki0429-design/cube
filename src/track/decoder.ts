@@ -27,6 +27,8 @@ export interface DecoderOptions {
   // 「不確か」がこの回数続いたら見失い（復帰探索を試みる）
   lostAfter: number;
   recoveryDepth: number;
+  // 2 手までで観測がこれ以下のコストで説明できたら、それ以上深く探さない（速さのため。説明できないときだけ深く）
+  deepenAbove: number;
 }
 
 export const DEFAULT_DECODER: DecoderOptions = {
@@ -38,6 +40,7 @@ export const DEFAULT_DECODER: DecoderOptions = {
   uncertainCost: 3.2,
   lostAfter: 3,
   recoveryDepth: 4,
+  deepenAbove: 0.75,
 };
 
 interface MoveNode {
@@ -193,6 +196,10 @@ export class MoveDecoder {
   lastObservationCost = 0;
   recoveries = 0;
   lastExpanded = 0; // 直近の観測で評価した候補数（性能の目安）
+  // 仮説のコストは毎回最良を 0 に揃えている。揃えるために引いた量の合計（絶対的なコスト = cost + costOffset）
+  costOffset = 0;
+  private lastBase = 0;
+  private lastGoodOffset = 0;
 
   // orients を省略すると 24 姿勢すべてから始める（最初の観測で決まる）
   constructor(start: CubeState, options: Partial<DecoderOptions> = {}, orients?: number[]) {
@@ -216,6 +223,11 @@ export class MoveDecoder {
       centerCost[o] = c;
       if (c < min) min = c;
     }
+    // 中心が見えていない（どの姿勢でも同じ）なら、24 通りすべては試さず、いまの仮説たちの姿勢だけにする
+    // （中心以外のステッカーで持ち替えを判断できる余地は残しつつ、指で中心が隠れたときに探索が膨らまないように）
+    let max = -Infinity;
+    for (let o = 0; o < NUM_ORIENTATIONS; o++) max = Math.max(max, centerCost[o]);
+    if (max - min < 0.5) return [...new Set(this.beam.map((h) => h.orient))];
     const orients: number[] = [];
     for (let o = 0; o < NUM_ORIENTATIONS; o++) if (centerCost[o] <= min + 0.75) orients.push(o);
     return orients;
@@ -284,8 +296,11 @@ export class MoveDecoder {
     // 1) 全仮説を浅く（深さ 2 まで）
     const shallow = Math.min(depth, 2);
     for (const { h, i } of order) for (let d = 0; d <= shallow; d++) evalLevel(h, i, d);
-    // 2) 下限がしきい値より安い仮説だけ深く
-    for (const { h, i } of order) {
+    // 2) 下限がしきい値より安い仮説だけ深く（2 手までで観測が説明できていれば省く）
+    let bestShallowObs = Infinity;
+    for (const c of best.values()) if (c.obsCost < bestShallowObs) bestShallowObs = c.obsCost;
+    const deepen = depth > shallow && bestShallowObs > this.options.deepenAbove;
+    for (const { h, i } of deepen ? order : []) {
       if (depth <= shallow || h.cost + (shallow + 1) * moveCost >= top.threshold) continue;
       for (let d = 0; d <= shallow; d++) {
         // 深さ 2 までの状態を作り直す（評価は済んでいるので状態だけ）
@@ -313,6 +328,7 @@ export class MoveDecoder {
     const t0 = obs.tPrevEnd;
     const t1 = Math.max(obs.tPrevEnd, obs.t);
     const base = kept.length ? kept[0].cost : 0;
+    this.lastBase = base;
     return kept.map((c) => {
       const h = beam[c.hyp];
       const seq = seqOf(tree, c.node);
@@ -336,12 +352,14 @@ export class MoveDecoder {
     if (!obs.faces.length) return;
     this.observations++;
     const next = this.expand(this.beam, obs, this.options.maxMovesPerStep, false);
+    this.costOffset += this.lastBase;
     const bestObs = next[0]?.obsCost ?? Infinity;
     this.lastObservationCost = bestObs;
     if (bestObs <= this.options.uncertainCost) {
       this.beam = next;
       this.uncertainStreak = 0;
       this.lastGoodBeam = next;
+      this.lastGoodOffset = this.costOffset;
       this.status = "tracking";
       return;
     }
@@ -353,6 +371,9 @@ export class MoveDecoder {
       const seeds = this.lastGoodBeam.slice(0, 6);
       const recovered = this.expand(seeds, obs, Math.max(this.options.recoveryDepth, this.options.maxMovesPerStep), true);
       if (recovered.length && recovered[0].obsCost <= this.options.uncertainCost) {
+        // 復帰の仮説は、最後に辻褄が合っていた時点のコストからの続き
+        this.costOffset = this.lastGoodOffset + this.lastBase;
+        this.lastGoodOffset = this.costOffset;
         this.beam = recovered;
         this.lastGoodBeam = recovered;
         this.uncertainStreak = 0;
