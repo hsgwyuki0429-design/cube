@@ -121,7 +121,7 @@ it("real video", async () => {
     const r = process.env.ROI === "0" ? processFrame(cv, img, t, pcfg, mem2, refs, []) : processTracked(cv, img, t, pcfg, mem2, refs, []);
     procMs.push(performance.now() - tp0);
     if (r.faces.some((f) => f.slot === 2 && !f.held)) detected++;
-    const u = live.push({ t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked })) });
+    const u = live.push({ t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, alts: f.alts })) });
     if (u) last = u;
   });
   if (truth && process.env.DIAG) {

@@ -66,6 +66,8 @@ export interface DetectedFace {
   valid: boolean[];
   weight: number[]; // セルの信頼度（四角形が見つかったセル 1、格子から推定したセル・保持した面は低め）
   masked: boolean[]; // 手で隠れている
+  // 窓の位置が一意に決まらなかったとき、1 段ずらした格子での読み（どちらが正しいかはデコーダが状態と照らして決める）
+  alts?: { labs: Lab[]; valid: boolean[] }[];
 }
 
 export interface FrameResult {
@@ -85,6 +87,7 @@ export interface PipelineMemory {
 
 type KeptFace = PlacedFace & { seenT: number }; // seenT: 最後に実際に検出できた時刻
 
+const MAX_ALTS = 2; // ずらした格子の候補の数
 const SKIP_MS = 300; // 正面が指で隠れたフレームを飛ばすのは、直前に正面が見えてからこの時間まで
 const HOLD_MS = 400; // 何も見つからないとき、直前の面を使い続ける時間
 const CARRY_MS = 2500; // 正面を追えている間、見つからない他の面を運び続ける時間
@@ -435,6 +438,13 @@ export function processFrame(
         if (same.length && same[0].a > largest * 0.45) anchor = same[0].i;
       }
       placed = layoutFaces(faces, { anchor, anchorAngle: recent && t - recent.t < 300 ? recent.angle : undefined });
+      // 窓の位置が曖昧な面は、ずらした格子も読みの候補にする（指で 1 段隠れた面と、隣の面の段を取り違えない）
+      for (const p of placed) {
+        const g = faces[p.latticeIndex];
+        if (!g?.alts.length) continue;
+        const alt = [g.H, ...g.alts].filter((h) => h !== p.H).slice(0, MAX_ALTS);
+        if (alt.length) p.altH = alt;
+      }
       const a = placed[0];
       const key = keyOf(a.H);
       // 今回見つからなかった面は、正面の動きに合わせて直前の位置から運ぶ
@@ -491,6 +501,14 @@ export function processFrame(
       masked: new Array(9).fill(false),
     };
     maskHands(face, hands);
+    if (p.altH && !held) {
+      face.alts = p.altH.map((H) => {
+        const ss = sampleFace(img, { H, rot: p.rot }, config.region);
+        const a: DetectedFace = { ...face, H, labs: ss.map((x) => x.lab), valid: ss.map((x) => x.valid && x.spread < config.maxSpread), masked: new Array(9).fill(false) };
+        maskHands(a, hands);
+        return { labs: a.labs, valid: a.valid };
+      });
+    }
     out.push(face);
   }
   if (out.length && out[0].slot !== 2) return { faces: [], quads: quadsOut };
