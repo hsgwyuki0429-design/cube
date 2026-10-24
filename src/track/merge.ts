@@ -26,3 +26,21 @@ export function mergeQuickRepeats<T extends DecodedMove & { start?: number; end?
   }
   return out;
 }
+
+// 打ち消し合う手（R2 R2・F … F' で間に何もない）を取り除く。人が回してすぐ戻すことはまれで、ほとんどは回転途中の
+// 見え方や指の誤読から出た雑音。取り除くと間の手どうしが隣り合うので、続けて打ち消し合えばそれも取り除く
+// （F R2 R2 F' → F F' → なし）。間に別の手があるもの（R L R'）は、人が回すこともあるので残す
+export function cancelInverses<T extends DecodedMove>(moves: T[]): T[] {
+  const out: T[] = [];
+  const amount = (m: number) => (m % 3) + 1; // 1 = 90°, 2 = 180°, 3 = -90°
+  for (const m of moves) {
+    const f = moveFace(m.move);
+    const j = out.length - 1;
+    if (j >= 0 && moveFace(out[j].move) === f && (amount(out[j].move) + amount(m.move)) % 4 === 0) {
+      out.splice(j, 1);
+      continue;
+    }
+    out.push(m);
+  }
+  return out;
+}

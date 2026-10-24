@@ -57,7 +57,7 @@ it("groove", async () => {
       }
     }
     const base = findQuads(cv, src, { ...DEFAULT_QUADS, grooves: false });
-    const all = findQuads(cv, src, { ...DEFAULT_QUADS, grooveThreshold: T, grooveErode: Number(process.env.E ?? 7) });
+    const all = findQuads(cv, src, { ...DEFAULT_QUADS, grooves: true, grooveThreshold: T, grooveErode: Number(process.env.E ?? 7) });
     const qs = all.filter((q) => !base.some((b) => Math.hypot(b.center[0] - q.center[0], b.center[1] - q.center[1]) < 3));
     for (const q of base) for (let j = 0; j < 4; j++) drawLine(out, q.corners[j] as [number, number], q.corners[(j + 1) % 4] as [number, number], [255, 0, 255]);
     for (const q of qs) for (let j = 0; j < 4; j++) drawLine(out, q.corners[j] as [number, number], q.corners[(j + 1) % 4] as [number, number], [0, 255, 255]);
