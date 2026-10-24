@@ -71,8 +71,10 @@ export class VisionClient {
     if (!this.isReady || this.busy || !video.videoWidth) return false;
     this.busy = true;
     try {
-      const w = Math.min(this.workWidth, video.videoWidth);
-      const h = Math.round((video.videoHeight * w) / video.videoWidth);
+      // 長辺を workWidth に（縦向きの映像で幅を基準にすると画素が 3 倍になり、認識が追いつかない）
+      const s = Math.min(1, this.workWidth / Math.max(video.videoWidth, video.videoHeight));
+      const w = Math.round(video.videoWidth * s);
+      const h = Math.round(video.videoHeight * s);
       let bitmap: ImageBitmap;
       try {
         bitmap = await createImageBitmap(video, { resizeWidth: w, resizeHeight: h, resizeQuality: "low" });

@@ -9,6 +9,7 @@ export interface FaceObservation {
   slot: number;
   cost: Float32Array;
   labels: Int8Array; // 9 セルの最尤色（-1 = 不明）
+  alts?: Float32Array[]; // 窓の位置をずらした読みのコスト（どれか 1 つが正しい。デコーダは最も合うものを使う）
 }
 
 export interface Observation {

@@ -96,7 +96,8 @@ export class Refiner {
       logMs: Infinity,
       keepObservations: true,
     }, input.orients);
-    this.config = { ...DEFAULT_PIPELINE, ...input.pipeline, quads: { ...DEFAULT_PIPELINE.quads, ...(input.pipeline?.quads ?? {}) } };
+    // ソルブ後の解析は時間をかけてよいので、面が見つからないフレームは溝の候補でもやり直す
+    this.config = { ...DEFAULT_PIPELINE, ...input.pipeline, grooveRetry: true, quads: { ...DEFAULT_PIPELINE.quads, ...(input.pipeline?.quads ?? {}) } };
   }
 
   // そのフレームの直前に検出された手（手の検出は 15Hz 程度なので、一番近い過去のもの）
@@ -116,7 +117,7 @@ export class Refiner {
   push(img: PixelSource & { mat?: unknown }, t: number, hands?: Pt[][]): void {
     if (t < this.input.from || t > this.input.to) return;
     const r = processFrame(this.cv, img, t, this.config, this.memory, this.engine.colors.refs, hands ?? this.handsAt(t, img.width, img.height));
-    const reading = { t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked })) };
+    const reading = { t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, alts: f.alts })) };
     this.engine.push(reading);
     this.looks.push({ t, solved: reading.faces.length > 0 && this.engine.looksSolved(reading) });
     this.patches.push({ t, faces: r.faces.map((f) => facePatch(img, { ...f, labs: f.labs })) });

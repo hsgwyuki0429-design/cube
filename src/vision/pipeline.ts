@@ -8,9 +8,10 @@ import { type PlacedFace, colAngle, faceArea, layoutFaces, slotPoint } from "./l
 import { type CV, type QuadOptions, DEFAULT_QUADS, findQuads } from "./quads";
 import { type PixelSource, sampleFace } from "./sampler";
 import { stickerScore } from "./stickerness";
+import { skinLike } from "../track/colorModel";
 import { rgbToLab } from "./color";
 import { pointInPolygon } from "./lattice";
-import { estimatePose, projectSlot } from "./pose";
+import { estimatePose, hingePose, projectSlot } from "./pose";
 
 export interface PipelineConfig {
   mode: "auto" | "guide";
@@ -20,6 +21,8 @@ export interface PipelineConfig {
   quads: QuadOptions;
   lattice: Partial<LatticeOptions>;
   predictFaces: boolean; // 見つかった面から求めたキューブの姿勢で、見つからなかった隣の面の格子を射影して読む
+  // 面が見つからないとき、溝で区切った候補でやり直す（1 フレームの処理が 2〜5 倍になるので、ソルブ後の解析だけ）
+  grooveRetry: boolean;
 }
 
 export const DEFAULT_PIPELINE: PipelineConfig = {
@@ -30,6 +33,7 @@ export const DEFAULT_PIPELINE: PipelineConfig = {
   quads: DEFAULT_QUADS,
   lattice: {},
   predictFaces: true,
+  grooveRetry: false,
 };
 
 export interface DetectedFace {
@@ -43,6 +47,8 @@ export interface DetectedFace {
   valid: boolean[];
   weight: number[]; // セルの信頼度（四角形が見つかったセル 1、格子から推定したセル・保持した面は低め）
   masked: boolean[]; // 手で隠れている
+  // 窓の位置が一意に決まらなかったとき、1 段ずらした格子での読み（どちらが正しいかはデコーダが状態と照らして決める）
+  alts?: { labs: Lab[]; valid: boolean[] }[];
 }
 
 export interface FrameResult {
@@ -61,6 +67,7 @@ export interface PipelineMemory {
 
 type KeptFace = PlacedFace & { seenT: number }; // seenT: 最後に実際に検出できた時刻
 
+const MAX_ALTS = 2; // ずらした格子の候補の数
 const SKIP_MS = 300; // 正面が指で隠れたフレームを飛ばすのは、直前に正面が見えてからこの時間まで
 const HOLD_MS = 400; // 何も見つからないとき、直前の面を使い続ける時間
 const CARRY_MS = 2500; // 正面を追えている間、見つからない他の面を運び続ける時間
@@ -178,22 +185,51 @@ const chroma = (l: Lab) => Math.hypot(l[1], l[2]);
 // 正面の格子が正確なら隣の面の位置は決まる。直前の位置から運んだ面より新しいので、そちらと入れ替える。
 // 読んだ色は軽く扱い（held）、ステッカーらしい色のセルが半分に満たなければ捨てる（下の読み取りで確かめる）
 const PREDICT_SLOTS = [0, 1, 3, 4]; // U R D L
-const MIN_FACING = 0.3; // これより斜め（約 72° 以上）の面は読まない
-function predictNeighbours(placed: PlacedFace[], img: PixelSource, pitch: number): void {
+const MIN_FACING = 0.15; // これより斜め（約 80° 以上）の面は読まない
+// 共有する辺を軸に試す角度（ラジアン）。正面だけから求めた傾きは小さめに出るので、広げる側を細かく
+// 面の奥の辺の外側の点（スロットの格子座標）。U は行 0、D は行 2、R は列 2、L は列 0 の側が奥
+const BEYOND: Record<number, (u: number) => [number, number]> = { 0: (u) => [u, -0.45], 3: (u) => [u, 3.45], 1: (u) => [3.45, u], 4: (u) => [-0.45, u] };
+const HINGE = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, -0.1, -0.2, -0.3];
+function predictNeighbours(placed: PlacedFace[], img: PixelSource, pitch: number, refs: Lab[] | null, hands: Pt[][]): void {
   const real = placed.filter((p) => !(p as { held?: boolean }).held);
   if (!real.some((p) => p.slot === 2)) return;
   const pose = estimatePose(real, img.width, img.height);
   // 格子と合わない姿勢（当てはめの誤り・回転途中の層）なら予測しない
   if (!pose || pose.err > pitch * 0.15) return;
+  // キューブの色らしい点か（手の上・肌らしい色は分からない = null）
+  const cubeLike = (p: Pt): boolean | null => {
+    if (hands.some((hull) => pointInPolygon(p, hull))) return null;
+    const lab = pixelLab(img, p);
+    if (!lab) return false;
+    const d = refs ? Math.min(...refs.map((r) => Math.hypot((lab[0] - r[0]) / 2, lab[1] - r[1], lab[2] - r[2]))) : 0;
+    if (d > 12 && skinLike(lab)) return null;
+    return stickerScore(lab) > 0 && d < 30;
+  };
   for (const slot of PREDICT_SLOTS) {
     const i = placed.findIndex((p) => p.slot === slot);
     if (i >= 0 && !(placed[i] as { held?: boolean }).held) continue;
-    const pr = projectSlot(pose, slot, img.width, img.height);
-    if (!pr || pr.facing < MIN_FACING) continue;
-    // 画面からはみ出す面は読まない
-    const corners = [slotPoint({ H: pr.H, rot: 0 }, 0, 0), slotPoint({ H: pr.H, rot: 0 }, 3, 0), slotPoint({ H: pr.H, rot: 0 }, 3, 3), slotPoint({ H: pr.H, rot: 0 }, 0, 3)];
-    if (corners.some(([x, y]) => x < 0 || y < 0 || x >= img.width || y >= img.height)) continue;
-    const face = { slot, rot: 0, H: pr.H, found: 0, latticeIndex: -1, held: true } as PlacedFace;
+    // 辺を蝶番にして傾きを変え、面のセルがキューブの色で、面の向こう側（奥の辺の外）はそうでない角度を選ぶ。
+    // 傾きが小さすぎると奥の辺の外もまだ面の上、大きすぎると奥の列が背景にかかる
+    let best: { H: Mat3; score: number } | null = null;
+    for (const a of HINGE) {
+      const pr = projectSlot(a ? hingePose(pose, slot, a) : pose, slot, img.width, img.height);
+      if (!pr || pr.facing < MIN_FACING) continue;
+      // 画面からはみ出す面は読まない
+      const g = { H: pr.H, rot: 0 };
+      const corners = [slotPoint(g, 0, 0), slotPoint(g, 3, 0), slotPoint(g, 3, 3), slotPoint(g, 0, 3)];
+      if (corners.some(([x, y]) => x < 0 || y < 0 || x >= img.width || y >= img.height)) continue;
+      let score = 0;
+      for (let k = 0; k < 9; k++) {
+        const v = cubeLike(slotPoint(g, (k % 3) + 0.5, Math.floor(k / 3) + 0.5));
+        score += v === null ? 0 : v ? 1 : -0.5;
+      }
+      // 奥の辺（正面と反対側の辺）の向こう
+      for (let c = 0; c < 3; c++) if (cubeLike(slotPoint(g, ...BEYOND[slot](c + 0.5)))) score--;
+      score -= Math.abs(a) * 0.5; // 同点なら求めた姿勢に近い方
+      if (!best || score > best.score) best = { H: pr.H, score };
+    }
+    if (!best || best.score < 2.5) continue;
+    const face = { slot, rot: 0, H: best.H, found: 0, latticeIndex: -1, held: true } as PlacedFace;
     if (i >= 0) placed[i] = face;
     else placed.push(face);
   }
@@ -312,7 +348,7 @@ export function processFrame(
         : 0;
     };
     let faces: LatticeFace[] & { strong?: number } = findCubeFaces(img, expandBlocks(quads, prevFaces.map((f) => f.H)), config, scorer, faceScorer, refs, tl);
-    if (!faces.length && cv) {
+    if (!faces.length && cv && config.grooveRetry) {
       // 面が見つからない: ステッカーレスで同じ色がつながっている・丸いセルが溶け合って見えるとき。ピースの間の溝で
       // セルを区切った候補も加えてやり直す（見つかるフレームでは使わない。溝の候補は他の候補と混ざると格子を乱すことがある）
       // 溝の濃さは照明やキューブの大きさで変わるので、はっきりした溝 → 薄い溝の順に試す
@@ -372,6 +408,13 @@ export function processFrame(
         if (same.length && same[0].a > largest * 0.45) anchor = same[0].i;
       }
       placed = layoutFaces(faces, { anchor, anchorAngle: recent && t - recent.t < 300 ? recent.angle : undefined });
+      // 窓の位置が曖昧な面は、ずらした格子も読みの候補にする（指で 1 段隠れた面と、隣の面の段を取り違えない）
+      for (const p of placed) {
+        const g = faces[p.latticeIndex];
+        if (!g?.alts.length) continue;
+        const alt = [g.H, ...g.alts].filter((h) => h !== p.H).slice(0, MAX_ALTS);
+        if (alt.length) p.altH = alt;
+      }
       const a = placed[0];
       const key = keyOf(a.H);
       // 今回見つからなかった面は、正面の動きに合わせて直前の位置から運ぶ
@@ -394,7 +437,7 @@ export function processFrame(
         }
       }
       memory.last = { t, angle: colAngle(a), centerKey: key, pitch: faces[a.latticeIndex].pitch, faces: kept };
-      if (config.predictFaces) predictNeighbours(placed, img, faces[a.latticeIndex].pitch);
+      if (config.predictFaces) predictNeighbours(placed, img, faces[a.latticeIndex].pitch, refs, hands);
     } else if (memory.last && t - memory.last.t < HOLD_MS && memory.last.faces.length) {
       // 何も見つからない: ごく短時間だけ直前の面を使う（下で色がステッカーらしいか確かめる）
       placed = memory.last.faces.map((f) => ({ ...f, held: true }) as PlacedFace);
@@ -427,6 +470,14 @@ export function processFrame(
       masked: new Array(9).fill(false),
     };
     maskHands(face, hands);
+    if (p.altH && !held) {
+      face.alts = p.altH.map((H) => {
+        const ss = sampleFace(img, { H, rot: p.rot }, config.region);
+        const a: DetectedFace = { ...face, H, labs: ss.map((x) => x.lab), valid: ss.map((x) => x.valid && x.spread < config.maxSpread), masked: new Array(9).fill(false) };
+        maskHands(a, hands);
+        return { labs: a.labs, valid: a.valid };
+      });
+    }
     out.push(face);
   }
   if (out.length && out[0].slot !== 2) return { faces: [], quads: quadsOut };

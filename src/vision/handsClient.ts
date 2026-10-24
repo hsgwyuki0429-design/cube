@@ -22,14 +22,60 @@ export function convexHull(points: Pt[]): Pt[] {
   return [...lower.slice(0, -1), ...upper.slice(0, -1)];
 }
 
-// 指は関節点より太いので、重心から外へ margin（正規化座標）だけ広げる
-function grow(poly: Pt[], margin: number): Pt[] {
-  const cx = poly.reduce((s, p) => s + p[0], 0) / poly.length;
-  const cy = poly.reduce((s, p) => s + p[1], 0) / poly.length;
-  return poly.map(([x, y]) => {
-    const d = Math.hypot(x - cx, y - cy) || 1;
-    return [x + ((x - cx) / d) * margin, y + ((y - cy) / d) * margin] as Pt;
-  });
+// 手の 21 点（MediaPipe の並び）から、手が覆う範囲の多角形の集まりを作る（正規化座標）。
+// 点は関節の中心なので、指は点より太い。指の骨ごとに、手のひらの長さに比例した半径で太らせた「カプセル」と、
+// 手のひらの多角形にする。以前は凸包を一定の幅（画面幅の 2.5%）だけ広げていたが、カメラに近い手では指の縁が
+// はみ出して、親指が白いステッカーと読まれていた。カプセルなら指の間に見えるステッカーは隠さない
+const BONES: [number, number][] = [
+  [1, 2], [2, 3], [3, 4], // 親指
+  [5, 6], [6, 7], [7, 8],
+  [9, 10], [10, 11], [11, 12],
+  [13, 14], [14, 15], [15, 16],
+  [17, 18], [18, 19], [19, 20],
+];
+const PALM = [0, 1, 2, 5, 9, 13, 17];
+const FINGER_RADIUS = 0.16; // 手のひらの長さ（手首〜中指の付け根）に対する指の半径（指の幅 ≈ 手のひらの長さの 0.2 + 余裕）
+
+// aspect: 画像の幅 / 高さ（正規化座標は x と y で縮尺が違う）
+export function handMasks(points: Pt[], aspect: number): Pt[][] {
+  if (points.length < 21) return points.length >= 3 ? [convexHull(points)] : [];
+  // 縦横の縮尺をそろえた座標（x を aspect 倍）で計算して戻す
+  const P = points.map(([x, y]) => [x * aspect, y] as Pt);
+  const back = (p: Pt): Pt => [p[0] / aspect, p[1]];
+  const palmLen = Math.hypot(P[9][0] - P[0][0], P[9][1] - P[0][1]);
+  const r = Math.max(1e-3, palmLen * FINGER_RADIUS);
+  const out: Pt[][] = [];
+  for (const [a, b] of BONES) {
+    const [ax, ay] = P[a];
+    const [bx, by] = P[b];
+    const d = Math.hypot(bx - ax, by - ay) || 1e-6;
+    const nx = (-(by - ay) / d) * r;
+    const ny = ((bx - ax) / d) * r;
+    const ux = ((bx - ax) / d) * r;
+    const uy = ((by - ay) / d) * r;
+    // 両端を半径分だけ伸ばした細長い六角形（丸い端の近似）
+    out.push(
+      [
+        [ax - ux, ay - uy],
+        [ax + nx, ay + ny],
+        [bx + nx, by + ny],
+        [bx + ux, by + uy],
+        [bx - nx, by - ny],
+        [ax - nx, ay - ny],
+      ].map((p) => back(p as Pt)),
+    );
+  }
+  // 手のひら: 付け根の点の凸包を半径分だけ広げる
+  const palm = convexHull(PALM.map((i) => P[i]));
+  const cx = palm.reduce((s, p) => s + p[0], 0) / palm.length;
+  const cy = palm.reduce((s, p) => s + p[1], 0) / palm.length;
+  out.push(
+    palm.map(([x, y]) => {
+      const d = Math.hypot(x - cx, y - cy) || 1;
+      return back([x + ((x - cx) / d) * r, y + ((y - cy) / d) * r]);
+    }),
+  );
+  return out;
 }
 
 export class HandsClient {
@@ -60,7 +106,7 @@ export class HandsClient {
       } else if (m.type === "hands") {
         this.busy = false;
         this.landmarks = m.hands;
-        this.hulls = (m.hands as Pt[][]).map((h) => grow(convexHull(h), 0.025));
+        this.hulls = (m.hands as Pt[][]).flatMap((h) => handMasks(h, this.aspect));
         this.history.push({ t: this.pendingT, hulls: this.hulls });
         while (this.history.length && this.pendingT - this.history[0].t > 150000) this.history.shift();
         this.onUpdate?.(this.hulls);
@@ -81,6 +127,7 @@ export class HandsClient {
   }
 
   private lastSubmit = 0;
+  private aspect = 16 / 9;
 
   // 15Hz まで（手の位置は数フレームに1回で十分。遅い端末で認識処理の CPU を奪わないように）
   historyBetween(t0: number, t1: number): { t: number; hulls: Pt[][] }[] {
@@ -95,6 +142,7 @@ export class HandsClient {
     try {
       const w = 320;
       const h = Math.round((video.videoHeight * w) / video.videoWidth);
+      this.aspect = video.videoWidth / video.videoHeight;
       const bitmap = await createImageBitmap(video, { resizeWidth: w, resizeHeight: h });
       this.worker.postMessage({ type: "frame", bitmap, t }, [bitmap]);
     } catch {

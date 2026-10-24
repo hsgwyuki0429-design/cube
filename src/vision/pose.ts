@@ -250,3 +250,17 @@ export function projectSlot(pose: Pose, slot: number, width: number, height: num
   const H = fitHomography(src, dst);
   return H ? { H, facing } : null;
 }
+
+// 正面と面 slot の共有する辺を軸にキューブを angle（ラジアン）回した姿勢。1 つの面だけから求めた姿勢は、
+// 透視が弱いと傾きを小さく見積もる（正面の縦の縮みは cos でしか効かない）ので、隣の面を読むときに辺を蝶番にして探す
+export function hingePose(pose: Pose, slot: number, angle: number): Pose {
+  const n = NORMAL[slot];
+  const zf = NORMAL[F];
+  const rot = (v: number[]): number[] => [0, 1, 2].map((r) => pose.R[r * 3] * v[0] + pose.R[r * 3 + 1] * v[1] + pose.R[r * 3 + 2] * v[2]);
+  const axis = norm3(rot(cross3(n, zf)));
+  const p = rot([1.5 * (n[0] + zf[0]), 1.5 * (n[1] + zf[1]), 1.5 * (n[2] + zf[2])]).map((v, i) => v + pose.t[i]);
+  const Q = rodrigues(axis.map((v) => v * angle));
+  const q = (v: number[]) => [0, 1, 2].map((r) => Q[r * 3] * v[0] + Q[r * 3 + 1] * v[1] + Q[r * 3 + 2] * v[2]);
+  const d = q(pose.t.map((v, i) => v - p[i]));
+  return { ...pose, R: mul3(Q, pose.R), t: d.map((v, i) => v + p[i]) as Vec3 };
+}

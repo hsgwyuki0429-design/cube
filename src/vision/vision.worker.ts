@@ -4,10 +4,11 @@ import cvModule from "@techstark/opencv-js";
 import { TrackerEngine } from "../track/engine";
 import { decodeRecording } from "./decode";
 import { estimatePose } from "./pose";
+import { processTracked } from "./roi";
 import { Refiner } from "./refine";
 import type { Lab } from "./color";
 import type { Pt } from "./homography";
-import { DEFAULT_PIPELINE, type PipelineConfig, type PipelineMemory, processFrame } from "./pipeline";
+import { DEFAULT_PIPELINE, type PipelineConfig, type PipelineMemory } from "./pipeline";
 import type { FrameMessage, FromWorker, ToWorker } from "./protocol";
 import { type CV, initOpenCv } from "./quads";
 
@@ -94,8 +95,9 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
         bitmap.close();
         const img = ctx!.getImageData(0, 0, w, h);
         const handsPx = hands.map((hull) => hull.map(([x, y]) => [x * w, y * h] as Pt));
-        const result = processFrame(cv, img, msg.t, config, memory, engine ? engine.colors.refs : refs, handsPx);
-        const reading = { t: msg.t, faces: result.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked })) };
+        // キューブを見つけた後は、直前の位置の周りだけを縮小して処理する（速さが追従の前提）
+        const result = processTracked(cv, img, msg.t, config, memory, engine ? engine.colors.refs : refs, handsPx);
+        const reading = { t: msg.t, faces: result.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, alts: f.alts })) };
         const track = engine?.push(reading) ?? undefined;
         let looksSolved: boolean | undefined;
         let pose: FrameMessage["pose"];

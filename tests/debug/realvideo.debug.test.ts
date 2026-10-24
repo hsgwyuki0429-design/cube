@@ -5,12 +5,14 @@
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { it } from "vitest";
-import { MOVE_NAMES, applyMoves, isSolved, moveIndex, solvedState, statesEqual } from "../../src/cube/model";
+import { MOVE_NAMES, applyMoves, moveIndex, solvedState, statesEqual } from "../../src/cube/model";
 import { observationCost } from "../../src/track/decoder";
 import { type TrackUpdate, TrackerEngine } from "../../src/track/engine";
 import { type Lab, NAMED_COLORS } from "../../src/vision/color";
 import { DEFAULT_PIPELINE, type PipelineMemory, processFrame } from "../../src/vision/pipeline";
 import { initOpenCv } from "../../src/vision/quads";
+import { processTracked } from "../../src/vision/roi";
+import { simplifyMoves } from "../../src/track/merge";
 import { Refiner } from "../../src/vision/refine";
 
 const VIDEO = process.env.VIDEO ?? "";
@@ -29,8 +31,10 @@ async function frames(onFrame: (data: Uint8ClampedArray, w: number, h: number, t
   const rot = Math.abs(Number(s.side_data_list?.[0]?.rotation ?? 0)) % 180 === 90;
   const sw = rot ? s.height : s.width;
   const sh = rot ? s.width : s.height;
-  const w = W;
-  const h = Math.round((sh * W) / sw / 2) * 2;
+  // アプリと同じく長辺を W に
+  const sc = W / Math.max(sw, sh);
+  const w = Math.round((sw * sc) / 2) * 2;
+  const h = Math.round((sh * sc) / 2) * 2;
   const size = w * h * 4;
   await new Promise<void>((resolve) => {
     const p = spawn("ffmpeg", ["-v", "error", "-i", VIDEO, "-vf", `fps=${FPS},scale=${w}:${h}`, "-f", "rawvideo", "-pix_fmt", "rgba", "-"]);
@@ -109,11 +113,11 @@ it("real video", async () => {
   const t0 = performance.now();
   await frames((data, w, h, t) => {
     const img = { data, width: w, height: h };
-    refiner.push(img, t);
+    if (process.env.REFINE !== "0") refiner.push(img, t);
     if (n++ % every || process.env.LIVE === "0") return;
-    const r = processFrame(cv, img, t, DEFAULT_PIPELINE, mem2, refs, []);
+    const r = processTracked(cv, img, t, DEFAULT_PIPELINE, mem2, refs, []);
     if (r.faces.some((f) => f.slot === 2 && !f.held)) detected++;
-    const u = live.push({ t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked })) });
+    const u = live.push({ t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, alts: f.alts })) });
     if (u) last = u;
   });
   if (truth && process.env.DIAG) {
@@ -138,12 +142,16 @@ it("real video", async () => {
     }
     process.stdout.write(`diag: ${good}/${obs.length} observations match a true state (cost < 1.5)\n`);
   }
-  const liveMoves = live.decoder.bestMoves();
+  const liveMoves = simplifyMoves(live.decoder.bestMoves());
+  if (process.env.REFINE === "0") {
+    process.stdout.write(`frames ${n} live: detected ${detected}/${Math.ceil(n / every)} status ${live.decoder.status} reached ${target ? statesEqual(live.decoder.best().state, target) : "-"}\n  live: ${simplifyMoves(live.decoder.bestMoves()).map((m) => MOVE_NAMES[m.move] + (m.inferred ? "?" : "")).join(" ")}\n${truth ? `  truth: ${truth}\n` : ""}`);
+    return;
+  }
   const res = refiner.result(target);
   const endState = applyMoves(start, res.moves.map((m) => m.move));
   const names = (ms: { move: number; inferred?: boolean }[]) => ms.map((m) => MOVE_NAMES[m.move] + (m.inferred ? "?" : "")).join(" ");
   process.stdout.write(
-    `frames ${n} live: detected ${detected}/${Math.ceil(n / every)} status ${live.decoder.status} moves ${liveMoves.length} solved ${isSolved(live.decoder.best().state)}\n  ${names(liveMoves)}\n` +
+    `frames ${n} live: detected ${detected}/${Math.ceil(n / every)} status ${live.decoder.status} moves ${liveMoves.length} reached ${target ? statesEqual(live.decoder.best().state, target) : "-"}\n  ${names(liveMoves)}\n` +
       `refine: method ${res.method} solved ${res.solved} moves ${res.moves.length} inferred ${res.inferred} forced ${res.forced} start ${res.start?.toFixed(0)} end ${res.end?.toFixed(0)} reached-target ${target ? statesEqual(endState, target) : "-"}\n  ${names(res.moves)}\n` +
       `  timed: ${res.moves.map((m) => `${MOVE_NAMES[m.move]}@${Math.round(m.start)}-${Math.round(m.end)}`).join(" ")}\n  ${((performance.now() - t0) / 1000).toFixed(0)}s (last update ${last ? "yes" : "no"})\n${truth ? `  truth: ${truth}\n` : ""}`,
   );
