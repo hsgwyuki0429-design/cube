@@ -97,7 +97,7 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
         const handsPx = hands.map((hull) => hull.map(([x, y]) => [x * w, y * h] as Pt));
         // キューブを見つけた後は、直前の位置の周りだけを縮小して処理する（速さが追従の前提）
         const result = processTracked(cv, img, msg.t, config, memory, engine ? engine.colors.refs : refs, handsPx);
-        const reading = { t: msg.t, faces: result.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, alts: f.alts })) };
+        const reading = { t: msg.t, faces: result.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked })) };
         const track = engine?.push(reading) ?? undefined;
         let looksSolved: boolean | undefined;
         let pose: FrameMessage["pose"];

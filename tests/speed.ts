@@ -116,7 +116,7 @@ export function simulate(cv: CV, o: SpeedOptions): SpeedResult {
     if (frames % (o.every ?? 1) === 0) {
       const run = o.tracked ? processTracked : processFrame;
       const r = run(cv, img, t, { ...DEFAULT_PIPELINE, ...o.pipeline }, memory, engine.colors.refs, o.maskHands === false ? [] : hands);
-      engine.push({ t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, alts: f.alts })) });
+      engine.push({ t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked })) });
     }
     refiner?.push(img, t, o.maskHands === false ? [] : hands);
     frames++;

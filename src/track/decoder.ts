@@ -128,11 +128,7 @@ interface CompiledObs {
   costBase: Int32Array; // cost 配列内のオフセット（cell*6）
   costs: Float32Array[]; // face ごと
   faceOf: Int32Array;
-  alts: (Float32Array[] | undefined)[]; // face ごとの、窓の位置をずらした読みのコスト
 }
-
-// ずらした格子の読みを使うときの上乗せ（見つかった格子の位置を少しだけ優先する。1 手のコスト 1.0 より小さく）
-const ALT_PENALTY = 0.4;
 
 function compile(obs: Observation, o: number): CompiledObs {
   const n = obs.faces.length * 9;
@@ -146,25 +142,12 @@ function compile(obs: Observation, o: number): CompiledObs {
       faceOf[k * 9 + cell] = k;
     }
   });
-  return { idx, costBase, costs: obs.faces.map((f) => f.cost), faceOf, alts: obs.faces.map((f) => f.alts) };
+  return { idx, costBase, costs: obs.faces.map((f) => f.cost), faceOf };
 }
 
 function evalCost(state: Uint8Array, c: CompiledObs): number {
   let sum = 0;
-  for (let k = 0; k < c.costs.length; k++) {
-    const base = k * 9;
-    const main = c.costs[k];
-    let s = 0;
-    for (let i = base; i < base + 9; i++) s += main[c.costBase[i] + state[c.idx[i]]];
-    const alts = c.alts[k];
-    if (alts)
-      for (const a of alts) {
-        let t = ALT_PENALTY;
-        for (let i = base; i < base + 9 && t < s; i++) t += a[c.costBase[i] + state[c.idx[i]]];
-        if (t < s) s = t;
-      }
-    sum += s;
-  }
+  for (let i = 0; i < c.idx.length; i++) sum += c.costs[c.faceOf[i]][c.costBase[i] + state[c.idx[i]]];
   return sum;
 }
 
