@@ -3,7 +3,7 @@
 // OpenCV のオブジェクトは呼び出し側が渡すので、Worker でもテスト（Node）でも同じコードが動く。
 import { type CubeState, OPPOSITE, isSolved, moveFace, solvedState, statesEqual } from "../cube/model";
 import { type EngineOptions, TrackerEngine } from "../track/engine";
-import { mergeQuickRepeats } from "../track/merge";
+import { cancelInverses, mergeQuickRepeats } from "../track/merge";
 import { DEFAULT_OFFLINE, decodeOffline } from "../track/offline";
 import type { TrackStatus } from "../track/types";
 import type { Lab } from "./color";
@@ -167,6 +167,8 @@ export class Refiner {
       }
     }
     this.method = off.method;
+    // 打ち消し合う手（回転途中の見え方・指の誤読から出た雑音）を除く。状態は変わらない
+    moves = cancelInverses(moves);
     const timed = moves.map((m) => {
       const tm = this.engine.timing(m);
       return { ...m, start: tm?.start ?? m.t0 ?? m.t, end: tm?.end ?? m.t, exact: !!tm?.exact };

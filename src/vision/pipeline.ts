@@ -286,14 +286,18 @@ export function processFrame(
     if (!faces.length && cv) {
       // 面が見つからない: ステッカーレスで同じ色がつながっている・丸いセルが溶け合って見えるとき。ピースの間の溝で
       // セルを区切った候補も加えてやり直す（見つかるフレームでは使わない。溝の候補は他の候補と混ざると格子を乱すことがある）
-      const m2 = cv.matFromImageData(img);
-      try {
-        quads = findQuads(cv, m2, { ...config.quads, grooves: true });
-      } finally {
-        m2.delete();
+      // 溝の濃さは照明やキューブの大きさで変わるので、はっきりした溝 → 薄い溝の順に試す
+      for (const th of [config.quads.grooveThreshold, config.quads.grooveThreshold * 0.6]) {
+        const m2 = cv.matFromImageData(img);
+        try {
+          quads = findQuads(cv, m2, { ...config.quads, grooves: true, grooveThreshold: th });
+        } finally {
+          m2.delete();
+        }
+        quadsOut = quads.map((q) => q.corners);
+        faces = findCubeFaces(img, expandBlocks(quads, prevFaces.map((f) => f.H)), config, scorer, faceScorer, refs, tl);
+        if (faces.length) break;
       }
-      quadsOut = quads.map((q) => q.corners);
-      faces = findCubeFaces(img, expandBlocks(quads, prevFaces.map((f) => f.H)), config, scorer, faceScorer, refs, tl);
     }
     if (!faces.length) faces = uniformFaces(img, largeFaceCandidates(quads, img.width * img.height));
     if (faces.length) {
