@@ -77,9 +77,8 @@ function cellStill(f: LoggedFace, cell: number, near: LoggedFace | undefined, op
   return labDist(f.labs[cell], near.labs[cell]) <= opts.onsetDelta && Math.abs(s - (near.spread?.[cell] ?? 0)) <= opts.restSpread / 2;
 }
 
-// true: 層が止まっている / false: 動いている / null: 層が見えていない。near は比べる隣のフレーム（前か後）
-export function layerAtRest(frame: LoggedFrame, orient: number, face: number, opts: TimingOptions = DEFAULT_TIMING, near?: LoggedFrame): boolean | null {
-  // 指先の縁や反射が1枚にかかり続けても判定できるよう、層のセルの 3/4 以上が止まっていれば止まっているとみなす
+// 層のセルのうち、見えている数と止まっている数（見えていなければ null）。near は比べる隣のフレーム（前か後）
+function layerStill(frame: LoggedFrame, orient: number, face: number, opts: TimingOptions, near?: LoggedFrame): { seen: number; still: number } | null {
   let seen = 0;
   let still = 0;
   for (const f of frame.faces) {
@@ -93,8 +92,14 @@ export function layerAtRest(frame: LoggedFrame, orient: number, face: number, op
       if (cellStill(f, cell, n, opts)) still++;
     }
   }
-  if (seen < 1) return null;
-  return still >= Math.ceil(seen * 0.75);
+  return seen ? { seen, still } : null;
+}
+
+// true: 層が止まっている / false: 動いている / null: 層が見えていない
+export function layerAtRest(frame: LoggedFrame, orient: number, face: number, opts: TimingOptions = DEFAULT_TIMING, near?: LoggedFrame): boolean | null {
+  // 指先の縁や反射が1枚にかかり続けても判定できるよう、層のセルの 3/4 以上が止まっていれば止まっているとみなす
+  const r = layerStill(frame, orient, face, opts, near);
+  return r ? r.still >= Math.ceil(r.seen * 0.75) : null;
 }
 
 function indexAtOrBefore(frames: LoggedFrame[], t: number): number {
@@ -204,8 +209,10 @@ export function moveTiming(frames: LoggedFrame[], m: DecodedMove, opts: TimingOp
   i = restIdx >= 0 ? restIdx + 1 : Math.max(0, indexAtOrBefore(frames, t0));
   let lastMoving = -1;
   const restAt = (k: number) => layerAtRest(frames[k], m.orient, face, opts, frames[k + 1]);
-  // 止まって見えたのが 1 フレームだけ（回転途中に見えている 1 枚がたまたま一様だった）なら止まったとしない
+  // 見えている 1 枚だけで止まって見えたフレーム（回転途中にたまたま一様だった）は、次に層が見えるフレームでも
+  // 止まっていれば止まったとする。2 枚以上で止まって見えたら、その後に指が動いても止まったまま
   const confirmed = (k: number) => {
+    if ((layerStill(frames[k], m.orient, face, opts, frames[k + 1])?.seen ?? 0) >= 2) return true;
     for (let j = k + 1; j < frames.length && frames[j].t <= m.t + opts.searchMs + 100; j++) {
       const r = restAt(j);
       if (r !== null) return r;
