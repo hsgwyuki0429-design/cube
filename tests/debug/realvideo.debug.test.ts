@@ -105,7 +105,7 @@ it("real video", async () => {
   const target = process.env.TARGET === "none" ? null : fromMoves(process.env.TARGET_MOVES);
   const truth = process.env.TRUTH;
   const live = new TrackerEngine(start, refs, { keepObservations: true, ...JSON.parse(process.env.ENGINE ?? "{}") } as never);
-  const refiner = new Refiner(cv, { state: Array.from(start), refs, from: 0, to: Infinity });
+  const refiner = new Refiner(cv, { state: Array.from(start), refs, from: 0, to: Infinity, pipeline: JSON.parse(process.env.RPIPE ?? "{}") });
   const mem2: { last: PipelineMemory | null } = { last: null };
   let n = 0;
   let detected = 0;

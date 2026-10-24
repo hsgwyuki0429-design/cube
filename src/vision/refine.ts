@@ -97,7 +97,7 @@ export class Refiner {
       keepObservations: true,
     }, input.orients);
     // ソルブ後の解析は時間をかけてよいので、面が見つからないフレームは溝の候補でもやり直す
-    this.config = { ...DEFAULT_PIPELINE, ...input.pipeline, grooveRetry: true, minFacing: 0.3, quads: { ...DEFAULT_PIPELINE.quads, ...(input.pipeline?.quads ?? {}) } };
+    this.config = { ...DEFAULT_PIPELINE, ...input.pipeline, grooveRetry: true, minFacing: 0.3, hingeSearch: false, quads: { ...DEFAULT_PIPELINE.quads, ...(input.pipeline?.quads ?? {}) } };
   }
 
   // そのフレームの直前に検出された手（手の検出は 15Hz 程度なので、一番近い過去のもの）

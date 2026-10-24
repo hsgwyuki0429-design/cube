@@ -24,6 +24,9 @@ export interface PipelineConfig {
   // 予測する面の向き（1 = 正対）の下限。寝た面（0.15〜0.3）のセルは細く、ライブで上面が見えるようになるが、
   // 回し終わりの判定を乱すので、ソルブ後の解析では 0.3
   minFacing: number;
+  // 隣の面の傾きを、共有する辺を蝶番にして画像に合うよう探す（ライブ）。ソルブ後の解析では求めた姿勢のまま射影し、
+  // ステッカーらしさで捨てない（実際の動画で、探すと前後からつなげなくなった）
+  hingeSearch: boolean;
   // 面が見つからないとき、溝で区切った候補でやり直す（1 フレームの処理が 2〜5 倍になるので、ソルブ後の解析だけ）
   grooveRetry: boolean;
   // 画像が大きなフレームの一部（切り出し）のとき、そのフレーム全体のこの画像の座標での位置と大きさ。フレームに対する
@@ -48,6 +51,7 @@ export const DEFAULT_PIPELINE: PipelineConfig = {
   lattice: {},
   predictFaces: true,
   minFacing: 0.15,
+  hingeSearch: true,
   grooveRetry: false,
 };
 
@@ -206,7 +210,7 @@ const PREDICT_SLOTS = [0, 1, 3, 4]; // U R D L
 // 面の奥の辺の外側の点（スロットの格子座標）。U は行 0、D は行 2、R は列 2、L は列 0 の側が奥
 const BEYOND: Record<number, (u: number) => [number, number]> = { 0: (u) => [u, -0.45], 3: (u) => [u, 3.45], 1: (u) => [3.45, u], 4: (u) => [-0.45, u] };
 const HINGE = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, -0.1, -0.2, -0.3];
-function predictNeighbours(placed: PlacedFace[], img: PixelSource, fr: FrameRef, pitch: number, refs: Lab[] | null, hands: Pt[][], minFacing: number, prev?: Record<number, number>): Record<number, number> {
+function predictNeighbours(placed: PlacedFace[], img: PixelSource, fr: FrameRef, pitch: number, refs: Lab[] | null, hands: Pt[][], minFacing: number, hinge: boolean, prev?: Record<number, number>): Record<number, number> {
   const chosen: Record<number, number> = {};
   const real = placed.filter((p) => !(p as { held?: boolean }).held);
   if (!real.some((p) => p.slot === 2)) return chosen;
@@ -230,7 +234,7 @@ function predictNeighbours(placed: PlacedFace[], img: PixelSource, fr: FrameRef,
     // 辺を蝶番にして傾きを変え、面のセルがキューブの色で、面の向こう側（奥の辺の外）はそうでない角度を選ぶ。
     // 傾きが小さすぎると奥の辺の外もまだ面の上、大きすぎると奥の列が背景にかかる
     let best: { H: Mat3; score: number; a: number } | null = null;
-    for (const a of HINGE) {
+    for (const a of hinge ? HINGE : [0]) {
       const pr = projectSlot(a ? hingePose(pose, slot, a) : pose, slot, img.width, img.height, focal, center);
       if (!pr || pr.facing < minFacing) continue;
       // 画面からはみ出す面は読まない
@@ -249,7 +253,7 @@ function predictNeighbours(placed: PlacedFace[], img: PixelSource, fr: FrameRef,
       score -= prev?.[slot] !== undefined ? Math.min(1, Math.abs(a - prev[slot]) * 4) : Math.abs(a) * 0.5;
       if (!best || score > best.score) best = { H: pr.H, score, a };
     }
-    if (!best || best.score < 2.5) continue;
+    if (!best || (hinge && best.score < 2.5)) continue;
     chosen[slot] = best.a;
     const face = { slot, rot: 0, H: best.H, found: 0, latticeIndex: -1, held: true } as PlacedFace;
     if (i >= 0) placed[i] = face;
@@ -464,7 +468,7 @@ export function processFrame(
       }
       const prevHinge = memory.last && t - memory.last.t < HOLD_MS ? memory.last.hinge : undefined;
       memory.last = { t, angle: colAngle(a), centerKey: key, pitch: faces[a.latticeIndex].pitch, faces: kept };
-      if (config.predictFaces) memory.last.hinge = predictNeighbours(placed, img, fr, faces[a.latticeIndex].pitch, refs, hands, config.minFacing, prevHinge);
+      if (config.predictFaces) memory.last.hinge = predictNeighbours(placed, img, fr, faces[a.latticeIndex].pitch, refs, hands, config.minFacing, config.hingeSearch, prevHinge);
     } else if (memory.last && t - memory.last.t < HOLD_MS && memory.last.faces.length) {
       // 何も見つからない: ごく短時間だけ直前の面を使う（下で色がステッカーらしいか確かめる）
       placed = memory.last.faces.map((f) => ({ ...f, held: true }) as PlacedFace);
