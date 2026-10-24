@@ -77,6 +77,47 @@ function pixelLab(img: PixelSource, p: Pt): Lab | null {
   return rgbToLab(img.data[k], img.data[k + 1], img.data[k + 2]);
 }
 
+// 点の周りの細かい模様の強さ（隣り合う画素の明るさの差の平均）。キューブのセルはなめらか（ステッカーも成形色も）で、
+// 壁紙・木目・手のしわは細かい模様がある。白っぽい壁や手が白・オレンジのセルに見えるのを見分けるのに使う。
+// カメラの雑音（暗い部屋の Web カメラなど）も模様に見えるので、しきい値はそのフレームで最もなめらかなところに合わせる
+const SMOOTH = 1.6; // これ以下ならなめらか（雑音の少ない画像で）
+const TEXTURED = 2.5; // これ以上なら模様がある（同）
+interface TextureLevels {
+  smooth: number;
+  textured: number;
+}
+function textureLevels(img: PixelSource): TextureLevels {
+  const v: number[] = [];
+  for (let gy = 1; gy < 12; gy++)
+    for (let gx = 1; gx < 16; gx++) {
+      const t = pixelTexture(img, [(gx * img.width) / 16, (gy * img.height) / 12]);
+      if (t !== null) v.push(t);
+    }
+  v.sort((a, b) => a - b);
+  const floor = v.length ? v[Math.floor(v.length * 0.1)] : 0;
+  return { smooth: Math.max(SMOOTH, floor * 1.8), textured: Math.max(TEXTURED, floor * 2.6) };
+}
+function pixelTexture(img: PixelSource, p: Pt): number | null {
+  const r = Math.max(3, Math.round(Math.min(img.width, img.height) / 64));
+  const cx = Math.round(p[0]);
+  const cy = Math.round(p[1]);
+  if (cx - r < 0 || cy - r < 0 || cx + r + 1 >= img.width || cy + r + 1 >= img.height) return null;
+  const { data, width } = img;
+  const v = (x: number, y: number) => {
+    const k = (y * width + x) * 4;
+    return Math.max(data[k], data[k + 1], data[k + 2]);
+  };
+  let sum = 0;
+  let n = 0;
+  for (let y = cy - r; y <= cy + r; y++)
+    for (let x = cx - r; x <= cx + r; x++) {
+      const c = v(x, y);
+      sum += Math.abs(c - v(x + 1, y)) + Math.abs(c - v(x, y + 1));
+      n += 2;
+    }
+  return sum / n;
+}
+
 // 手（MediaPipe の 21 点を囲む凸包、画像座標）に覆われたセルを無効にする
 function maskHands(face: DetectedFace, hands: Pt[][]): void {
   if (!hands.length) return;
@@ -138,7 +179,7 @@ interface FaceJudgement {
   centralBig: boolean;
 }
 
-function judgeFace(img: PixelSource, f: LatticeFace, refs: Lab[] | null): FaceJudgement {
+function judgeFace(img: PixelSource, f: LatticeFace, refs: Lab[] | null, tl: TextureLevels): FaceJudgement {
   const cells = Array.from({ length: 9 }, (_, k) => pixelLab(img, applyH(f.H, (k % 3) + 0.5, Math.floor(k / 3) + 0.5)));
   // 隣り合うセルの境界（12 か所）を横切る短い線分で一番暗いところが、両側のセルより十分暗いか
   let dark = 0;
@@ -167,6 +208,9 @@ function judgeFace(img: PixelSource, f: LatticeFace, refs: Lab[] | null): FaceJu
     const match = cells.filter((l) => l && Math.min(...refs.map((r) => Math.hypot((l[0] - r[0]) / 2, l[1] - r[1], l[2] - r[2]))) < 38).length;
     refOk = match >= 5;
   }
+  // セルの半分以上に細かい模様がある格子は、壁・木目・手に当てたもの（指で数セル隠れた面は残す）
+  const textured = Array.from({ length: 9 }, (_, k) => pixelTexture(img, applyH(f.H, (k % 3) + 0.5, Math.floor(k / 3) + 0.5))).filter((x) => x !== null && x > tl.textured).length;
+  if (textured >= 5) refOk = false;
   const strong = refOk && ((total > 0 && dark >= total * 0.5) || (colorful >= 2 && diverse > 28));
   // 一様な面（ステッカーレスの揃った面など。チェックのシャツも一様に見える）は、他に本物の面があるか、大きく画面の中央にあるときだけ
   const c = applyH(f.H, 1.5, 1.5);
@@ -177,17 +221,19 @@ function judgeFace(img: PixelSource, f: LatticeFace, refs: Lab[] | null): FaceJu
   return { strong, weak, centralBig: central && big };
 }
 
-function findCubeFaces(img: PixelSource, quads: Quad[], config: PipelineConfig, scorer: (p: Pt) => number, faceScorer: (H: Mat3) => number, refs: Lab[] | null): LatticeFace[] {
+// strong: 先頭からいくつがキューブの面らしい（色の違うセル・黒い隙間がある）ものか。残りは一様な面
+function findCubeFaces(img: PixelSource, quads: Quad[], config: PipelineConfig, scorer: (p: Pt) => number, faceScorer: (H: Mat3) => number, refs: Lab[] | null, tl: TextureLevels): LatticeFace[] & { strong?: number } {
   // 面の数に数えるのはキューブの面らしいものだけ。一様な格子は脇に置き、本物の面が見つかったか、
   // 大きく中央にあるときだけ足す（チェックのシャツの格子がいくつあっても、キューブの面の探索を邪魔しない）
   const aside: { f: LatticeFace; j: FaceJudgement }[] = [];
   const faces = findFaces(quads, config.lattice, scorer, faceScorer, (f) => {
-    const j = judgeFace(img, f, refs);
+    const j = judgeFace(img, f, refs, tl);
     if (!j.strong && j.weak) aside.push({ f, j });
     return j.strong;
   });
   const extra = aside.filter((a) => faces.length > 0 || a.j.centralBig).map((a) => a.f);
-  return [...faces, ...extra].slice(0, Math.max(faces.length, config.lattice.maxFaces ?? 3));
+  const out = [...faces, ...extra].slice(0, Math.max(faces.length, config.lattice.maxFaces ?? 3));
+  return Object.assign(out, { strong: faces.length });
 }
 
 export function processFrame(
@@ -212,9 +258,15 @@ export function processFrame(
       mat.delete();
     }
     quadsOut = quads.map((q) => q.corners);
+    const tl = textureLevels(img);
     const scorer = (p: Pt) => {
       const lab = pixelLab(img, p);
-      return lab ? stickerScore(lab) : -1;
+      if (!lab) return -1;
+      const s = stickerScore(lab);
+      if (s <= 0) return s;
+      // 色はステッカーらしくても、細かい模様があれば壁・木目・手
+      const tex = pixelTexture(img, p);
+      return tex === null || tex < tl.smooth ? s : tex > tl.textured ? -0.4 : 0.1;
     };
     // 直前のフレームで見えていた面（ステッカーレスのブロック分割と、窓の位置の曖昧さの解消に使う）
     const prevFaces = memory.last && t - memory.last.t < 600 ? memory.last.faces : [];
@@ -230,7 +282,19 @@ export function processFrame(
           8
         : 0;
     };
-    let faces = findCubeFaces(img, expandBlocks(quads, prevFaces.map((f) => f.H)), config, scorer, faceScorer, refs);
+    let faces: LatticeFace[] & { strong?: number } = findCubeFaces(img, expandBlocks(quads, prevFaces.map((f) => f.H)), config, scorer, faceScorer, refs, tl);
+    if (!faces.length && cv) {
+      // 面が見つからない: ステッカーレスで同じ色がつながっている・丸いセルが溶け合って見えるとき。ピースの間の溝で
+      // セルを区切った候補も加えてやり直す（見つかるフレームでは使わない。溝の候補は他の候補と混ざると格子を乱すことがある）
+      const m2 = cv.matFromImageData(img);
+      try {
+        quads = findQuads(cv, m2, { ...config.quads, grooves: true });
+      } finally {
+        m2.delete();
+      }
+      quadsOut = quads.map((q) => q.corners);
+      faces = findCubeFaces(img, expandBlocks(quads, prevFaces.map((f) => f.H)), config, scorer, faceScorer, refs, tl);
+    }
     if (!faces.length) faces = uniformFaces(img, largeFaceCandidates(quads, img.width * img.height));
     if (faces.length) {
       // 前のフレームと同じ中心色の面をアンカーに（角から見たときに正面が入れ替わらないように）
@@ -264,7 +328,10 @@ export function processFrame(
         const onlyOthers = faces.every((f) => recent.faces.some((p) => p.slot !== 2 && dist(f.H, p.H) < recent.pitch * 0.4));
         if (prevA && !anchorSeen && onlyOthers) return { faces: [], quads: quadsOut };
       }
-      let anchor: number | undefined;
+      // 既定の正面は、キューブの面らしいもの（strong）のうち最も大きい面。一様な面（背景の白い箱・壁に当てた格子のこともある）を
+      // 正面にすると、本物の面が「辺を共有しない」として捨てられる
+      let anchor: number | undefined =
+        faces.strong && faces.strong < faces.length ? faces.slice(0, faces.strong).reduce((bi, f, i, arr) => (faceArea(f.H) > faceArea(arr[bi].H) ? i : bi), 0) : undefined;
       if (recent) {
         const same = faces.map((f, i) => ({ i, k: keyOf(f.H), a: faceArea(f.H) })).filter((x) => x.k === recent.centerKey);
         // 前のアンカーの面が、他よりそれほど小さくなっていなければ維持

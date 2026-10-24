@@ -18,6 +18,9 @@ export interface QuadOptions {
   minSideRatio: number; // 最短辺 / 最長辺（斜めから見た面も拾えるよう低め）
   grow: number; // 輪郭を外側へ広げる量（px）
   blobs: boolean; // 明るい塊からも候補を拾う（黒い本体のキューブ）
+  grooves: boolean; // 溝で区切られた領域からも候補を拾う（ステッカーレス）
+  grooveThreshold: number; // ブラックハットの値がこれを超えたら溝
+  grooveErode: number; // 溝で区切った領域を縮める大きさ（px、奇数）
 }
 
 export const DEFAULT_QUADS: QuadOptions = {
@@ -29,6 +32,9 @@ export const DEFAULT_QUADS: QuadOptions = {
   minSideRatio: 0.18,
   grow: 2,
   blobs: true,
+  grooves: false, // 普段は使わない（面が見つからないフレームだけ pipeline が有効にしてやり直す）
+  grooveThreshold: 10,
+  grooveErode: 7,
 };
 
 type P = [number, number];
@@ -97,13 +103,13 @@ function polygonArea(p: [number, number][]): number {
 }
 
 // 輪郭 1 つから、ステッカーらしい四角形を作る（だめなら null）
-function quadFromContour(cv: CV, c: CV, frameArea: number, o: QuadOptions, hullMat: CV, approx: CV): Quad | null {
+function quadFromContour(cv: CV, c: CV, frameArea: number, o: QuadOptions, hullMat: CV, approx: CV, minSolidity = 0.86): Quad | null {
   const area = cv.contourArea(c);
   if (!(area > frameArea * o.minAreaFrac && area < frameArea * o.maxAreaFrac)) return null;
   cv.convexHull(c, hullMat, false, true);
   const hullArea = cv.contourArea(hullMat);
   // 塊が凸に近いこと（ステッカーは凸。手や背景の模様は凹みが多い）
-  if (hullArea <= 0 || area / hullArea < 0.86) return null;
+  if (hullArea <= 0 || area / hullArea < minSolidity) return null;
   // 凸包の頂点を減らしてから、面積最大の四角形を選ぶ
   const per = cv.arcLength(hullMat, true);
   cv.approxPolyDP(hullMat, approx, Math.max(1, 0.01 * per), true);
@@ -173,14 +179,14 @@ export function findQuads(cv: CV, rgba: CV, o: QuadOptions = DEFAULT_QUADS): Qua
     const frameArea = rgba.rows * rgba.cols;
     const approx = keep(new cv.Mat());
     const hullMat = keep(new cv.Mat());
-    const collect = (src: CV, mode: number) => {
+    const collect = (src: CV, mode: number, extraGrow = 0, minSolidity = 0.86) => {
       const contours = new cv.MatVector();
       const hierarchy = new cv.Mat();
       try {
         cv.findContours(src, contours, hierarchy, mode, cv.CHAIN_APPROX_SIMPLE);
         for (let i = 0; i < contours.size(); i++) {
           const c = contours.get(i);
-          const q = quadFromContour(cv, c, frameArea, o, hullMat, approx);
+          const q = quadFromContour(cv, c, frameArea, extraGrow ? { ...o, grow: o.grow + extraGrow } : o, hullMat, approx, minSolidity);
           if (q) out.push(q);
           c.delete();
         }
@@ -204,6 +210,35 @@ export function findQuads(cv: CV, rgba: CV, o: QuadOptions = DEFAULT_QUADS): Qua
       // 細いつながり（隙間が狭いところ）を切る
       cv.morphologyEx(mask, mask, cv.MORPH_OPEN, kernel);
       collect(mask, cv.RETR_EXTERNAL);
+    }
+    if (o.grooves) {
+      // ステッカーレス: ピースの間の溝（細く暗い線）をブラックハットで強調し、溝で区切られた領域をセルとする。
+      // 同じ色が隣り合ってエッジも明るさの差も出ないところを、溝で分けられる
+      const hsv = keep(new cv.Mat());
+      const ch = keep(new cv.MatVector());
+      cv.cvtColor(rgb, hsv, cv.COLOR_RGB2HSV);
+      cv.split(hsv, ch);
+      const v = keep(ch.get(2));
+      const k = Math.max(5, Math.round(Math.min(rgba.cols, rgba.rows) / 50) | 1);
+      const ell = keep(cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(k, k)));
+      const bh = keep(new cv.Mat());
+      cv.morphologyEx(v, bh, cv.MORPH_BLACKHAT, ell);
+      const mask = keep(new cv.Mat());
+      cv.threshold(bh, mask, o.grooveThreshold, 255, cv.THRESH_BINARY_INV);
+      // 暗いところ（キューブの黒い本体・影）はセルではない
+      const bright = keep(new cv.Mat());
+      cv.threshold(v, bright, 60, 255, cv.THRESH_BINARY);
+      cv.bitwise_and(mask, bright, mask);
+      // 色や明るさのエッジ（面の折れ目・違う色の境界・キューブの輪郭）も境界にする
+      const notEdges = keep(new cv.Mat());
+      cv.bitwise_not(edges, notEdges);
+      cv.bitwise_and(mask, notEdges, mask);
+      // 溝の切れ目から隣のセルや背景へつながらないよう、セルを縮めてから輪郭を取る（四角形は外側へ広げ直す）
+      const shrink = keep(cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(o.grooveErode, o.grooveErode)));
+      cv.erode(mask, mask, shrink);
+      // 映り込みや表面の模様でできた小さな穴・切れ込みを埋める（輪郭がぎざぎざだと凸でないとして落ちる）
+      cv.medianBlur(mask, mask, 5);
+      collect(mask, cv.RETR_EXTERNAL, (o.grooveErode - 1) / 2, 0.75);
     }
   } finally {
     for (const m of mats) m.delete();
