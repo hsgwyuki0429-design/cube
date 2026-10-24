@@ -112,12 +112,12 @@ export function defaultFocal(width: number, height: number): number {
 const flip = (v: number[]) => [v[0], -v[1], -v[2]];
 const FLIP = [1, 0, 0, 0, -1, 0, 0, 0, -1];
 
-export function estimatePose(faces: PoseFace[], width: number, height: number, focal = defaultFocal(width, height)): Pose | null {
+// center: 画像上の光軸の位置（既定は画像の中心。切り出した画像ではフレームの中心）
+export function estimatePose(faces: PoseFace[], width: number, height: number, focal = defaultFocal(width, height), center: Pt = [width / 2, height / 2]): Pose | null {
   const used = faces.filter((f) => !f.held);
   const front = used.find((f) => f.slot === F);
   if (!front) return null;
-  const cx = width / 2;
-  const cy = height / 2;
+  const [cx, cy] = center;
   const pts3: number[][] = []; // 画像処理の座標系
   const pts2: Pt[] = [];
   for (const f of used) {
@@ -229,7 +229,7 @@ export function rotationAngle(a: number[], b: number[]): number {
 
 // 姿勢から、カメラフレームの面 slot の格子（スロット座標 0..3 → 画像）を射影で求める。
 // facing: 面の向きとカメラへの向きの内積（1 = 正対、0 = 真横）。見えていない面は null
-export function projectSlot(pose: Pose, slot: number, width: number, height: number, focal = defaultFocal(width, height)): { H: Mat3; facing: number } | null {
+export function projectSlot(pose: Pose, slot: number, width: number, height: number, focal = defaultFocal(width, height), center: Pt = [width / 2, height / 2]): { H: Mat3; facing: number } | null {
   const R = pose.R;
   const t = pose.t;
   const rot = (v: Vec3): number[] => [0, 1, 2].map((r) => R[r * 3] * v[0] + R[r * 3 + 1] * v[1] + R[r * 3 + 2] * v[2]);
@@ -245,7 +245,7 @@ export function projectSlot(pose: Pose, slot: number, width: number, height: num
     if (p[2] >= -0.1) return null; // カメラの後ろ
     // 画像の座標（x 右・y 下）。カメラは -z を向いている
     src.push([x, y]);
-    dst.push([width / 2 + (focal * p[0]) / -p[2], height / 2 - (focal * p[1]) / -p[2]]);
+    dst.push([center[0] + (focal * p[0]) / -p[2], center[1] - (focal * p[1]) / -p[2]]);
   }
   const H = fitHomography(src, dst);
   return H ? { H, facing } : null;

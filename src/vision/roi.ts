@@ -12,6 +12,9 @@ const TARGET_PITCH = 44; // 縮小後のセルの間隔（px）。四角形の�
 const MARGIN = 1.6; // 直前の面の外形からこのセル数だけ広げて切り出す（フレーム間の移動・回転を見込む）
 const RECENT_MS = 250; // 直前の面がこれより古ければ全体を見る
 const MIN_SIDE = 160; // 切り出しが小さすぎると四角形の検出の前提（面積の割合）が崩れる
+// 全体を見るときの溝の候補でのやり直し（1 フレーム 150〜200ms かかる）はこの間隔に 1 回だけ。ステッカーレスのキューブは
+// やり直さないと見つからず、見つからないと切り出しが始まらない。見つかった後は切り出しの中でやり直す
+const GROOVE_EVERY_MS = 400;
 
 export interface RoiStats {
   roi: boolean; // 切り出して処理したか
@@ -85,7 +88,7 @@ export function processTracked(
   img: PixelSource,
   t: number,
   config: PipelineConfig,
-  memory: { last: PipelineMemory | null },
+  memory: { last: PipelineMemory | null; grooveT?: number },
   refs: Lab[] | null,
   hands: Pt[][] = [],
   stats?: RoiStats,
@@ -103,8 +106,10 @@ export function processTracked(
       const mem2: { last: PipelineMemory | null } = {
         last: { ...last!, pitch: last!.pitch * s, faces: last!.faces.map((f) => ({ ...f, H: mulH(A, f.H) })) },
       };
-      // 切り出しは小さいので、面が見つからないときの溝の候補でのやり直しもここでは許す
-      const r = processFrame(cv, crop, t, { ...config, grooveRetry: true }, mem2, refs, hands.map((hull) => hull.map((p) => mapPt(A, p))));
+      // 切り出しは小さいので、面が見つからないときの溝の候補でのやり直しもここでは許す。
+      // フレームに対する割合のしきい値と姿勢の計算は、フレーム全体（切り出しの座標で）を基準にする
+      const frame = { width: img.width * s, height: img.height * s, ox: -s * x0, oy: -s * y0 };
+      const r = processFrame(cv, crop, t, { ...config, grooveRetry: true, frame }, mem2, refs, hands.map((hull) => hull.map((p) => mapPt(A, p))));
       if (r.faces.some((f) => !f.held)) {
         if (stats) (stats.roi = true), (stats.pixels = crop.width * crop.height);
         memory.last = mem2.last && mem2.last !== last ? { ...mem2.last, pitch: mem2.last.pitch / s, faces: mem2.last.faces.map((f) => ({ ...f, H: mulH(Ai, f.H) })) } : memory.last;
@@ -117,5 +122,9 @@ export function processTracked(
     }
   }
   if (stats) (stats.roi = false), (stats.pixels = img.width * img.height);
-  return processFrame(cv, img, t, config, memory, refs, hands);
+  const groove = config.grooveRetry || !(t - (memory.grooveT ?? -Infinity) < GROOVE_EVERY_MS);
+  const r = processFrame(cv, img, t, groove ? { ...config, grooveRetry: true } : config, memory, refs, hands);
+  // やり直しが要った（溝なしでは見つからなかった）ときだけ間隔を空ける
+  if (groove && !config.grooveRetry && !r.faces.some((f) => !f.held)) memory.grooveT = t;
+  return r;
 }

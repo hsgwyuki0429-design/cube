@@ -104,18 +104,22 @@ it("real video", async () => {
   const start = fromMoves(process.env.START_MOVES);
   const target = process.env.TARGET === "none" ? null : fromMoves(process.env.TARGET_MOVES);
   const truth = process.env.TRUTH;
-  const live = new TrackerEngine(start, refs, {});
+  const live = new TrackerEngine(start, refs, { keepObservations: true, ...JSON.parse(process.env.ENGINE ?? "{}") } as never);
   const refiner = new Refiner(cv, { state: Array.from(start), refs, from: 0, to: Infinity });
   const mem2: { last: PipelineMemory | null } = { last: null };
   let n = 0;
   let detected = 0;
+  const procMs: number[] = [];
   let last: TrackUpdate | null = null;
   const t0 = performance.now();
   await frames((data, w, h, t) => {
     const img = { data, width: w, height: h };
     if (process.env.REFINE !== "0") refiner.push(img, t);
     if (n++ % every || process.env.LIVE === "0") return;
-    const r = processTracked(cv, img, t, DEFAULT_PIPELINE, mem2, refs, []);
+    const pcfg = { ...DEFAULT_PIPELINE, ...JSON.parse(process.env.PIPE ?? "{}") };
+    const tp0 = performance.now();
+    const r = process.env.ROI === "0" ? processFrame(cv, img, t, pcfg, mem2, refs, []) : processTracked(cv, img, t, pcfg, mem2, refs, []);
+    procMs.push(performance.now() - tp0);
     if (r.faces.some((f) => f.slot === 2 && !f.held)) detected++;
     const u = live.push({ t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, alts: f.alts })) });
     if (u) last = u;
@@ -126,7 +130,7 @@ it("real video", async () => {
     const states = [start];
     for (const m of seq) states.push(applyMoves(states[states.length - 1], [m]));
     let good = 0;
-    const obs = refiner.engine.observationLog.filter((o) => o.faces.length);
+    const obs = (process.env.REFINE === "0" ? live : refiner.engine).observationLog.filter((o) => o.faces.length);
     for (const o of obs) {
       const scored: { k: number; o: number; c: number }[] = [];
       states.forEach((st, k) => {
@@ -144,7 +148,9 @@ it("real video", async () => {
   }
   const liveMoves = simplifyMoves(live.decoder.bestMoves());
   if (process.env.REFINE === "0") {
-    process.stdout.write(`frames ${n} live: detected ${detected}/${Math.ceil(n / every)} status ${live.decoder.status} reached ${target ? statesEqual(live.decoder.best().state, target) : "-"}\n  live: ${simplifyMoves(live.decoder.bestMoves()).map((m) => MOVE_NAMES[m.move] + (m.inferred ? "?" : "")).join(" ")}\n${truth ? `  truth: ${truth}\n` : ""}`);
+    const pm = [...procMs].sort((a, b) => a - b);
+    process.stdout.write(`proc ms p50=${pm[Math.floor(pm.length / 2)]?.toFixed(0)} p90=${pm[Math.floor(pm.length * 0.9)]?.toFixed(0)} max=${pm[pm.length - 1]?.toFixed(0)}\n`);
+    process.stdout.write(`frames ${n} live: detected ${detected}/${Math.ceil(n / every)} status ${live.decoder.status} reached ${target ? statesEqual(live.decoder.best().state, target) : "-"}\n  live: ${simplifyMoves(live.decoder.bestMoves()).map((m) => MOVE_NAMES[m.move] + (m.inferred ? "?" : "") + (process.env.TIMES ? `@${Math.round(m.t)}` : "")).join(" ")}\n${truth ? `  truth: ${truth}\n` : ""}`);
     return;
   }
   const res = refiner.result(target);
