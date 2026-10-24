@@ -4,7 +4,8 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { ORIENTATIONS, type Vec3, solvedState } from "../src/cube/model";
 import { type Lab, rgbToLab } from "../src/vision/color";
 import { DEFAULT_PIPELINE, processFrame } from "../src/vision/pipeline";
-import { estimatePose, rotationAngle } from "../src/vision/pose";
+import { estimatePose, projectSlot, rotationAngle } from "../src/vision/pose";
+import { slotPoint } from "../src/vision/layout";
 import { type CV, initOpenCv } from "../src/vision/quads";
 import { PALETTE, axisAngle, mulMat, renderCube } from "./render";
 import { rng, scrambled } from "./sim";
@@ -71,5 +72,27 @@ describe("pose", () => {
     const pose = estimatePose(r.faces, w, 480, w * 0.8);
     const angle = (rotationAngle(pose!.R, truthRotation(eye, undefined, 0)) * 180) / Math.PI;
     expect(angle).toBeLessThan(8);
+  });
+
+  it("predicts the neighbouring faces' grids from the front face alone", () => {
+    // 正面だけから求めた姿勢で上の面・右の面の格子を射影し、実際に検出した格子と比べる
+    for (const eye of [[0.8, 4.5, 9], [5, 5, 8]] as Vec3[]) {
+      const w = 640;
+      const img = renderCube({ width: w, height: 480, state: scrambled(rng(5)), orient: 0, eye, seed: 5 });
+      const r = processFrame(cv, img, 0, DEFAULT_PIPELINE, { last: null }, REFS, []);
+      const front = r.faces.find((f) => f.slot === 2 && !f.held)!;
+      const pose = estimatePose([front], w, 480, w * 1.1)!;
+      expect(pose).not.toBeNull();
+      for (const other of r.faces.filter((f) => f.slot !== 2 && !f.held)) {
+        const pred = projectSlot(pose, other.slot, w, 480, w * 1.1)!;
+        expect(pred).not.toBeNull();
+        const pitch = Math.hypot(...([0, 1].map((k) => slotPoint(front, 1, 1)[k] - slotPoint(front, 2, 1)[k]) as [number, number]));
+        for (const [x, y] of [[0.5, 0.5], [1.5, 1.5], [2.5, 2.5], [0.5, 2.5], [2.5, 0.5]]) {
+          const a = slotPoint({ H: pred.H, rot: 0 }, x, y);
+          const b = slotPoint(other, x, y);
+          expect(Math.hypot(a[0] - b[0], a[1] - b[1])).toBeLessThan(pitch * 0.3);
+        }
+      }
+    }
   });
 });

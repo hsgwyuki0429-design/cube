@@ -102,11 +102,17 @@ function solve(A: number[][], b: number[]): number[] | null {
   return M.map((row, i) => row[n] / row[i]);
 }
 
+// 焦点距離の仮定（px）。スマホや PC のカメラの画角は長辺方向で 65〜75° 程度なので、長辺の 0.8 倍。
+// 縦向きの動画では短辺（幅）が基準だと画角を広く見積もりすぎ、傾きが大きく狂う
+export function defaultFocal(width: number, height: number): number {
+  return Math.max(width, height) * 0.8;
+}
+
 // 画像処理の座標系（x 右・y 下・z 奥）とアプリのカメラフレーム（x 右・y 上・z 手前）の変換
 const flip = (v: number[]) => [v[0], -v[1], -v[2]];
 const FLIP = [1, 0, 0, 0, -1, 0, 0, 0, -1];
 
-export function estimatePose(faces: PoseFace[], width: number, height: number, focal = width * 0.8): Pose | null {
+export function estimatePose(faces: PoseFace[], width: number, height: number, focal = defaultFocal(width, height)): Pose | null {
   const used = faces.filter((f) => !f.held);
   const front = used.find((f) => f.slot === F);
   if (!front) return null;
@@ -219,4 +225,28 @@ export function rotationAngle(a: number[], b: number[]): number {
   let tr = 0;
   for (let i = 0; i < 3; i++) for (let k = 0; k < 3; k++) tr += a[k * 3 + i] * b[k * 3 + i];
   return Math.acos(Math.min(1, Math.max(-1, (tr - 1) / 2)));
+}
+
+// 姿勢から、カメラフレームの面 slot の格子（スロット座標 0..3 → 画像）を射影で求める。
+// facing: 面の向きとカメラへの向きの内積（1 = 正対、0 = 真横）。見えていない面は null
+export function projectSlot(pose: Pose, slot: number, width: number, height: number, focal = defaultFocal(width, height)): { H: Mat3; facing: number } | null {
+  const R = pose.R;
+  const t = pose.t;
+  const rot = (v: Vec3): number[] => [0, 1, 2].map((r) => R[r * 3] * v[0] + R[r * 3 + 1] * v[1] + R[r * 3 + 2] * v[2]);
+  const n = rot(NORMAL[slot]);
+  const c = rot([1.5 * NORMAL[slot][0], 1.5 * NORMAL[slot][1], 1.5 * NORMAL[slot][2]]).map((v, i) => v + t[i]);
+  // アプリのカメラフレームではカメラは原点、+z がカメラ側。面の中心からカメラへの向き = -c
+  const facing = -dot3(n, c) / (Math.hypot(c[0], c[1], c[2]) || 1);
+  if (facing <= 0) return null;
+  const src: Pt[] = [];
+  const dst: Pt[] = [];
+  for (const [x, y] of LATTICE) {
+    const p = rot(latticePoint(slot, x, y)).map((v, i) => v + t[i]);
+    if (p[2] >= -0.1) return null; // カメラの後ろ
+    // 画像の座標（x 右・y 下）。カメラは -z を向いている
+    src.push([x, y]);
+    dst.push([width / 2 + (focal * p[0]) / -p[2], height / 2 - (focal * p[1]) / -p[2]]);
+  }
+  const H = fitHomography(src, dst);
+  return H ? { H, facing } : null;
 }

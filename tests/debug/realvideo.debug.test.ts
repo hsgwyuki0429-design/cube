@@ -6,6 +6,7 @@ import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { it } from "vitest";
 import { MOVE_NAMES, applyMoves, isSolved, moveIndex, solvedState, statesEqual } from "../../src/cube/model";
+import { observationCost } from "../../src/track/decoder";
 import { type TrackUpdate, TrackerEngine } from "../../src/track/engine";
 import { type Lab, NAMED_COLORS } from "../../src/vision/color";
 import { DEFAULT_PIPELINE, type PipelineMemory, processFrame } from "../../src/vision/pipeline";
@@ -57,7 +58,7 @@ it("real video", async () => {
   // 1 回目: 読めたセルの色をすべて集め、6 色に k-means で分ける（初期値は名前付きの色）。アプリではスキャンで決まる
   const labs: Lab[] = [];
   const mem1: { last: PipelineMemory | null } = { last: null };
-  await frames((data, w, h, t) => {
+  if (!process.env.REFS) await frames((data, w, h, t) => {
     const r = processFrame(cv, { data, width: w, height: h }, t, DEFAULT_PIPELINE, mem1, null, []);
     for (const f of r.faces) if (!f.held) f.labs.forEach((lab, i) => f.valid[i] && !f.masked[i] && labs.push(lab));
   });
@@ -109,12 +110,34 @@ it("real video", async () => {
   await frames((data, w, h, t) => {
     const img = { data, width: w, height: h };
     refiner.push(img, t);
-    if (n++ % every) return;
+    if (n++ % every || process.env.LIVE === "0") return;
     const r = processFrame(cv, img, t, DEFAULT_PIPELINE, mem2, refs, []);
     if (r.faces.some((f) => f.slot === 2 && !f.held)) detected++;
     const u = live.push({ t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked })) });
     if (u) last = u;
   });
+  if (truth && process.env.DIAG) {
+    // 観測ごとに、正解の途中の状態（と 24 通りの姿勢）のどれに最も合うか
+    const seq = truth.split(/\s+/).filter(Boolean).map(moveIndex);
+    const states = [start];
+    for (const m of seq) states.push(applyMoves(states[states.length - 1], [m]));
+    let good = 0;
+    const obs = refiner.engine.observationLog.filter((o) => o.faces.length);
+    for (const o of obs) {
+      const scored: { k: number; o: number; c: number }[] = [];
+      states.forEach((st, k) => {
+        for (let q = 0; q < 24; q++) scored.push({ k, o: q, c: observationCost(st, q, o) });
+      });
+      scored.sort((a, b) => a.c - b.c);
+      const known = o.faces.reduce((n, f) => n + f.labels.filter((l) => l >= 0).length, 0);
+      const b = scored[0];
+      // 同じ状態で別の姿勢を除いた次点
+      const other = scored.find((x) => x.k !== b.k) ?? b;
+      if (b.c < 1.5) good++;
+      process.stdout.write(`  obs t=${o.t.toFixed(0)} faces=${o.faces.map((f) => f.slot).join("")} known=${known} best k=${b.k} o=${b.o} cost=${b.c.toFixed(2)} next k=${other.k} ${other.c.toFixed(2)}\n`);
+    }
+    process.stdout.write(`diag: ${good}/${obs.length} observations match a true state (cost < 1.5)\n`);
+  }
   const liveMoves = live.decoder.bestMoves();
   const res = refiner.result(target);
   const endState = applyMoves(start, res.moves.map((m) => m.move));
