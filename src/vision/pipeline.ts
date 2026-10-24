@@ -21,6 +21,9 @@ export interface PipelineConfig {
   quads: QuadOptions;
   lattice: Partial<LatticeOptions>;
   predictFaces: boolean; // 見つかった面から求めたキューブの姿勢で、見つからなかった隣の面の格子を射影して読む
+  // 予測する面の向き（1 = 正対）の下限。寝た面（0.15〜0.3）のセルは細く、ライブで上面が見えるようになるが、
+  // 回し終わりの判定を乱すので、ソルブ後の解析では 0.3
+  minFacing: number;
   // 面が見つからないとき、溝で区切った候補でやり直す（1 フレームの処理が 2〜5 倍になるので、ソルブ後の解析だけ）
   grooveRetry: boolean;
 }
@@ -33,6 +36,7 @@ export const DEFAULT_PIPELINE: PipelineConfig = {
   quads: DEFAULT_QUADS,
   lattice: {},
   predictFaces: true,
+  minFacing: 0.15,
   grooveRetry: false,
 };
 
@@ -63,6 +67,7 @@ export interface PipelineMemory {
   centerKey: number; // 中心色（代表色が分かっていればその番号、なければ名前付き色の番号）
   pitch: number; // ステッカー間隔（px）。ステッカーレスのブロック分割に使う
   faces: KeptFace[]; // 直前の面（短時間の保持・ブロック分割・窓の位置の曖昧さの解消に使う）
+  hinge?: Record<number, number>; // 隣の面を予測したときの蝶番の角度（スロットごと）
 }
 
 type KeptFace = PlacedFace & { seenT: number }; // seenT: 最後に実際に検出できた時刻
@@ -185,17 +190,17 @@ const chroma = (l: Lab) => Math.hypot(l[1], l[2]);
 // 正面の格子が正確なら隣の面の位置は決まる。直前の位置から運んだ面より新しいので、そちらと入れ替える。
 // 読んだ色は軽く扱い（held）、ステッカーらしい色のセルが半分に満たなければ捨てる（下の読み取りで確かめる）
 const PREDICT_SLOTS = [0, 1, 3, 4]; // U R D L
-const MIN_FACING = 0.15; // これより斜め（約 80° 以上）の面は読まない
 // 共有する辺を軸に試す角度（ラジアン）。正面だけから求めた傾きは小さめに出るので、広げる側を細かく
 // 面の奥の辺の外側の点（スロットの格子座標）。U は行 0、D は行 2、R は列 2、L は列 0 の側が奥
 const BEYOND: Record<number, (u: number) => [number, number]> = { 0: (u) => [u, -0.45], 3: (u) => [u, 3.45], 1: (u) => [3.45, u], 4: (u) => [-0.45, u] };
 const HINGE = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, -0.1, -0.2, -0.3];
-function predictNeighbours(placed: PlacedFace[], img: PixelSource, pitch: number, refs: Lab[] | null, hands: Pt[][]): void {
+function predictNeighbours(placed: PlacedFace[], img: PixelSource, pitch: number, refs: Lab[] | null, hands: Pt[][], minFacing: number, prev?: Record<number, number>): Record<number, number> {
+  const chosen: Record<number, number> = {};
   const real = placed.filter((p) => !(p as { held?: boolean }).held);
-  if (!real.some((p) => p.slot === 2)) return;
+  if (!real.some((p) => p.slot === 2)) return chosen;
   const pose = estimatePose(real, img.width, img.height);
   // 格子と合わない姿勢（当てはめの誤り・回転途中の層）なら予測しない
-  if (!pose || pose.err > pitch * 0.15) return;
+  if (!pose || pose.err > pitch * 0.15) return chosen;
   // キューブの色らしい点か（手の上・肌らしい色は分からない = null）
   const cubeLike = (p: Pt): boolean | null => {
     if (hands.some((hull) => pointInPolygon(p, hull))) return null;
@@ -210,10 +215,10 @@ function predictNeighbours(placed: PlacedFace[], img: PixelSource, pitch: number
     if (i >= 0 && !(placed[i] as { held?: boolean }).held) continue;
     // 辺を蝶番にして傾きを変え、面のセルがキューブの色で、面の向こう側（奥の辺の外）はそうでない角度を選ぶ。
     // 傾きが小さすぎると奥の辺の外もまだ面の上、大きすぎると奥の列が背景にかかる
-    let best: { H: Mat3; score: number } | null = null;
+    let best: { H: Mat3; score: number; a: number } | null = null;
     for (const a of HINGE) {
       const pr = projectSlot(a ? hingePose(pose, slot, a) : pose, slot, img.width, img.height);
-      if (!pr || pr.facing < MIN_FACING) continue;
+      if (!pr || pr.facing < minFacing) continue;
       // 画面からはみ出す面は読まない
       const g = { H: pr.H, rot: 0 };
       const corners = [slotPoint(g, 0, 0), slotPoint(g, 3, 0), slotPoint(g, 3, 3), slotPoint(g, 0, 3)];
@@ -225,14 +230,18 @@ function predictNeighbours(placed: PlacedFace[], img: PixelSource, pitch: number
       }
       // 奥の辺（正面と反対側の辺）の向こう
       for (let c = 0; c < 3; c++) if (cubeLike(slotPoint(g, ...BEYOND[slot](c + 0.5)))) score--;
-      score -= Math.abs(a) * 0.5; // 同点なら求めた姿勢に近い方
-      if (!best || score > best.score) best = { H: pr.H, score };
+      // 同点なら直前のフレームの角度、なければ求めた姿勢に近い方。角度がフレームごとに揺れると、
+      // 予測した面のセルが動いて見え、手の回し終わりの判定が遅れる
+      score -= prev?.[slot] !== undefined ? Math.min(1, Math.abs(a - prev[slot]) * 4) : Math.abs(a) * 0.5;
+      if (!best || score > best.score) best = { H: pr.H, score, a };
     }
     if (!best || best.score < 2.5) continue;
+    chosen[slot] = best.a;
     const face = { slot, rot: 0, H: best.H, found: 0, latticeIndex: -1, held: true } as PlacedFace;
     if (i >= 0) placed[i] = face;
     else placed.push(face);
   }
+  return chosen;
 }
 
 // 背景の格子模様（チェックのシャツ・キーボード・タイル）を面と取り違えないための確認。
@@ -436,8 +445,9 @@ export function processFrame(
           placed.push({ ...moved, held: true } as PlacedFace);
         }
       }
+      const prevHinge = memory.last && t - memory.last.t < HOLD_MS ? memory.last.hinge : undefined;
       memory.last = { t, angle: colAngle(a), centerKey: key, pitch: faces[a.latticeIndex].pitch, faces: kept };
-      if (config.predictFaces) predictNeighbours(placed, img, faces[a.latticeIndex].pitch, refs, hands);
+      if (config.predictFaces) memory.last.hinge = predictNeighbours(placed, img, faces[a.latticeIndex].pitch, refs, hands, config.minFacing, prevHinge);
     } else if (memory.last && t - memory.last.t < HOLD_MS && memory.last.faces.length) {
       // 何も見つからない: ごく短時間だけ直前の面を使う（下で色がステッカーらしいか確かめる）
       placed = memory.last.faces.map((f) => ({ ...f, held: true }) as PlacedFace);
