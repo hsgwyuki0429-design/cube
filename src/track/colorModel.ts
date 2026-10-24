@@ -21,6 +21,16 @@ export interface Classified {
   confidence: number; // (2位 - 1位) / (2位 + 1位)
 }
 
+// 肌（指・手）らしい色: 暖色で色味が弱い（彩度 12〜35、色相 10〜75°）。キューブの色は、白は彩度が 8 未満、赤・橙・黄は
+// 50 以上なので、この範囲にはふつう入らない。肌は白から ΔE 25 程度しか離れておらず、手の検出が外れると白に読まれていた
+export function skinLike(lab: Lab): boolean {
+  const c = Math.hypot(lab[1], lab[2]);
+  if (c < 12 || c > 35) return false;
+  const hue = (Math.atan2(lab[2], lab[1]) * 180) / Math.PI;
+  return hue > 10 && hue < 75;
+}
+const SKIN_MARGIN = 12; // 代表色のどれかにここまで近ければ（肌に近い色のキューブ）肌とみなさない
+
 export class ColorModel {
   refs: Lab[];
   readonly initial: Lab[];
@@ -43,7 +53,8 @@ export class ColorModel {
     let second = Infinity;
     for (let i = 0; i < 6; i++) if (i !== best && d[i] < second) second = d[i];
     const confidence = (second - d[best]) / (second + d[best] || 1);
-    return { label: d[best] > this.options.maxDistance ? -1 : best, distance: d[best], confidence };
+    const unknown = d[best] > this.options.maxDistance || (d[best] > SKIN_MARGIN && skinLike(lab));
+    return { label: unknown ? -1 : best, distance: d[best], confidence };
   }
 
   // out[c] = このセルが色 c だと仮定したときのペナルティ。不明なら全部 0
@@ -51,7 +62,7 @@ export class ColorModel {
     const d = this.distances(lab);
     const min = Math.min(...d);
     const { maxDistance, tau, mismatchCost } = this.options;
-    if (min > maxDistance) {
+    if (min > maxDistance || (min > SKIN_MARGIN && skinLike(lab))) {
       for (let c = 0; c < 6; c++) out[offset + c] = 0;
       return -1;
     }

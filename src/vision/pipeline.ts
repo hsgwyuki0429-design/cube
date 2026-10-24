@@ -10,6 +10,7 @@ import { type PixelSource, sampleFace } from "./sampler";
 import { stickerScore } from "./stickerness";
 import { rgbToLab } from "./color";
 import { pointInPolygon } from "./lattice";
+import { estimatePose, projectSlot } from "./pose";
 
 export interface PipelineConfig {
   mode: "auto" | "guide";
@@ -18,6 +19,7 @@ export interface PipelineConfig {
   maxSpread: number; // セル内のばらつきがこれ以上なら読まない
   quads: QuadOptions;
   lattice: Partial<LatticeOptions>;
+  predictFaces: boolean; // 見つかった面から求めたキューブの姿勢で、見つからなかった隣の面の格子を射影して読む
 }
 
 export const DEFAULT_PIPELINE: PipelineConfig = {
@@ -27,6 +29,7 @@ export const DEFAULT_PIPELINE: PipelineConfig = {
   maxSpread: 60,
   quads: DEFAULT_QUADS,
   lattice: {},
+  predictFaces: true,
 };
 
 export interface DetectedFace {
@@ -169,6 +172,32 @@ function uniformFaces(img: PixelSource, quads: Quad[]): LatticeFace[] {
 }
 
 const chroma = (l: Lab) => Math.hypot(l[1], l[2]);
+
+// 見つかった面（正面を含む）からキューブの姿勢を求め、見つからなかった隣の面（上・下・左・右）の格子を 3D の
+// キューブから射影して足す。ステッカーレスで斜めから見た面は、セルが潰れて四角形として見つからないことが多いが、
+// 正面の格子が正確なら隣の面の位置は決まる。直前の位置から運んだ面より新しいので、そちらと入れ替える。
+// 読んだ色は軽く扱い（held）、ステッカーらしい色のセルが半分に満たなければ捨てる（下の読み取りで確かめる）
+const PREDICT_SLOTS = [0, 1, 3, 4]; // U R D L
+const MIN_FACING = 0.3; // これより斜め（約 72° 以上）の面は読まない
+function predictNeighbours(placed: PlacedFace[], img: PixelSource, pitch: number): void {
+  const real = placed.filter((p) => !(p as { held?: boolean }).held);
+  if (!real.some((p) => p.slot === 2)) return;
+  const pose = estimatePose(real, img.width, img.height);
+  // 格子と合わない姿勢（当てはめの誤り・回転途中の層）なら予測しない
+  if (!pose || pose.err > pitch * 0.15) return;
+  for (const slot of PREDICT_SLOTS) {
+    const i = placed.findIndex((p) => p.slot === slot);
+    if (i >= 0 && !(placed[i] as { held?: boolean }).held) continue;
+    const pr = projectSlot(pose, slot, img.width, img.height);
+    if (!pr || pr.facing < MIN_FACING) continue;
+    // 画面からはみ出す面は読まない
+    const corners = [slotPoint({ H: pr.H, rot: 0 }, 0, 0), slotPoint({ H: pr.H, rot: 0 }, 3, 0), slotPoint({ H: pr.H, rot: 0 }, 3, 3), slotPoint({ H: pr.H, rot: 0 }, 0, 3)];
+    if (corners.some(([x, y]) => x < 0 || y < 0 || x >= img.width || y >= img.height)) continue;
+    const face = { slot, rot: 0, H: pr.H, found: 0, latticeIndex: -1, held: true } as PlacedFace;
+    if (i >= 0) placed[i] = face;
+    else placed.push(face);
+  }
+}
 
 // 背景の格子模様（チェックのシャツ・キーボード・タイル）を面と取り違えないための確認。
 // 本物の面は、ステッカーの間に黒い隙間があるか（ステッカーのあるキューブ）、色の違うセルがある。
@@ -365,6 +394,7 @@ export function processFrame(
         }
       }
       memory.last = { t, angle: colAngle(a), centerKey: key, pitch: faces[a.latticeIndex].pitch, faces: kept };
+      if (config.predictFaces) predictNeighbours(placed, img, faces[a.latticeIndex].pitch);
     } else if (memory.last && t - memory.last.t < HOLD_MS && memory.last.faces.length) {
       // 何も見つからない: ごく短時間だけ直前の面を使う（下で色がステッカーらしいか確かめる）
       placed = memory.last.faces.map((f) => ({ ...f, held: true }) as PlacedFace);

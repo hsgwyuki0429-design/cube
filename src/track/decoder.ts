@@ -458,3 +458,8 @@ export class MoveDecoder {
     this.status = "tracking";
   }
 }
+
+// 状態 state・姿勢 o の仮説に対する観測の矛盾コスト（調査用。デコーダの中と同じ計算）
+export function observationCost(state: Uint8Array, o: number, obs: Observation): number {
+  return evalCost(state, compile(obs, o));
+}
