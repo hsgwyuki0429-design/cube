@@ -2,14 +2,15 @@
 // メインスレッドは描画と UI だけを受け持つ。
 import cvModule from "@techstark/opencv-js";
 import { TrackerEngine } from "../track/engine";
-import { decodeRecording } from "./decode";
+import { StreamDecoder, decodeRecording } from "./decode";
+import { StillSkipper } from "./motion";
 import { estimatePose } from "./pose";
 import { processTracked } from "./roi";
 import { Refiner } from "./refine";
 import type { Lab } from "./color";
 import type { Pt } from "./homography";
 import { DEFAULT_PIPELINE, type PipelineConfig, type PipelineMemory } from "./pipeline";
-import type { FrameMessage, FromWorker, ToWorker } from "./protocol";
+import type { FrameMessage, FromWorker, StreamPartial, ToWorker } from "./protocol";
 import { type CV, initOpenCv } from "./quads";
 
 let cv: CV | null = null;
@@ -19,6 +20,42 @@ let hands: Pt[][] = [];
 let refs: Lab[] | null = null;
 let engine: TrackerEngine | null = null;
 const memory: { last: PipelineMemory | null } = { last: null };
+
+// ソルブ中から進める精密解析（解析用の Worker で使う）
+interface Stream {
+  refiner: Refiner;
+  decoder: StreamDecoder | null;
+  fedUntil: number; // 受け取った録画の最後の時刻（ms）
+  lastPartial: number;
+  still: StillSkipper;
+  anchor?: { t: number; target: Uint8Array };
+  end?: { from: number; to: number; posted: number }; // 止めた後: 残りの解析の進み具合を知らせる
+}
+const streams = new Map<number, Stream>();
+
+function streamFrame(id: number, s: Stream, img: ImageData, t: number): void {
+  // 止まっている間は飛ばして追いつく（動き出したら直前の 1 枚も処理する）
+  for (const f of s.still.next(img, t)) s.refiner.push(f.img, f.t);
+  doAnchor(id, s);
+  if (s.end && performance.now() - s.end.posted > 200) {
+    s.end.posted = performance.now();
+    post({ type: "refine-progress", id, done: Math.max(0, t - s.end.from), total: Math.max(1, s.end.to - s.end.from) });
+  }
+  if (s.refiner.lastT - s.lastPartial >= 400) {
+    s.lastPartial = s.refiner.lastT;
+    const partial: StreamPartial = { ...s.refiner.partial(), frames: s.refiner.frames, behindMs: Math.max(0, s.fedUntil - s.refiner.lastT) };
+    post({ type: "stream-partial", id, partial });
+  }
+}
+
+// 完成の区切りまで解析が進んでいたら、そこまでを前後から解き直して知らせる
+function doAnchor(id: number, s: Stream): void {
+  const a = s.anchor;
+  if (!a || s.refiner.lastT < a.t) return;
+  s.anchor = undefined;
+  const cp = s.refiner.checkpoint(a.t, a.target);
+  if (cp) post({ type: "stream-partial", id, partial: { ...cp, frames: s.refiner.frames, behindMs: Math.max(0, s.fedUntil - s.refiner.lastT), anchored: true } });
+}
 
 const post = (msg: FromWorker) => (self as unknown as Worker).postMessage(msg);
 
@@ -83,6 +120,60 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
         } catch (e) {
           post({ type: "refine-error", id, message: e instanceof Error ? e.message : String(e) });
         }
+        return;
+      }
+      case "track-rebase": {
+        if (engine) engine.rebase(Uint8Array.from(msg.state), msg.orient, msg.moves, msg.t, msg.keep);
+        return;
+      }
+      case "stream-feed": {
+        let s = streams.get(msg.id);
+        if (!s) {
+          if (!msg.input) return;
+          s = { refiner: new Refiner(cv, { ...msg.input, pipeline: { ...config, ...msg.input.pipeline } }), decoder: null, fedUntil: 0, lastPartial: -Infinity, still: new StillSkipper() };
+          streams.set(msg.id, s);
+        }
+        const st = s;
+        st.refiner.addHands(msg.hands);
+        const rec = msg.recording;
+        if (!rec.chunks.length) return;
+        st.decoder ??= new StreamDecoder(rec.config, rec.width, rec.height, (img, t) => streamFrame(msg.id, st, img, t));
+        st.fedUntil = Math.max(st.fedUntil, rec.chunks[rec.chunks.length - 1].timestamp / 1000);
+        st.decoder.push(rec.chunks).catch((e) => {
+          streams.delete(msg.id);
+          post({ type: "refine-error", id: msg.id, message: e instanceof Error ? e.message : String(e) });
+        });
+        return;
+      }
+      case "stream-end": {
+        const s = streams.get(msg.id);
+        if (!s) {
+          post({ type: "refine-error", id: msg.id, message: "解析が始まっていません" });
+          return;
+        }
+        s.refiner.setEnd(msg.to);
+        s.end = { from: s.refiner.lastT, to: msg.to, posted: 0 };
+        try {
+          await s.decoder?.flush();
+          post({ type: "refine-result", id: msg.id, result: s.refiner.result(msg.target ? Uint8Array.from(msg.target) : null) });
+        } catch (e) {
+          post({ type: "refine-error", id: msg.id, message: e instanceof Error ? e.message : String(e) });
+        } finally {
+          s.decoder?.close();
+          streams.delete(msg.id);
+        }
+        return;
+      }
+      case "stream-anchor": {
+        const s = streams.get(msg.id);
+        if (!s) return;
+        s.anchor = { t: msg.t, target: Uint8Array.from(msg.target) };
+        doAnchor(msg.id, s);
+        return;
+      }
+      case "stream-cancel": {
+        streams.get(msg.id)?.decoder?.close();
+        streams.delete(msg.id);
         return;
       }
       case "frame": {

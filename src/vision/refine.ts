@@ -5,11 +5,12 @@ import { type CubeState, OPPOSITE, isSolved, moveFace, solvedState, statesEqual 
 import { type EngineOptions, TrackerEngine } from "../track/engine";
 import { mergeQuickRepeats, simplifyMoves } from "../track/merge";
 import { DEFAULT_OFFLINE, decodeOffline } from "../track/offline";
-import type { TrackStatus } from "../track/types";
+import type { DecodedMove, TrackStatus } from "../track/types";
 import type { Lab } from "./color";
 import { type PatchFrame, facePatch, refineEnd, refineStart } from "./fineTiming";
 import type { Pt } from "./homography";
 import { DEFAULT_PIPELINE, type PipelineConfig, type PipelineMemory, processFrame } from "./pipeline";
+import { processTracked } from "./roi";
 import type { CV } from "./quads";
 import type { PixelSource } from "./sampler";
 
@@ -28,6 +29,10 @@ export interface RefineInput {
   hands?: HandSample[];
   engine?: Partial<EngineOptions>;
   pipeline?: Partial<PipelineConfig>;
+  // 直前の面の周りだけを切り出して処理する（processTracked。ソルブ中から追いつきながら解析するとき）
+  tracked?: boolean;
+  // タイムを測らない解析（フリー）: 画素のパッチは直近のこれだけ残す（長く続けてもメモリが増えないように）
+  keepPatchesMs?: number;
 }
 
 export interface RefinedMove {
@@ -76,7 +81,7 @@ export const REFINE_ENGINE: Partial<EngineOptions> = {
 
 export class Refiner {
   readonly engine: TrackerEngine;
-  private memory: { last: PipelineMemory | null } = { last: null };
+  private memory: { last: PipelineMemory | null; grooveT?: number } = { last: null };
   private config: PipelineConfig;
   private handIdx = 0;
   readonly patches: PatchFrame[] = [];
@@ -100,6 +105,43 @@ export class Refiner {
     this.config = { ...DEFAULT_PIPELINE, ...input.pipeline, grooveRetry: true, minFacing: 0.3, hingeSearch: false, altReadings: true, quads: { ...DEFAULT_PIPELINE.quads, ...(input.pipeline?.quads ?? {}) } };
   }
 
+  // 解析する範囲の終わりを決める（ソルブ中から解析していて、止めた時刻が分かったとき）
+  setEnd(to: number): void {
+    this.input.to = to;
+  }
+
+  // 手の検出の履歴を足す（ソルブ中から解析するとき、少しずつ届く）
+  addHands(samples: HandSample[]): void {
+    if (!samples.length) return;
+    const hs = (this.input.hands ??= []);
+    const last = hs.length ? hs[hs.length - 1].t : -Infinity;
+    for (const s of samples) if (s.t > last) hs.push(s);
+  }
+
+  // 区切り: 時刻 t に状態 target（フリーで完成したとき）だったと分かった。前の区切りからそこまでを前後から解き直し、
+  // 以後はその状態から続ける。解き直した手順（それまでの区切りの手順を含む）を返す。つながらなければ null
+  private seg: { state: CubeState; moves: DecodedMove[] } | null = null;
+  checkpoint(t: number, target: CubeState): { t: number; state: number[]; orient: number; moves: DecodedMove[]; status: string } | null {
+    const start = this.seg?.state ?? Uint8Array.from(this.input.state);
+    const obs = this.engine.observationLog.filter((o) => o.t <= t);
+    if (!obs.some((o) => o.faces.length)) return null;
+    const off = decodeOffline(obs, start, target, t, { decoder: { ...this.input.engine?.decoder, ...DEFAULT_OFFLINE.decoder }, personal: this.input.engine?.personal });
+    if (!off.reachedEnd) return null;
+    const moves = simplifyMoves(off.moves);
+    const orient = moves.length ? moves[moves.length - 1].orient : this.engine.decoder.best().orient;
+    const full = [...(this.seg?.moves ?? []), ...moves];
+    this.engine.rebase(target, orient, full, t, 0);
+    this.seg = { state: Uint8Array.from(target), moves: full };
+    return { t, state: Array.from(target), orient, moves: full, status: "tracking" };
+  }
+
+  // 途中結果: 前向きにここまで解いた最良の仮説（リアルタイムの追跡をこれに乗り換える）
+  partial(): { t: number; state: number[]; orient: number; moves: DecodedMove[]; status: string } {
+    const dec = this.engine.decoder;
+    const best = dec.best();
+    return { t: this.lastT, state: Array.from(best.state), orient: best.orient, moves: dec.bestMoves(), status: dec.status };
+  }
+
   // そのフレームの直前に検出された手（手の検出は 15Hz 程度なので、一番近い過去のもの）
   private handsAt(t: number, w: number, h: number): Pt[][] {
     const hs = this.input.hands;
@@ -116,7 +158,8 @@ export class Refiner {
   // hands: 手の多角形（画像座標）を直接渡すとき。省略時は input.hands の履歴から
   push(img: PixelSource & { mat?: unknown }, t: number, hands?: Pt[][]): void {
     if (t < this.input.from || t > this.input.to) return;
-    const r = processFrame(this.cv, img, t, this.config, this.memory, this.engine.colors.refs, hands ?? this.handsAt(t, img.width, img.height));
+    const run = this.input.tracked ? processTracked : processFrame;
+    const r = run(this.cv, img, t, this.config, this.memory, this.engine.colors.refs, hands ?? this.handsAt(t, img.width, img.height));
     const reading = { t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, alts: f.alts })) };
     this.engine.push(reading);
     this.looks.push({ t, solved: reading.faces.length > 0 && this.engine.looksSolved(reading) });
@@ -129,8 +172,16 @@ export class Refiner {
   // 画素のパッチ（1フレーム 10KB 程度）は、最初の手の前後と、直近の数秒（最後の手の前後）だけ残す
   private prunePatches(t: number): void {
     const hint = this.input.startHint;
-    if (hint === undefined) return;
     const P = this.patches;
+    if (hint === undefined) {
+      const keep = this.input.keepPatchesMs;
+      if (keep !== undefined) {
+        let k = 0;
+        while (k < P.length && P[k].t < t - keep) k++;
+        if (k > 30) P.splice(0, k);
+      }
+      return;
+    }
     let i = 0;
     while (i < P.length && P[i].t <= hint + 1500) i++;
     let j = i;
@@ -149,6 +200,7 @@ export class Refiner {
     // 前向き（スクランブル後から）と後ろ向き（完成から）の両方で解き直し、辻褄の合う所でつなぐ
     const off = decodeOffline(this.engine.observationLog, Uint8Array.from(this.input.state), target, this.lastT, {
       decoder: { ...this.input.engine?.decoder, ...DEFAULT_OFFLINE.decoder },
+      personal: this.input.engine?.personal,
     });
     let moves = off.moves;
     let solved = target ? off.reachedEnd && isSolved(target) : isSolved(dec.best().state);

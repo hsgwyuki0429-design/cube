@@ -27,7 +27,7 @@ function Logo() {
 }
 
 function StatusChips() {
-  const s = useStore(controller.store, (x) => ({ camera: x.camera, vision: x.vision, stats: x.stats, status: x.track?.status, cube: !!x.cube, demo: x.demo, hands: x.hands }));
+  const s = useStore(controller.store, (x) => ({ camera: x.camera, vision: x.vision, stats: x.stats, status: x.track?.status, cube: !!x.cube, demo: x.demo, hands: x.hands, analysis: x.analysis }));
   const trackChip = !s.cube ? null : s.status === "lost" ? ["bad", "見失い"] : s.status === "uncertain" ? ["warn", "確認中"] : ["ok", "追跡中"];
   return (
     <div class="chips">
@@ -44,6 +44,12 @@ function StatusChips() {
         <span class={`chip ${trackChip[0]}`}>
           <span class="dot" />
           {trackChip[1]}
+        </span>
+      )}
+      {s.analysis && (
+        <span class={`chip ${s.analysis.behindMs < 2000 ? "ok" : "warn"}`} title="録画を重い設定で解き直し、追跡に反映しています（遅れ）">
+          <span class="dot" />
+          精密解析 {s.analysis.behindMs < 500 ? "追いついています" : `${(s.analysis.behindMs / 1000).toFixed(1)}秒遅れ`}
         </span>
       )}
     </div>

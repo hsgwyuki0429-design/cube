@@ -90,6 +90,7 @@ export class FrameRecorder {
     this.ctx = this.canvas.getContext("2d");
     this.recording = true;
     this.chunks = [];
+    this.takenUs = -Infinity;
     this.frames = 0;
     this.dropped = 0;
     this.lastKey = -Infinity;
@@ -137,9 +138,28 @@ export class FrameRecorder {
     }
   }
 
+  private takenUs = -Infinity;
+
+  // 前回から増えた分（ソルブ中から解析を進めるために少しずつ渡す）。最初はキーフレームから。untilMs より後は次回に回す
+  takeNew(untilMs = Infinity): Recording | null {
+    const config = this.config();
+    if (!config) return null;
+    let start = this.chunks.findIndex((c) => c.timestamp > this.takenUs);
+    if (start < 0) return { config, chunks: [], width: this.width, height: this.height };
+    if (this.takenUs === -Infinity) while (start < this.chunks.length && this.chunks[start].type !== "key") start++;
+    const chunks = this.chunks.slice(start).filter((c) => c.timestamp <= untilMs * 1000);
+    if (chunks.length) this.takenUs = chunks[chunks.length - 1].timestamp;
+    return { config, chunks, width: this.width, height: this.height };
+  }
+
+  private config(): VideoDecoderConfig | null {
+    if (!this.decoderConfig && this.codec) this.decoderConfig = { codec: this.codec, codedWidth: this.width, codedHeight: this.height };
+    return this.decoderConfig;
+  }
+
   // t0..t1（ms）を含む範囲を取り出す（先頭は t0 以前の最後のキーフレーム）
   extract(t0: number, t1: number): Recording | null {
-    if (!this.decoderConfig && this.codec) this.decoderConfig = { codec: this.codec, codedWidth: this.width, codedHeight: this.height };
+    this.config();
     if (!this.decoderConfig || !this.chunks.length) return null;
     const a = t0 * 1000;
     const b = t1 * 1000;
@@ -166,6 +186,7 @@ export class FrameRecorder {
   clear(): void {
     this.stop();
     this.chunks = [];
+    this.takenUs = -Infinity;
     this.decoderConfig = null;
   }
 }

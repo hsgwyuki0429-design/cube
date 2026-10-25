@@ -8,10 +8,12 @@
 // つながらなければ、前向きの結果を終わりの状態に合わせる（finish）。
 import { type CubeState, MOVE_SRC, NUM_MOVES, OPPOSITE, inverseMove, moveFace, statesEqual } from "../cube/model";
 import { type DecoderOptions, type Hypothesis, MoveDecoder } from "./decoder";
+import { movePrior } from "./prior";
 import type { DecodedMove, Observation } from "./types";
 
 export interface OfflineOptions {
   decoder: Partial<DecoderOptions>;
+  personal?: number[][]; // 自分のソルブの手順（手順の知識に加える）
 }
 
 export const DEFAULT_OFFLINE: OfflineOptions = {
@@ -60,6 +62,7 @@ export function reversedObservations(obs: Observation[], lastT: number): Observa
 export function decodeOffline(obs: Observation[], start: CubeState, end: CubeState | null, lastT: number, options: OfflineOptions = DEFAULT_OFFLINE): OfflineResult {
   const valid = obs.filter((o) => o.faces.length);
   const fwd = new MoveDecoder(start, options.decoder);
+  if (options.personal?.length && fwd.prior) fwd.prior = movePrior(options.personal);
   const F: Snapshot[] = [];
   for (const o of valid) {
     fwd.observe(o);
@@ -72,6 +75,7 @@ export function decodeOffline(obs: Observation[], start: CubeState, end: CubeSta
   if (!end || !valid.length) return forwardBest();
 
   const bwd = new MoveDecoder(end, options.decoder);
+  bwd.prior = fwd.prior;
   const rev = reversedObservations(valid, lastT);
   const B: Snapshot[] = new Array(valid.length);
   rev.forEach((o, j) => {

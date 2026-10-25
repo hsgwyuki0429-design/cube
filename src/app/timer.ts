@@ -8,7 +8,6 @@ import { type CubeState, MOVE_NAMES, applyMoves, isSolved, relativeMove, rotateO
 import { randomScramble, solveBetween } from "../cube/solver";
 import type { TrackUpdate } from "../track/engine";
 import { mergeQuickRepeats } from "../track/merge";
-import type { Lab } from "../vision/color";
 import type { RefineResult } from "../vision/refine";
 import { controller } from "./controller";
 import { settingsStore } from "./settings";
@@ -63,7 +62,6 @@ let lookStartT = 0;
 let unexplained = 0;
 
 const POSTROLL_MS = 1200; // 止めた後も録画を続ける時間（最後の手の回し終わりを確かめる）
-const PREROLL_MS = 3000; // 最初の手の前から解析する時間（インスペクション中の録画は直近 4 秒）
 
 // 時刻つきの手（キューブ固定の手、そのときの姿勢、回し始め・回し終わり）
 interface TimedMove {
@@ -111,7 +109,7 @@ export async function newScramble(): Promise<void> {
 
 export function cancelTimer(): void {
   target = null;
-  if (recording) controller.recorder.clear();
+  if (recording) controller.restartFreeAnalysis();
   recording = false;
   timerStore.set({ phase: "idle", guide: [], scramble: [], message: null });
 }
@@ -138,7 +136,8 @@ function onTrack(u: TrackUpdate): void {
       controller.beep(660, 0.15);
       timerStore.set({ phase: "inspection", inspectionStart: performance.now(), guideDone: s.guide.length, recomputing: false });
       recording = false;
-      controller.startRecording().then((ok) => (recording = ok && timerStore.get().phase !== "idle"));
+      // 精密解析をここ（スクランブルの状態が分かっている所）から進める。止めたときには大半が終わっている
+      controller.startAnalysis({ state, keep: readyMoves, timed: true }).then((ok) => (recording = ok && timerStore.get().phase !== "idle"));
       return;
     }
     const k = guideStates.findIndex((g, i) => i >= s.guideDone && statesEqual(g, state));
@@ -246,14 +245,13 @@ function finish(u: TrackUpdate | null, how: StopReason, lookT?: number): void {
   target = null;
   recording = false;
   timerStore.set({ phase: "done", result: solve, solves, analysisProgress: 0 });
-  const refs = controller.store.get().track?.refs ?? controller.store.get().cube?.refs;
   // 速報値の開始・終了（止めた後のフレームで更新し、精密解析で決めきれなかった端に使う）
   const live: LiveSpan = { id: solve.id, start: startState, startT: s.startT, endT, how };
   window.setTimeout(async () => {
     // 速報値を、止めた後のフレーム（最後の手が止まったところ）も使って更新する
     if (how === "tracked") await refreshLive(live, s.startIndex, endIndex);
-    if (analyze && refs) analyzeRecording(live, refs, how === "manual" ? stopT : endT);
-    else if (analyze) updateSolve(solve.id, { analysis: "failed" });
+    if (analyze) analyzeRecording(live, how === "manual" ? stopT : endT);
+    else controller.restartFreeAnalysis();
   }, POSTROLL_MS);
 }
 
@@ -279,45 +277,29 @@ async function refreshLive(live: LiveSpan, from: number, to: number): Promise<vo
   updateSolve(live.id, { timeMs, provisionalMs: timeMs, moves: solveMoves(moves, begin), tps: moves.length / Math.max(0.001, timeMs / 1000), splits: splitsOf(live.start, moves, begin) });
 }
 
-async function analyzeRecording(live: LiveSpan, refs: Lab[], endT: number): Promise<void> {
-  const { id, start, startT, how } = live;
+async function analyzeRecording(live: LiveSpan, endT: number): Promise<void> {
+  const { id, start, how } = live;
   const rec = controller.recorder;
-  await rec.finish();
-  const from = startT - PREROLL_MS;
   const to = endT + POSTROLL_MS - 100;
-  const recording = rec.extract(from, to);
+  // インスペクションから進めてきた解析に、止めた所までの録画を渡し切り、完成の状態で解き直す
+  const pending = await controller.endAnalysis(to, solvedState(), (p) => timerStore.set({ analysisProgress: p }));
   // 調査用（E2E テストが読む）
-  const debug: { recording: unknown; result?: RefineResult } = { recording: { frames: rec.frames, dropped: rec.dropped, chunks: recording?.chunks.length ?? 0 } };
+  const debug: { recording: unknown; result?: RefineResult } = { recording: { frames: rec.frames, dropped: rec.dropped } };
   (window as unknown as { __cubevisionAnalysis?: unknown }).__cubevisionAnalysis = debug;
-  rec.stop();
-  if (!recording) {
+  // 次のソルブ（とフリーの追跡）のために、ここからまた解析を進める
+  controller.restartFreeAnalysis();
+  if (!pending) {
     updateSolve(id, { analysis: "failed" });
     return;
   }
-  const s = settingsStore.get();
   let result: RefineResult;
   timerStore.set({ analysisStartedAt: performance.now(), analysisProgress: 0 });
   try {
-    result = await controller.refiner.run(
-      recording,
-      {
-        state: Array.from(start),
-        refs,
-        from,
-        to,
-        startHint: startT,
-        hands: controller.hands.historyBetween(from, to),
-        engine: controller.engineOptions(),
-        pipeline: { mode: s.detection },
-      },
-      (p) => timerStore.set({ analysisProgress: p }),
-    );
+    result = await pending;
   } catch (e) {
     console.warn("refine failed", e);
     updateSolve(id, { analysis: "failed" });
     return;
-  } finally {
-    rec.clear();
   }
   debug.result = result;
   // 手動で止めたときは、最後に足した（見えていない）手で完成にしたものは採らない

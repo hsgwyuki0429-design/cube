@@ -36,6 +36,7 @@ export interface SpeedOptions {
   refine?: boolean; // 精密解析（Refiner）にも全フレームを通す
   refineFrom?: number; // 精密解析の範囲の始まり（ms。既定 0）
   tracked?: boolean; // リアルタイムの追跡をアプリと同じく、直前の位置の周りだけで処理する（processTracked）
+  sequence?: number[]; // 回す手順（省略時はランダムな moves 手）
 }
 
 export interface SpeedResult {
@@ -59,13 +60,14 @@ export function simulate(cv: CV, o: SpeedOptions): SpeedResult {
   const period = 1000 / o.tps;
   const duration = Math.min(period * 0.85, 170);
   const truth: number[] = [];
-  for (let i = 0; i < o.moves; i++) truth.push(randomMove(rnd, truth[truth.length - 1], ALL_MOVES));
+  if (o.sequence) truth.push(...o.sequence);
+  else for (let i = 0; i < o.moves; i++) truth.push(randomMove(rnd, truth[truth.length - 1], ALL_MOVES));
   const start: CubeState = o.solveTo ? applyMoves(solvedState(), invertMoves(truth)) : scrambled(rnd);
   const states = [start];
   for (const m of truth) states.push(applyMove(states[states.length - 1], m));
   const lead = 600;
   const startTruth = lead;
-  const endTruth = lead + (o.moves - 1) * period + duration;
+  const endTruth = lead + (truth.length - 1) * period + duration;
   const total = endTruth + 700;
 
   const engine = new TrackerEngine(start, REFS, o.engine);
@@ -82,9 +84,9 @@ export function simulate(cv: CV, o: SpeedOptions): SpeedResult {
   let sceneHands: [number, number][][] = [];
   const at = (t: number, seed: number, keepHands = false) => {
     let idx = 0;
-    while (idx < o.moves && t >= startTruth + idx * period + duration) idx++;
+    while (idx < truth.length && t >= startTruth + idx * period + duration) idx++;
     const s = startTruth + idx * period;
-    const turning = idx < o.moves && t >= s;
+    const turning = idx < truth.length && t >= s;
     const wob = o.wobble === false ? null : axisAngle([Math.sin(t / 700), 1, Math.cos(t / 900)].map((v, _, a) => v / Math.hypot(...a)) as Vec3, Math.sin(t / 400) * 0.06);
     const base = { width: w, height: h, orient: 0, eye, rotation: wob ?? undefined, offset: o.wobble === false ? undefined : ([0.12 * Math.sin(t / 500), 0.08 * Math.cos(t / 650), 0] as Vec3) };
     const sc = o.scene ? scene(base, t, o.scene, sceneRnd) : null;
