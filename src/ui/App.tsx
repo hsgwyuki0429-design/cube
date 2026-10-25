@@ -10,7 +10,7 @@ import { HistoryPage } from "./HistoryPage";
 import { ScanPanel } from "./ScanPanel";
 import { SettingsPage } from "./SettingsPage";
 import { TimerPanel } from "./TimerPanel";
-import { mergeQuickRepeats } from "../track/merge";
+import { mergeQuickRepeats, simplifyMoves } from "../track/merge";
 import { rotateOrientation } from "../cube/model";
 import { moveLabel as labelOf } from "./notation";
 
@@ -132,7 +132,7 @@ function RecentMoves() {
   const track = useStore(controller.store, (s) => s.track);
   const base = useStore(controller.store, (s) => s.baseMoves);
   const settings = useStore(settingsStore, (s) => ({ notation: s.notation, viewpoint: s.viewpoint }));
-  const merged = mergeQuickRepeats((track?.moves ?? []).slice(base));
+  const merged = simplifyMoves(mergeQuickRepeats((track?.moves ?? []).slice(base)));
   const count = merged.length;
   const last = merged.slice(-7);
   if (!last.length) return null;

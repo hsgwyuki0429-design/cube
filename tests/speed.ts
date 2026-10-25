@@ -5,6 +5,7 @@ import { type CubeState, applyMove, applyMoves, invertMoves, isSolved, solvedSta
 import { type EngineOptions, TrackerEngine } from "../src/track/engine";
 import type { DecodedMove } from "../src/track/types";
 import { type Lab, rgbToLab } from "../src/vision/color";
+import { processTracked } from "../src/vision/roi";
 import { DEFAULT_PIPELINE, type PipelineConfig, processFrame } from "../src/vision/pipeline";
 import { type RefineResult, Refiner } from "../src/vision/refine";
 import type { CV } from "../src/vision/quads";
@@ -34,6 +35,7 @@ export interface SpeedOptions {
   onFrame?: (t: number, img: { data: Uint8ClampedArray; width: number; height: number }, hands: [number, number][][]) => void; // 調査用
   refine?: boolean; // 精密解析（Refiner）にも全フレームを通す
   refineFrom?: number; // 精密解析の範囲の始まり（ms。既定 0）
+  tracked?: boolean; // リアルタイムの追跡をアプリと同じく、直前の位置の周りだけで処理する（processTracked）
 }
 
 export interface SpeedResult {
@@ -112,8 +114,9 @@ export function simulate(cv: CV, o: SpeedOptions): SpeedResult {
         );
     o.onFrame?.(t, img, hands);
     if (frames % (o.every ?? 1) === 0) {
-      const r = processFrame(cv, img, t, { ...DEFAULT_PIPELINE, ...o.pipeline }, memory, engine.colors.refs, o.maskHands === false ? [] : hands);
-      engine.push({ t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked })) });
+      const run = o.tracked ? processTracked : processFrame;
+      const r = run(cv, img, t, { ...DEFAULT_PIPELINE, ...o.pipeline }, memory, engine.colors.refs, o.maskHands === false ? [] : hands);
+      engine.push({ t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, alts: f.alts })) });
     }
     refiner?.push(img, t, o.maskHands === false ? [] : hands);
     frames++;

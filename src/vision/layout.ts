@@ -15,6 +15,7 @@ export interface PlacedFace {
   found: number;
   latticeIndex: number;
   support?: boolean[]; // スロットのセルごとに、ステッカーの四角形が実際に見つかったか
+  altH?: Mat3[]; // 窓の位置が一意に決まらないときの、ずらした格子（読みの候補としてデコーダに渡す）
 }
 
 // 格子セルの四角形の有無を、スロットのセル順に並べ直す

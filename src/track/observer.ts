@@ -12,6 +12,7 @@ export interface FaceReading {
   weight?: number[]; // 9（セルの信頼度。省略時 1）
   spread?: number[]; // 9（セル内の色のばらつき。開始・終了時刻の判定に使う）
   masked?: boolean[]; // 9（手で隠れている）
+  alts?: { labs: Lab[]; valid: boolean[] }[]; // 窓の位置が曖昧なとき、ずらした格子での読み
 }
 
 export interface FrameReading {
@@ -137,7 +138,21 @@ export class FaceObserver {
         if (wmean < 1) for (let c = 0; c < 6; c++) cost[cell * 6 + c] *= wmean;
         if (labels[cell] >= 0) known++;
       }
-      if (known >= 3 || f.slot === 2) faces.push({ slot: f.slot, cost, labels });
+      if (known >= 3 || f.slot === 2) {
+        // 窓の位置をずらした読み（このフレームのもの）。どちらが正しいかはデコーダが決める
+        const raw = frame.faces.find((x) => x.slot === f.slot);
+        const alts = raw?.alts?.map((a) => {
+          const c = new Float32Array(54);
+          for (let cell = 0; cell < 9; cell++) {
+            if (!a.valid[cell]) continue;
+            this.colors.costs(a.labs[cell], c, cell * 6);
+            const w = f.weight[cell] * (this.frames.length === 1 ? this.options.singleFrameWeight : 1);
+            if (w < 1) for (let k = 0; k < 6; k++) c[cell * 6 + k] *= w;
+          }
+          return c;
+        });
+        faces.push(alts?.length ? { slot: f.slot, cost, labels, alts } : { slot: f.slot, cost, labels });
+      }
     }
     if (!faces.some((f) => f.slot === 2)) return null;
 

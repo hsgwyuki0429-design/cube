@@ -21,6 +21,7 @@ export interface QuadOptions {
   grooves: boolean; // 溝で区切られた領域からも候補を拾う（ステッカーレス）
   grooveThreshold: number; // ブラックハットの値がこれを超えたら溝
   grooveErode: number; // 溝で区切った領域を縮める大きさ（px、奇数）
+  refSize?: { cols: number; rows: number }; // 面積の割合・窓の大きさの基準（切り出しのときはフレーム全体。既定は画像）
 }
 
 export const DEFAULT_QUADS: QuadOptions = {
@@ -176,7 +177,8 @@ export function findQuads(cv: CV, rgba: CV, o: QuadOptions = DEFAULT_QUADS): Qua
     }
     const kernel = keep(cv.getStructuringElement(cv.MORPH_RECT, new cv.Size(3, 3)));
     cv.dilate(edges, edges, kernel);
-    const frameArea = rgba.rows * rgba.cols;
+    const ref = o.refSize ?? { cols: rgba.cols, rows: rgba.rows };
+    const frameArea = ref.rows * ref.cols;
     const approx = keep(new cv.Mat());
     const hullMat = keep(new cv.Mat());
     const collect = (src: CV, mode: number, extraGrow = 0, minSolidity = 0.86) => {
@@ -205,7 +207,7 @@ export function findQuads(cv: CV, rgba: CV, o: QuadOptions = DEFAULT_QUADS): Qua
       const v = keep(ch.get(2));
       cv.GaussianBlur(v, v, new cv.Size(3, 3), 0);
       const mask = keep(new cv.Mat());
-      const block = Math.max(15, Math.round(Math.min(rgba.cols, rgba.rows) / 10) | 1);
+      const block = Math.max(15, Math.round(Math.min(ref.cols, ref.rows) / 10) | 1);
       cv.adaptiveThreshold(v, mask, 255, cv.ADAPTIVE_THRESH_MEAN_C, cv.THRESH_BINARY, block, -6);
       // 細いつながり（隙間が狭いところ）を切る
       cv.morphologyEx(mask, mask, cv.MORPH_OPEN, kernel);
@@ -219,7 +221,7 @@ export function findQuads(cv: CV, rgba: CV, o: QuadOptions = DEFAULT_QUADS): Qua
       cv.cvtColor(rgb, hsv, cv.COLOR_RGB2HSV);
       cv.split(hsv, ch);
       const v = keep(ch.get(2));
-      const k = Math.max(5, Math.round(Math.min(rgba.cols, rgba.rows) / 50) | 1);
+      const k = Math.max(5, Math.round(Math.min(ref.cols, ref.rows) / 50) | 1);
       const ell = keep(cv.getStructuringElement(cv.MORPH_ELLIPSE, new cv.Size(k, k)));
       const bh = keep(new cv.Mat());
       cv.morphologyEx(v, bh, cv.MORPH_BLACKHAT, ell);

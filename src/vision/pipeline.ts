@@ -8,9 +8,10 @@ import { type PlacedFace, colAngle, faceArea, layoutFaces, slotPoint } from "./l
 import { type CV, type QuadOptions, DEFAULT_QUADS, findQuads } from "./quads";
 import { type PixelSource, sampleFace } from "./sampler";
 import { stickerScore } from "./stickerness";
+import { skinLike } from "../track/colorModel";
 import { rgbToLab } from "./color";
 import { pointInPolygon } from "./lattice";
-import { estimatePose, projectSlot } from "./pose";
+import { defaultFocal, estimatePose, hingePose, projectSlot } from "./pose";
 
 export interface PipelineConfig {
   mode: "auto" | "guide";
@@ -20,6 +21,29 @@ export interface PipelineConfig {
   quads: QuadOptions;
   lattice: Partial<LatticeOptions>;
   predictFaces: boolean; // 見つかった面から求めたキューブの姿勢で、見つからなかった隣の面の格子を射影して読む
+  // 予測する面の向き（1 = 正対）の下限。寝た面（0.15〜0.3）のセルは細く、ライブで上面が見えるようになるが、
+  // 回し終わりの判定を乱すので、ソルブ後の解析では 0.3
+  minFacing: number;
+  // 隣の面の傾きを、共有する辺を蝶番にして画像に合うよう探す（ライブ）。ソルブ後の解析では求めた姿勢のまま射影し、
+  // ステッカーらしさで捨てない（実際の動画で、探すと前後からつなげなくなった）
+  hingeSearch: boolean;
+  // 窓の位置が曖昧な面は、ずらした格子での読みも付ける（ソルブ後の解析）。前後からつなぐ解析では、実際の T-perm の
+  // 動画（8 秒）がこれでつながる。ライブの前向きの追跡では、選べる読みが増えると雑音を誤った手で説明しやすくなり、
+  // 同じ動画で 14 手正しかったのが 7 手目以降で崩れたので使わない
+  altReadings: boolean;
+  // 面が見つからないとき、溝で区切った候補でやり直す（1 フレームの処理が 2〜5 倍になるので、ソルブ後の解析だけ）
+  grooveRetry: boolean;
+  // 画像が大きなフレームの一部（切り出し）のとき、そのフレーム全体のこの画像の座標での位置と大きさ。フレームに対する
+  // 割合で決めるしきい値（四角形の面積・二値化の窓・模様の範囲・中央の大きな面）と、姿勢の計算（画像の中心・焦点距離）は
+  // フレーム全体を基準にする。切り出しを基準にすると、回転途中の層や背景の格子が面として通っていた
+  frame?: FrameRef;
+}
+
+export interface FrameRef {
+  width: number;
+  height: number;
+  ox: number; // フレームの左上（この画像の座標）
+  oy: number;
 }
 
 export const DEFAULT_PIPELINE: PipelineConfig = {
@@ -30,6 +54,10 @@ export const DEFAULT_PIPELINE: PipelineConfig = {
   quads: DEFAULT_QUADS,
   lattice: {},
   predictFaces: true,
+  minFacing: 0.15,
+  hingeSearch: true,
+  altReadings: false,
+  grooveRetry: false,
 };
 
 export interface DetectedFace {
@@ -43,6 +71,8 @@ export interface DetectedFace {
   valid: boolean[];
   weight: number[]; // セルの信頼度（四角形が見つかったセル 1、格子から推定したセル・保持した面は低め）
   masked: boolean[]; // 手で隠れている
+  // 窓の位置が一意に決まらなかったとき、1 段ずらした格子での読み（どちらが正しいかはデコーダが状態と照らして決める）
+  alts?: { labs: Lab[]; valid: boolean[] }[];
 }
 
 export interface FrameResult {
@@ -57,10 +87,12 @@ export interface PipelineMemory {
   centerKey: number; // 中心色（代表色が分かっていればその番号、なければ名前付き色の番号）
   pitch: number; // ステッカー間隔（px）。ステッカーレスのブロック分割に使う
   faces: KeptFace[]; // 直前の面（短時間の保持・ブロック分割・窓の位置の曖昧さの解消に使う）
+  hinge?: Record<number, number>; // 隣の面を予測したときの蝶番の角度（スロットごと）
 }
 
 type KeptFace = PlacedFace & { seenT: number }; // seenT: 最後に実際に検出できた時刻
 
+const MAX_ALTS = 2; // ずらした格子の候補の数
 const SKIP_MS = 300; // 正面が指で隠れたフレームを飛ばすのは、直前に正面が見えてからこの時間まで
 const HOLD_MS = 400; // 何も見つからないとき、直前の面を使い続ける時間
 const CARRY_MS = 2500; // 正面を追えている間、見つからない他の面を運び続ける時間
@@ -89,19 +121,20 @@ interface TextureLevels {
   smooth: number;
   textured: number;
 }
-function textureLevels(img: PixelSource): TextureLevels {
+function textureLevels(img: PixelSource, r: number): TextureLevels {
   const v: number[] = [];
   for (let gy = 1; gy < 12; gy++)
     for (let gx = 1; gx < 16; gx++) {
-      const t = pixelTexture(img, [(gx * img.width) / 16, (gy * img.height) / 12]);
+      const t = pixelTexture(img, [(gx * img.width) / 16, (gy * img.height) / 12], r);
       if (t !== null) v.push(t);
     }
   v.sort((a, b) => a - b);
   const floor = v.length ? v[Math.floor(v.length * 0.1)] : 0;
   return { smooth: Math.max(SMOOTH, floor * 1.8), textured: Math.max(TEXTURED, floor * 2.6) };
 }
-function pixelTexture(img: PixelSource, p: Pt): number | null {
-  const r = Math.max(3, Math.round(Math.min(img.width, img.height) / 64));
+// r: 調べる範囲の半径（フレームの短辺の 1/64）
+const textureRadius = (fr: FrameRef) => Math.max(3, Math.round(Math.min(fr.width, fr.height) / 64));
+function pixelTexture(img: PixelSource, p: Pt, r: number): number | null {
   const cx = Math.round(p[0]);
   const cy = Math.round(p[1]);
   if (cx - r < 0 || cy - r < 0 || cx + r + 1 >= img.width || cy + r + 1 >= img.height) return null;
@@ -178,25 +211,60 @@ const chroma = (l: Lab) => Math.hypot(l[1], l[2]);
 // 正面の格子が正確なら隣の面の位置は決まる。直前の位置から運んだ面より新しいので、そちらと入れ替える。
 // 読んだ色は軽く扱い（held）、ステッカーらしい色のセルが半分に満たなければ捨てる（下の読み取りで確かめる）
 const PREDICT_SLOTS = [0, 1, 3, 4]; // U R D L
-const MIN_FACING = 0.3; // これより斜め（約 72° 以上）の面は読まない
-function predictNeighbours(placed: PlacedFace[], img: PixelSource, pitch: number): void {
+// 共有する辺を軸に試す角度（ラジアン）。正面だけから求めた傾きは小さめに出るので、広げる側を細かく
+// 面の奥の辺の外側の点（スロットの格子座標）。U は行 0、D は行 2、R は列 2、L は列 0 の側が奥
+const BEYOND: Record<number, (u: number) => [number, number]> = { 0: (u) => [u, -0.45], 3: (u) => [u, 3.45], 1: (u) => [3.45, u], 4: (u) => [-0.45, u] };
+const HINGE = [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, -0.1, -0.2, -0.3];
+function predictNeighbours(placed: PlacedFace[], img: PixelSource, fr: FrameRef, pitch: number, refs: Lab[] | null, hands: Pt[][], minFacing: number, hinge: boolean, prev?: Record<number, number>): Record<number, number> {
+  const chosen: Record<number, number> = {};
   const real = placed.filter((p) => !(p as { held?: boolean }).held);
-  if (!real.some((p) => p.slot === 2)) return;
-  const pose = estimatePose(real, img.width, img.height);
+  if (!real.some((p) => p.slot === 2)) return chosen;
+  const focal = defaultFocal(fr.width, fr.height);
+  const center: Pt = [fr.ox + fr.width / 2, fr.oy + fr.height / 2];
+  const pose = estimatePose(real, img.width, img.height, focal, center);
   // 格子と合わない姿勢（当てはめの誤り・回転途中の層）なら予測しない
-  if (!pose || pose.err > pitch * 0.15) return;
+  if (!pose || pose.err > pitch * 0.15) return chosen;
+  // キューブの色らしい点か（手の上・肌らしい色は分からない = null）
+  const cubeLike = (p: Pt): boolean | null => {
+    if (hands.some((hull) => pointInPolygon(p, hull))) return null;
+    const lab = pixelLab(img, p);
+    if (!lab) return false;
+    const d = refs ? Math.min(...refs.map((r) => Math.hypot((lab[0] - r[0]) / 2, lab[1] - r[1], lab[2] - r[2]))) : 0;
+    if (d > 12 && skinLike(lab)) return null;
+    return stickerScore(lab) > 0 && d < 30;
+  };
   for (const slot of PREDICT_SLOTS) {
     const i = placed.findIndex((p) => p.slot === slot);
     if (i >= 0 && !(placed[i] as { held?: boolean }).held) continue;
-    const pr = projectSlot(pose, slot, img.width, img.height);
-    if (!pr || pr.facing < MIN_FACING) continue;
-    // 画面からはみ出す面は読まない
-    const corners = [slotPoint({ H: pr.H, rot: 0 }, 0, 0), slotPoint({ H: pr.H, rot: 0 }, 3, 0), slotPoint({ H: pr.H, rot: 0 }, 3, 3), slotPoint({ H: pr.H, rot: 0 }, 0, 3)];
-    if (corners.some(([x, y]) => x < 0 || y < 0 || x >= img.width || y >= img.height)) continue;
-    const face = { slot, rot: 0, H: pr.H, found: 0, latticeIndex: -1, held: true } as PlacedFace;
+    // 辺を蝶番にして傾きを変え、面のセルがキューブの色で、面の向こう側（奥の辺の外）はそうでない角度を選ぶ。
+    // 傾きが小さすぎると奥の辺の外もまだ面の上、大きすぎると奥の列が背景にかかる
+    let best: { H: Mat3; score: number; a: number } | null = null;
+    for (const a of hinge ? HINGE : [0]) {
+      const pr = projectSlot(a ? hingePose(pose, slot, a) : pose, slot, img.width, img.height, focal, center);
+      if (!pr || pr.facing < minFacing) continue;
+      // 画面からはみ出す面は読まない
+      const g = { H: pr.H, rot: 0 };
+      const corners = [slotPoint(g, 0, 0), slotPoint(g, 3, 0), slotPoint(g, 3, 3), slotPoint(g, 0, 3)];
+      if (corners.some(([x, y]) => x < 0 || y < 0 || x >= img.width || y >= img.height)) continue;
+      let score = 0;
+      for (let k = 0; k < 9; k++) {
+        const v = cubeLike(slotPoint(g, (k % 3) + 0.5, Math.floor(k / 3) + 0.5));
+        score += v === null ? 0 : v ? 1 : -0.5;
+      }
+      // 奥の辺（正面と反対側の辺）の向こう
+      for (let c = 0; c < 3; c++) if (cubeLike(slotPoint(g, ...BEYOND[slot](c + 0.5)))) score--;
+      // 同点なら直前のフレームの角度、なければ求めた姿勢に近い方。角度がフレームごとに揺れると、
+      // 予測した面のセルが動いて見え、手の回し終わりの判定が遅れる
+      score -= prev?.[slot] !== undefined ? Math.min(1, Math.abs(a - prev[slot]) * 4) : Math.abs(a) * 0.5;
+      if (!best || score > best.score) best = { H: pr.H, score, a };
+    }
+    if (!best || (hinge && best.score < 2.5)) continue;
+    chosen[slot] = best.a;
+    const face = { slot, rot: 0, H: best.H, found: 0, latticeIndex: -1, held: true } as PlacedFace;
     if (i >= 0) placed[i] = face;
     else placed.push(face);
   }
+  return chosen;
 }
 
 // 背景の格子模様（チェックのシャツ・キーボード・タイル）を面と取り違えないための確認。
@@ -208,7 +276,7 @@ interface FaceJudgement {
   centralBig: boolean;
 }
 
-function judgeFace(img: PixelSource, f: LatticeFace, refs: Lab[] | null, tl: TextureLevels): FaceJudgement {
+function judgeFace(img: PixelSource, fr: FrameRef, f: LatticeFace, refs: Lab[] | null, tl: TextureLevels): FaceJudgement {
   const cells = Array.from({ length: 9 }, (_, k) => pixelLab(img, applyH(f.H, (k % 3) + 0.5, Math.floor(k / 3) + 0.5)));
   // 隣り合うセルの境界（12 か所）を横切る短い線分で一番暗いところが、両側のセルより十分暗いか
   let dark = 0;
@@ -238,25 +306,25 @@ function judgeFace(img: PixelSource, f: LatticeFace, refs: Lab[] | null, tl: Tex
     refOk = match >= 5;
   }
   // セルの半分以上に細かい模様がある格子は、壁・木目・手に当てたもの（指で数セル隠れた面は残す）
-  const textured = Array.from({ length: 9 }, (_, k) => pixelTexture(img, applyH(f.H, (k % 3) + 0.5, Math.floor(k / 3) + 0.5))).filter((x) => x !== null && x > tl.textured).length;
+  const textured = Array.from({ length: 9 }, (_, k) => pixelTexture(img, applyH(f.H, (k % 3) + 0.5, Math.floor(k / 3) + 0.5), textureRadius(fr))).filter((x) => x !== null && x > tl.textured).length;
   if (textured >= 5) refOk = false;
   const strong = refOk && ((total > 0 && dark >= total * 0.5) || (colorful >= 2 && diverse > 28));
   // 一様な面（ステッカーレスの揃った面など。チェックのシャツも一様に見える）は、他に本物の面があるか、大きく画面の中央にあるときだけ
   const c = applyH(f.H, 1.5, 1.5);
-  const central = Math.abs(c[0] - img.width / 2) < img.width * 0.3 && Math.abs(c[1] - img.height / 2) < img.height * 0.35;
-  const big = faceArea(f.H) > (img.width * img.height) / 40;
+  const central = Math.abs(c[0] - fr.ox - fr.width / 2) < fr.width * 0.3 && Math.abs(c[1] - fr.oy - fr.height / 2) < fr.height * 0.35;
+  const big = faceArea(f.H) > (fr.width * fr.height) / 40;
   const weak = refOk && !strong && (bright >= 7 || colorful >= 7);
   (globalThis as { __cvDebug?: (m: unknown) => void }).__cvDebug?.({ dark, total, colorful, diverse: Math.round(diverse), bright, refOk, strong, weak, central, big });
   return { strong, weak, centralBig: central && big };
 }
 
 // strong: 先頭からいくつがキューブの面らしい（色の違うセル・黒い隙間がある）ものか。残りは一様な面
-function findCubeFaces(img: PixelSource, quads: Quad[], config: PipelineConfig, scorer: (p: Pt) => number, faceScorer: (H: Mat3) => number, refs: Lab[] | null, tl: TextureLevels): LatticeFace[] & { strong?: number } {
+function findCubeFaces(img: PixelSource, fr: FrameRef, quads: Quad[], config: PipelineConfig, scorer: (p: Pt) => number, faceScorer: (H: Mat3) => number, refs: Lab[] | null, tl: TextureLevels): LatticeFace[] & { strong?: number } {
   // 面の数に数えるのはキューブの面らしいものだけ。一様な格子は脇に置き、本物の面が見つかったか、
   // 大きく中央にあるときだけ足す（チェックのシャツの格子がいくつあっても、キューブの面の探索を邪魔しない）
   const aside: { f: LatticeFace; j: FaceJudgement }[] = [];
   const faces = findFaces(quads, config.lattice, scorer, faceScorer, (f) => {
-    const j = judgeFace(img, f, refs, tl);
+    const j = judgeFace(img, fr, f, refs, tl);
     if (!j.strong && j.weak) aside.push({ f, j });
     return j.strong;
   });
@@ -279,22 +347,25 @@ export function processFrame(
   if (config.mode === "guide" || !cv) {
     placed = [{ slot: 2, rot: 0, H: guideH(img.width, img.height, config.guideSize), found: 9, latticeIndex: 0 }];
   } else {
+    const fr: FrameRef = config.frame ?? { width: img.width, height: img.height, ox: 0, oy: 0 };
+    const quadOpts = { ...config.quads, refSize: { cols: fr.width, rows: fr.height } };
     const mat = cv.matFromImageData(img);
     let quads;
     try {
-      quads = findQuads(cv, mat, config.quads);
+      quads = findQuads(cv, mat, quadOpts);
     } finally {
       mat.delete();
     }
     quadsOut = quads.map((q) => q.corners);
-    const tl = textureLevels(img);
+    const tr = textureRadius(fr);
+    const tl = textureLevels(img, tr);
     const scorer = (p: Pt) => {
       const lab = pixelLab(img, p);
       if (!lab) return -1;
       const s = stickerScore(lab);
       if (s <= 0) return s;
       // 色はステッカーらしくても、細かい模様があれば壁・木目・手
-      const tex = pixelTexture(img, p);
+      const tex = pixelTexture(img, p, tr);
       return tex === null || tex < tl.smooth ? s : tex > tl.textured ? -0.4 : 0.1;
     };
     // 直前のフレームで見えていた面（ステッカーレスのブロック分割と、窓の位置の曖昧さの解消に使う）
@@ -311,24 +382,24 @@ export function processFrame(
           8
         : 0;
     };
-    let faces: LatticeFace[] & { strong?: number } = findCubeFaces(img, expandBlocks(quads, prevFaces.map((f) => f.H)), config, scorer, faceScorer, refs, tl);
-    if (!faces.length && cv) {
+    let faces: LatticeFace[] & { strong?: number } = findCubeFaces(img, fr, expandBlocks(quads, prevFaces.map((f) => f.H)), config, scorer, faceScorer, refs, tl);
+    if (!faces.length && cv && config.grooveRetry) {
       // 面が見つからない: ステッカーレスで同じ色がつながっている・丸いセルが溶け合って見えるとき。ピースの間の溝で
       // セルを区切った候補も加えてやり直す（見つかるフレームでは使わない。溝の候補は他の候補と混ざると格子を乱すことがある）
       // 溝の濃さは照明やキューブの大きさで変わるので、はっきりした溝 → 薄い溝の順に試す
       for (const th of [config.quads.grooveThreshold, config.quads.grooveThreshold * 0.6]) {
         const m2 = cv.matFromImageData(img);
         try {
-          quads = findQuads(cv, m2, { ...config.quads, grooves: true, grooveThreshold: th });
+          quads = findQuads(cv, m2, { ...quadOpts, grooves: true, grooveThreshold: th });
         } finally {
           m2.delete();
         }
         quadsOut = quads.map((q) => q.corners);
-        faces = findCubeFaces(img, expandBlocks(quads, prevFaces.map((f) => f.H)), config, scorer, faceScorer, refs, tl);
+        faces = findCubeFaces(img, fr, expandBlocks(quads, prevFaces.map((f) => f.H)), config, scorer, faceScorer, refs, tl);
         if (faces.length) break;
       }
     }
-    if (!faces.length) faces = uniformFaces(img, largeFaceCandidates(quads, img.width * img.height));
+    if (!faces.length) faces = uniformFaces(img, largeFaceCandidates(quads, fr.width * fr.height));
     if (faces.length) {
       // 前のフレームと同じ中心色の面をアンカーに（角から見たときに正面が入れ替わらないように）
       const keyOf = (H: Mat3) => {
@@ -372,6 +443,13 @@ export function processFrame(
         if (same.length && same[0].a > largest * 0.45) anchor = same[0].i;
       }
       placed = layoutFaces(faces, { anchor, anchorAngle: recent && t - recent.t < 300 ? recent.angle : undefined });
+      // 窓の位置が曖昧な面は、ずらした格子も読みの候補にする（指で 1 段隠れた面と、隣の面の段を取り違えない）
+      for (const p of config.altReadings ? placed : []) {
+        const g = faces[p.latticeIndex];
+        if (!g?.alts.length) continue;
+        const alt = [g.H, ...g.alts].filter((h) => h !== p.H).slice(0, MAX_ALTS);
+        if (alt.length) p.altH = alt;
+      }
       const a = placed[0];
       const key = keyOf(a.H);
       // 今回見つからなかった面は、正面の動きに合わせて直前の位置から運ぶ
@@ -393,8 +471,9 @@ export function processFrame(
           placed.push({ ...moved, held: true } as PlacedFace);
         }
       }
+      const prevHinge = memory.last && t - memory.last.t < HOLD_MS ? memory.last.hinge : undefined;
       memory.last = { t, angle: colAngle(a), centerKey: key, pitch: faces[a.latticeIndex].pitch, faces: kept };
-      if (config.predictFaces) predictNeighbours(placed, img, faces[a.latticeIndex].pitch);
+      if (config.predictFaces) memory.last.hinge = predictNeighbours(placed, img, fr, faces[a.latticeIndex].pitch, refs, hands, config.minFacing, config.hingeSearch, prevHinge);
     } else if (memory.last && t - memory.last.t < HOLD_MS && memory.last.faces.length) {
       // 何も見つからない: ごく短時間だけ直前の面を使う（下で色がステッカーらしいか確かめる）
       placed = memory.last.faces.map((f) => ({ ...f, held: true }) as PlacedFace);
@@ -427,6 +506,14 @@ export function processFrame(
       masked: new Array(9).fill(false),
     };
     maskHands(face, hands);
+    if (p.altH && !held) {
+      face.alts = p.altH.map((H) => {
+        const ss = sampleFace(img, { H, rot: p.rot }, config.region);
+        const a: DetectedFace = { ...face, H, labs: ss.map((x) => x.lab), valid: ss.map((x) => x.valid && x.spread < config.maxSpread), masked: new Array(9).fill(false) };
+        maskHands(a, hands);
+        return { labs: a.labs, valid: a.valid };
+      });
+    }
     out.push(face);
   }
   if (out.length && out[0].slot !== 2) return { faces: [], quads: quadsOut };
