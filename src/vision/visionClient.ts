@@ -1,11 +1,12 @@
 // 認識 Worker のクライアント。空いているときだけ最新フレームを送る（詰まったら間引く）。
 import type { EngineOptions, TrackUpdate } from "../track/engine";
+import type { DecodedMove } from "../track/types";
 import type { Lab } from "./color";
 import type { Pt } from "./homography";
 import type { PipelineConfig } from "./pipeline";
-import type { FrameMessage, FromWorker, ToWorker } from "./protocol";
+import type { FrameMessage, FromWorker, StreamPartial, ToWorker } from "./protocol";
 import type { Recording } from "./recorder";
-import type { RefineInput, RefineResult } from "./refine";
+import type { HandSample, RefineInput, RefineResult } from "./refine";
 
 export class VisionClient {
   private worker: Worker;
@@ -124,6 +125,11 @@ export class VisionClient {
     this.post({ type: "track-stop" });
   }
 
+  // 精密解析が解き直した結果に乗り換える（t より後の観測は Worker の中でもう一度通す）
+  rebase(state: ArrayLike<number>, orient: number, moves: DecodedMove[], t: number, keep: number): void {
+    this.post({ type: "track-rebase", state: Array.from(state), orient, moves, t, keep });
+  }
+
   // 観測を待たずに、今の追跡結果（各手の時刻はその時点までのフレームから）をもらう
   query(): Promise<TrackUpdate | null> {
     const id = this.nextId++;
@@ -155,6 +161,7 @@ export class RefineClient {
         const m = e.data;
         if (m.type === "ready") resolve(m.opencv);
         else if (m.type === "refine-progress") this.jobs.get(m.id)?.progress?.(m.done / Math.max(1, m.total));
+        else if (m.type === "stream-partial") this.partialListeners.get(m.id)?.(m.partial);
         else if (m.type === "refine-result") this.settle(m.id, (j) => j.resolve(m.result));
         else if (m.type === "refine-error") this.settle(m.id, (j) => j.reject(new Error(m.message)));
         else if (m.type === "error") for (const id of [...this.jobs.keys()]) this.settle(id, (j) => j.reject(new Error(m.message)));
@@ -189,6 +196,44 @@ export class RefineClient {
       this.jobs.set(id, { resolve, reject, progress });
       this.worker!.postMessage({ type: "refine", id, recording, input } satisfies ToWorker);
     });
+  }
+
+  // ---- ソルブ中から進める解析 ----
+
+  private partialListeners = new Map<number, (p: StreamPartial) => void>();
+
+  // 解析を始める（録画の増えた分は feed で渡す）。onPartial に途中結果が届く
+  async startStream(onPartial: (p: StreamPartial) => void): Promise<number | null> {
+    clearTimeout(this.idleTimer);
+    const opencv = await this.ensure();
+    if (!opencv || !this.worker) return null;
+    const id = this.nextId++;
+    this.partialListeners.set(id, onPartial);
+    return id;
+  }
+
+  feed(id: number, recording: Recording, hands: HandSample[], input?: RefineInput): void {
+    this.worker?.postMessage({ type: "stream-feed", id, input, recording, hands } satisfies ToWorker);
+  }
+
+  // 終わりの時刻と状態（完成なら solved）を渡し、全体の結果をもらう
+  endStream(id: number, to: number, target: ArrayLike<number> | null, progress?: (p: number) => void): Promise<RefineResult> {
+    this.partialListeners.delete(id);
+    return new Promise((resolve, reject) => {
+      if (!this.worker) return reject(new Error("解析の Worker がありません"));
+      this.jobs.set(id, { resolve, reject, progress });
+      this.worker.postMessage({ type: "stream-end", id, to, target: target ? Array.from(target) : null } satisfies ToWorker);
+    });
+  }
+
+  // フリーで完成した: 時刻 t までを、終わりを target として前後から解き直させる（結果は途中結果として届く）
+  anchorStream(id: number, t: number, target: ArrayLike<number>): void {
+    this.worker?.postMessage({ type: "stream-anchor", id, t, target: Array.from(target) } satisfies ToWorker);
+  }
+
+  cancelStream(id: number): void {
+    this.partialListeners.delete(id);
+    this.worker?.postMessage({ type: "stream-cancel", id } satisfies ToWorker);
   }
 
   close(): void {

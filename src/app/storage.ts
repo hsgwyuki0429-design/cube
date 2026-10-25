@@ -1,4 +1,5 @@
 // キャリブレーション（キューブの6色）とソルブ履歴の保存（localStorage）
+import { moveIndex } from "../cube/model";
 import type { Lab } from "../vision/color";
 
 export interface Calibration {
@@ -65,6 +66,30 @@ export const clearCalibration = () => {
 // 解析中に閉じたソルブは録画が残っていないので、速報値のまま
 export const loadSolves = () => read<Solve[]>(SOLVES_KEY, []).map((s) => (s.analysis === "pending" ? { ...s, analysis: "failed" as const } : s));
 export const saveSolves = (s: Solve[]) => write(SOLVES_KEY, s);
+
+// 自分のソルブの手順（解析で確定したもの・見えていた手だけ）。追跡の「手順の知識」に加える（その人の癖のある手順を覚える）
+export function personalSequences(solves: Solve[], n = 30): number[][] {
+  const out: number[][] = [];
+  for (const s of solves) {
+    if (s.analysis !== "done" || !s.moves.length) continue;
+    const seq: number[] = [];
+    for (const m of s.moves) {
+      if (m.inferred) {
+        if (seq.length >= 4) out.push(seq.splice(0));
+        else seq.length = 0;
+        continue;
+      }
+      try {
+        seq.push(moveIndex(m.m));
+      } catch {
+        seq.length = 0;
+      }
+    }
+    if (seq.length >= 4) out.push(seq);
+    if (out.length >= n) break;
+  }
+  return out;
+}
 
 export const effectiveTime = (s: Solve) => (s.penalty === "DNF" ? Infinity : s.timeMs + (s.penalty === "+2" ? 2000 : 0));
 

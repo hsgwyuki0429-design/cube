@@ -7,11 +7,12 @@ import type { EngineOptions, TrackUpdate } from "../track/engine";
 import { type CameraInfo, CameraSource, cameraErrorMessage, listCameras } from "../vision/camera";
 import { type Lab, NAMED_COLORS, labToRgb, rgbCss } from "../vision/color";
 import { HandsClient } from "../vision/handsClient";
-import type { FrameMessage } from "../vision/protocol";
+import type { FrameMessage, StreamPartial } from "../vision/protocol";
+import type { RefineInput, RefineResult } from "../vision/refine";
 import { FrameRecorder } from "../vision/recorder";
 import { RefineClient, VisionClient } from "../vision/visionClient";
 import { type Settings, settingsStore } from "./settings";
-import { type Calibration, loadCalibration, saveCalibration } from "./storage";
+import { type Calibration, loadCalibration, loadSolves, personalSequences, saveCalibration } from "./storage";
 import { createStore } from "./store";
 
 export type Screen = "main" | "history" | "settings" | "help";
@@ -54,6 +55,8 @@ export interface AppState {
   track: TrackUpdate | null;
   baseMoves: number; // 「手順をクリア」した位置
   stats: { camFps: number; procFps: number; procMs: number; faces: number };
+  // ソルブ中から進めている精密解析（録画からの遅れ。null = 動いていない）
+  analysis: { behindMs: number; frames: number } | null;
   calibration: Calibration | null;
   toast: string | null;
 }
@@ -81,6 +84,7 @@ class Controller {
     track: null,
     baseMoves: 0,
     stats: { camFps: 0, procFps: 0, procMs: 0, faces: 0 },
+    analysis: null,
     calibration: loadCalibration(),
     toast: null,
   });
@@ -100,6 +104,7 @@ class Controller {
   private preScanTrack: TrackUpdate | null = null;
   private stalled = 0;
   private lastRetry = -Infinity;
+  private session: AnalysisSession | null = null;
 
   init(): void {
     if (this.vision) return;
@@ -153,6 +158,7 @@ class Controller {
       decoder: { beamWidth: s.beamWidth, maxMovesPerStep: s.maxMovesPerStep, rotationCost: s.rotationCost },
       observer: { stableMs: s.stableMs },
       colors: { maxDistance: s.maxColorDistance },
+      personal: personalSequences(loadSolves()),
     };
   }
 
@@ -212,6 +218,7 @@ class Controller {
   }
 
   stopCamera(): void {
+    this.cancelAnalysis();
     this.camera.stop();
     this.store.set({ camera: "off" });
   }
@@ -248,6 +255,7 @@ class Controller {
 
   beginScan(): void {
     this.init();
+    this.cancelAnalysis();
     this.preScanTrack = this.store.get().track;
     this.vision?.stopTracking();
     this.vision?.setRefs(null);
@@ -359,7 +367,106 @@ class Controller {
   }
 
   private restartTracking(state: number[], refs: Lab[]): void {
-    this.vision?.startTracking(state, refs, this.engineOptions());
+    // 精密解析の途中結果に乗り換えるとき、その後の観測を通し直すので残しておく（1 分ほど）
+    this.vision?.startTracking(state, refs, { ...this.engineOptions(), keepObservations: true, maxObservations: 2000 });
+    // 追跡を始めたら、精密解析も最初から進めてリアルタイムの追跡に反映する
+    void this.startAnalysis({ state, refs, keep: 0, timed: false });
+  }
+
+  // ---- ソルブ中から進める精密解析 ----
+  //
+  // 録画を少しずつ解析用の Worker に渡し、リアルタイムより重い設定（全体の画像・溝の候補・窓の別の読み・手順の知識）で
+  // 1 フレームずつ解き直す。途中結果が届くたびに、リアルタイムの追跡をそれに乗り換える（その後の観測は通し直す）。
+  // タイマーでは止めたときに残りを解析して、タイムと手順を確定する（止めてから解析を始めるより早く終わる）。
+  // フリーでは遅れたらフレームを間引いて追いつく。タイマーは間引かない（タイムの正確さのため）
+
+  // timed: タイマーの計測（止めたときに結果を使う）。keep: いまの追跡の手のうち、解析の前からある手の数
+  async startAnalysis(opts: { state: ArrayLike<number>; refs?: Lab[]; keep: number; timed: boolean }): Promise<boolean> {
+    this.cancelAnalysis();
+    const s = settingsStore.get();
+    const refs = opts.refs ?? this.store.get().track?.refs ?? this.store.get().cube?.refs;
+    if (!s.analyzeSolves || !refs || this.store.get().camera !== "on" || !FrameRecorder.available()) return false;
+    this.recorder.clear();
+    const session: AnalysisSession = { id: -1, keep: opts.keep, timed: opts.timed, timer: 0, handT: -Infinity, started: false, from: performance.now(), input: null as unknown as RefineInput };
+    this.session = session;
+    if (!(await this.recorder.start(this.camera.video, s.workWidth, opts.timed ? 150000 : 20000)) || this.session !== session) {
+      if (this.session === session) this.session = null;
+      return false;
+    }
+    session.from = performance.now();
+    session.input = {
+      state: Array.from(opts.state),
+      refs,
+      from: session.from,
+      to: Infinity,
+      engine: this.engineOptions(),
+      pipeline: { mode: s.detection },
+      ...(opts.timed ? {} : { keepPatchesMs: 3000 }),
+    };
+    const id = await this.refiner.startStream((p) => this.onAnalysisPartial(session, p));
+    if (id === null || this.session !== session) {
+      if (this.session === session) this.session = null;
+      return false;
+    }
+    session.id = id;
+    session.timer = window.setInterval(() => this.feedAnalysis(session), 250);
+    return true;
+  }
+
+  private feedAnalysis(session: AnalysisSession, untilMs = Infinity): void {
+    const rec = this.recorder.takeNew(untilMs);
+    if (!rec || session.id < 0) return;
+    const now = performance.now();
+    const hands = this.hands.historyBetween(session.handT, Math.min(now, untilMs)).filter((h) => h.t > session.handT && h.t <= untilMs);
+    if (hands.length) session.handT = hands[hands.length - 1].t;
+    if (!rec.chunks.length && !hands.length) return;
+    this.refiner.feed(session.id, rec, hands, session.started ? undefined : session.input);
+    session.started = true;
+  }
+
+  private onAnalysisPartial(session: AnalysisSession, p: StreamPartial): void {
+    if (this.session !== session) return;
+    this.store.set({ analysis: { behindMs: p.behindMs, frames: p.frames } });
+    // 解析が辻褄の合う読みをしていて、遅れが小さいうちだけ乗り換える（大きく遅れていると通し直す観測が多すぎる）。
+    // 完成の区切りまでを解き直した結果は、遅れていても使う（終わりが分かっているので正確）
+    if (p.status !== "tracking" || p.behindMs > (p.anchored ? 30000 : 6000) || this.store.get().scan) return;
+    this.vision?.rebase(p.state, p.orient, p.moves, p.t, session.keep);
+    // フリーで長く続けたら、いまの追跡の続きから解析を始め直す（解析の記録が増え続けないように）
+    if (!session.timed && !session.restarting && performance.now() - session.from > 60000 && p.behindMs < 3000) {
+      session.restarting = true;
+      window.setTimeout(() => this.session === session && this.restartFreeAnalysis(), 300);
+    }
+  }
+
+  // タイマーを止めた: to までの録画を渡し切り、終わりの状態（完成）で解き直した結果を待つ Promise を返す
+  async endAnalysis(to: number, target: ArrayLike<number> | null, progress?: (p: number) => void): Promise<Promise<RefineResult> | null> {
+    const session = this.session;
+    if (!session || session.id < 0 || !session.timed) return null;
+    clearInterval(session.timer);
+    this.session = null;
+    this.store.set({ analysis: null });
+    await this.recorder.finish();
+    this.feedAnalysis(session, to);
+    this.recorder.stop();
+    return this.refiner.endStream(session.id, to, target, progress);
+  }
+
+  cancelAnalysis(): void {
+    const session = this.session;
+    if (!session) return;
+    clearInterval(session.timer);
+    if (session.id >= 0) this.refiner.cancelStream(session.id);
+    this.session = null;
+    this.recorder.clear();
+    this.store.set({ analysis: null });
+  }
+
+  // いまの追跡の続きから、フリーの解析を始め直す（タイマーの計測が終わった後など）
+  restartFreeAnalysis(): void {
+    const track = this.store.get().track;
+    const cube = this.store.get().cube;
+    if (!cube) return;
+    void this.startAnalysis({ state: track?.state ?? cube.state, refs: track?.refs ?? cube.refs, keep: track?.moves.length ?? 0, timed: false });
   }
 
   // キューブを完成させた（見失った後など）: 完成状態からやり直す
@@ -373,19 +480,27 @@ class Controller {
     this.toast("完成状態から追跡し直します");
   }
 
-  // タイマー用の録画を始める（インスペクション中は直近の数秒だけ残す）
-  async startRecording(keepMs = 4000): Promise<boolean> {
-    if (!settingsStore.get().analyzeSolves || this.store.get().camera !== "on") return false;
-    this.recorder.clear();
-    return this.recorder.start(this.camera.video, settingsStore.get().workWidth, keepMs);
-  }
-
   clearMoves(): void {
     this.store.set({ baseMoves: this.store.get().track?.moves.length ?? 0 });
   }
 
+  // フリーで完成した: 精密解析にそこまでを前後から解き直させる（完成が終わりと分かっているので正確に直せる）
+  private lastAnchorMoves = -1;
+  private solvedRun = 0;
+  private checkAnchor(m: FrameMessage): void {
+    const session = this.session;
+    const track = m.track ?? this.store.get().track;
+    if (!session || session.timed || session.id < 0 || !track) return;
+    const solvedNow = (m.track ? m.track.solved && m.track.status === "tracking" : false) || !!m.looksSolved;
+    this.solvedRun = solvedNow ? this.solvedRun + 1 : 0;
+    if (this.solvedRun < 3 || track.moves.length === this.lastAnchorMoves || track.moves.length <= session.keep) return;
+    this.lastAnchorMoves = track.moves.length;
+    this.refiner.anchorStream(session.id, m.t, solvedState());
+  }
+
   private onFrame(m: FrameMessage): void {
     this.latestFrame = m;
+    this.checkAnchor(m);
     for (const l of this.frameListeners) l(m);
     if (this.store.get().scan) this.onScanFrame(m);
     if (m.track) {
@@ -415,6 +530,18 @@ class Controller {
   dispose(): void {
     clearInterval(this.statsTimer);
   }
+}
+
+interface AnalysisSession {
+  id: number; // 解析 Worker の中の番号（始まるまで -1）
+  keep: number;
+  timed: boolean;
+  timer: number;
+  handT: number; // 渡し済みの手の検出の最後の時刻
+  started: boolean;
+  restarting?: boolean;
+  from: number;
+  input: RefineInput;
 }
 
 export const controller = new Controller();

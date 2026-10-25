@@ -89,3 +89,30 @@ export function scrambled(rnd: () => number, n = 25): CubeState {
   }
   return s;
 }
+
+// 実際のソルブらしい手順: クロス（ランダムな数手）→ F2L の挿入 4 回 → OLL → PLL。手順の間に U の調整、持ち方はランダム
+export function solveLikeSequence(rnd: () => number, lib: { f2l: number[][]; oll: number[][]; pll: number[][] }, cross = 6): number[] {
+  const seq: number[] = [];
+  for (let i = 0; i < cross; i++) seq.push(randomMove(rnd, seq[seq.length - 1], ALL_MOVES));
+  const pick = (a: number[][]) => a[Math.floor(rnd() * a.length)];
+  // 持ち方（y の回転）: 手順の面の名前を写す。U と D はそのまま、R F L B を回す
+  const yMap = (k: number) => (m: number) => {
+    const f = Math.floor(m / 3);
+    const side = [1, 2, 4, 5];
+    const j = side.indexOf(f);
+    return (j < 0 ? f : side[(j + k) % 4]) * 3 + (m % 3);
+  };
+  const auf = () => {
+    const r = Math.floor(rnd() * 4);
+    if (r) seq.push(r - 1); // U U2 U'
+  };
+  for (let i = 0; i < 4; i++) {
+    auf();
+    seq.push(...pick(lib.f2l).map(yMap(Math.floor(rnd() * 4))));
+  }
+  auf();
+  seq.push(...pick(lib.oll).map(yMap(Math.floor(rnd() * 4))));
+  auf();
+  seq.push(...pick(lib.pll).map(yMap(Math.floor(rnd() * 4))));
+  return seq;
+}

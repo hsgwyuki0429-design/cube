@@ -12,6 +12,7 @@ import { type Lab, NAMED_COLORS } from "../../src/vision/color";
 import { DEFAULT_PIPELINE, type PipelineMemory, processFrame } from "../../src/vision/pipeline";
 import { initOpenCv } from "../../src/vision/quads";
 import { processTracked } from "../../src/vision/roi";
+import { StillSkipper } from "../../src/vision/motion";
 import { simplifyMoves } from "../../src/track/merge";
 import { Refiner } from "../../src/vision/refine";
 
@@ -105,16 +106,21 @@ it("real video", async () => {
   const target = process.env.TARGET === "none" ? null : fromMoves(process.env.TARGET_MOVES);
   const truth = process.env.TRUTH;
   const live = new TrackerEngine(start, refs, { keepObservations: true, ...JSON.parse(process.env.ENGINE ?? "{}") } as never);
-  const refiner = new Refiner(cv, { state: Array.from(start), refs, from: 0, to: Infinity, pipeline: JSON.parse(process.env.RPIPE ?? "{}") });
+  const refiner = new Refiner(cv, { state: Array.from(start), refs, from: 0, to: Infinity, pipeline: JSON.parse(process.env.RPIPE ?? "{}"), tracked: process.env.RTRACKED === "1" });
   const mem2: { last: PipelineMemory | null } = { last: null };
   let n = 0;
   let detected = 0;
   const procMs: number[] = [];
+  const still = new StillSkipper();
   let last: TrackUpdate | null = null;
   const t0 = performance.now();
   await frames((data, w, h, t) => {
     const img = { data, width: w, height: h };
-    if (process.env.REFINE !== "0") refiner.push(img, t);
+    if (process.env.REFINE !== "0" && n % Number(process.env.RSKIP ?? 1) === 0) {
+      // RSTILL=1: アプリと同じく、止まっているフレームを飛ばす
+      if (process.env.RSTILL === "1") for (const f of still.next(img, t)) refiner.push(f.img, f.t);
+      else refiner.push(img, t);
+    }
     if (n++ % every || process.env.LIVE === "0") return;
     const pcfg = { ...DEFAULT_PIPELINE, ...JSON.parse(process.env.PIPE ?? "{}") };
     const tp0 = performance.now();
@@ -153,6 +159,7 @@ it("real video", async () => {
     process.stdout.write(`frames ${n} live: detected ${detected}/${Math.ceil(n / every)} status ${live.decoder.status} reached ${target ? statesEqual(live.decoder.best().state, target) : "-"}\n  live: ${simplifyMoves(live.decoder.bestMoves()).map((m) => MOVE_NAMES[m.move] + (m.inferred ? "?" : "") + (process.env.TIMES ? `@${Math.round(m.t)}` : "")).join(" ")}\n${truth ? `  truth: ${truth}\n` : ""}`);
     return;
   }
+  if (process.env.RSTILL === "1") process.stdout.write(`still: skipped ${still.skipped} of ${n} frames\n`);
   const res = refiner.result(target);
   const endState = applyMoves(start, res.moves.map((m) => m.move));
   const names = (ms: { move: number; inferred?: boolean }[]) => ms.map((m) => MOVE_NAMES[m.move] + (m.inferred ? "?" : "")).join(" ");

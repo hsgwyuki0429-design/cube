@@ -16,7 +16,7 @@ export interface Settings {
   debug: boolean;
   inspection: boolean;
   sound: boolean;
-  analyzeSolves: boolean; // ソルブ中を録画し、後で全フレームを解析して時間と手順を確定する
+  analyzeSolves: boolean; // 録画を追跡の開始から精密解析し、追跡に反映する（タイマーでは止めたときにタイムと手順を確定する）
   workWidth: number;
   beamWidth: number;
   maxMovesPerStep: number;

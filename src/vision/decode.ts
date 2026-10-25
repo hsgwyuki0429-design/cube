@@ -61,3 +61,93 @@ export async function decodeRecording(rec: Recording, onFrame: (img: ImageData, 
   if (error) throw error;
   return count;
 }
+
+// 録画を少しずつ受け取って復号する（ソルブ中から解析を進めるとき）。push は順番に処理する
+export class StreamDecoder {
+  private canvas: OffscreenCanvas;
+  private ctx: OffscreenCanvasRenderingContext2D;
+  private decoder: VideoDecoder;
+  private pending: VideoFrame[] = [];
+  private error: unknown = null;
+  private wake: (() => void) | null = null;
+  private work: Promise<void> = Promise.resolve();
+  frames = 0;
+
+  constructor(
+    config: VideoDecoderConfig,
+    private width: number,
+    private height: number,
+    private onFrame: (img: ImageData, t: number) => void,
+  ) {
+    this.canvas = new OffscreenCanvas(width, height);
+    const ctx = this.canvas.getContext("2d", { willReadFrequently: true });
+    if (!ctx) throw new Error("2D canvas を使えません");
+    this.ctx = ctx;
+    this.decoder = new VideoDecoder({
+      output: (frame) => {
+        this.pending.push(frame);
+        this.wake?.();
+      },
+      error: (e) => {
+        this.error = e;
+        this.wake?.();
+      },
+    });
+    this.decoder.configure(config);
+  }
+
+  private drain(): void {
+    while (this.pending.length) {
+      const f = this.pending.shift()!;
+      const t = f.timestamp / 1000;
+      try {
+        this.ctx.drawImage(f, 0, 0, this.width, this.height);
+      } finally {
+        f.close();
+      }
+      this.onFrame(this.ctx.getImageData(0, 0, this.width, this.height), t);
+      this.frames++;
+    }
+  }
+
+  private waitOutput(): Promise<void> {
+    return new Promise((resolve) => {
+      this.wake = () => {
+        this.wake = null;
+        resolve();
+      };
+      setTimeout(() => this.wake?.(), 30);
+    });
+  }
+
+  push(chunks: { type: "key" | "delta"; timestamp: number; duration: number; data: ArrayBuffer }[]): Promise<void> {
+    this.work = this.work.then(async () => {
+      for (const c of chunks) {
+        if (this.error) throw this.error;
+        this.decoder.decode(new EncodedVideoChunk({ type: c.type, timestamp: c.timestamp, duration: c.duration || undefined, data: c.data }));
+        this.drain();
+        while (this.decoder.decodeQueueSize > 2 && !this.error) {
+          await this.waitOutput();
+          this.drain();
+        }
+      }
+      this.drain();
+    });
+    return this.work;
+  }
+
+  // 受け取った分をすべて復号し終えるまで待つ
+  flush(): Promise<void> {
+    this.work = this.work.then(async () => {
+      if (this.decoder.state === "configured") await this.decoder.flush();
+      this.drain();
+    });
+    return this.work;
+  }
+
+  close(): void {
+    for (const f of this.pending) f.close();
+    this.pending = [];
+    if (this.decoder.state !== "closed") this.decoder.close();
+  }
+}

@@ -13,6 +13,7 @@
 // 参考: AllefDouglasDev/rubik-cube (MIT) の app/src/tracking/decoder.ts のビームサーチを基に、
 // 姿勢（24通り）を仮説に含め、ソフトな色コスト・下限による刈り込み・見失い検出と復帰を加えたもの。
 import { MOVE_SRC, NUM_MOVES, NUM_ORIENTATIONS, OPPOSITE, VIEW, type CubeState, cubeFaceAt, moveFace, statesEqual } from "../cube/model";
+import { type MovePrior, EMPTY_CONTEXT, movePrior, shiftContext } from "./prior";
 import type { DecodedMove, Observation, TrackStatus } from "./types";
 
 export interface DecoderOptions {
@@ -29,6 +30,8 @@ export interface DecoderOptions {
   recoveryDepth: number;
   // 2 手までで観測がこれ以下のコストで説明できたら、それ以上深く探さない（速さのため。説明できないときだけ深く）
   deepenAbove: number;
+  // 手順の知識（prior.ts）の効き具合。直前の数手に続く手が知っている手順の並びでなければ、その手のコストを上乗せする（0 で使わない）
+  priorWeight: number;
 }
 
 export const DEFAULT_DECODER: DecoderOptions = {
@@ -41,6 +44,7 @@ export const DEFAULT_DECODER: DecoderOptions = {
   lostAfter: 3,
   recoveryDepth: 4,
   deepenAbove: 0.75,
+  priorWeight: 1,
 };
 
 interface MoveNode {
@@ -217,10 +221,12 @@ export class MoveDecoder {
   costOffset = 0;
   private lastBase = 0;
   private lastGoodOffset = 0;
+  prior: MovePrior | null;
 
   // orients を省略すると 24 姿勢すべてから始める（最初の観測で決まる）
   constructor(start: CubeState, options: Partial<DecoderOptions> = {}, orients?: number[]) {
     this.options = { ...DEFAULT_DECODER, ...options };
+    this.prior = this.options.priorWeight > 0 ? movePrior() : null;
     const os = orients ?? Array.from({ length: NUM_ORIENTATIONS }, (_, i) => i);
     this.beam = os.map((orient) => ({ state: new Uint8Array(start), orient, cost: 0, obsCost: 0, tail: null }));
     this.lastGoodBeam = this.beam;
@@ -262,6 +268,31 @@ export class MoveDecoder {
     const tree = sequenceTree(depth);
     const nodes = tree.move.length;
     const states = Array.from({ length: nodes }, () => new Uint8Array(54));
+    // 手順の木の各節点までの手のコスト（手順の知識で上乗せ）と、その時点の直前 3 手
+    const prior = this.options.priorWeight > 0 ? this.prior : null;
+    const pw = this.options.priorWeight;
+    const minMove = moveCost; // 1 手のコストの下限（刈り込み用。上乗せは 0 以上）
+    const pathCost = new Float32Array(nodes);
+    const context = new Int32Array(nodes);
+    const fillLevel = (h: Hypothesis, d: number) => {
+      const from = tree.levelStart[d];
+      const to = tree.levelStart[d + 1];
+      if (d === 0) {
+        let ctx = EMPTY_CONTEXT;
+        const recent: number[] = [];
+        for (let n = h.tail; n && recent.length < 3; n = n.prev) recent.push(n.move);
+        for (let k = recent.length - 1; k >= 0; k--) ctx = shiftContext(ctx, recent[k]);
+        pathCost[0] = 0;
+        context[0] = ctx;
+        return;
+      }
+      for (let node = from; node < to; node++) {
+        const p = tree.parent[node];
+        const m = tree.move[node];
+        pathCost[node] = pathCost[p] + moveCost + (prior ? pw * prior.penalty(context[p], m) : 0);
+        context[node] = shiftContext(context[p], m);
+      }
+    };
     const top = new TopK(beamWidth);
 
     interface Cand {
@@ -280,6 +311,7 @@ export class MoveDecoder {
     const evalLevel = (h: Hypothesis, hi: number, d: number) => {
       const os = orients.includes(h.orient) ? orients : [...orients, h.orient];
       const prevLen = h.tail?.len ?? 0;
+      fillLevel(h, d);
       const from = tree.levelStart[d];
       const to = tree.levelStart[d + 1];
       for (let node = from; node < to; node++) {
@@ -292,7 +324,7 @@ export class MoveDecoder {
         }
         let hash: [number, number] | null = null;
         for (const o of os) {
-          const base = h.cost + d * moveCost + (o === h.orient ? 0 : rotationCost);
+          const base = h.cost + pathCost[node] + (o === h.orient ? 0 : rotationCost);
           if (base >= top.threshold) continue;
           const obsCost = evalCost(dst, getCompiled(o));
           evaluated++;
@@ -318,8 +350,9 @@ export class MoveDecoder {
     for (const c of best.values()) if (c.obsCost < bestShallowObs) bestShallowObs = c.obsCost;
     const deepen = depth > shallow && bestShallowObs > this.options.deepenAbove;
     for (const { h, i } of deepen ? order : []) {
-      if (depth <= shallow || h.cost + (shallow + 1) * moveCost >= top.threshold) continue;
+      if (depth <= shallow || h.cost + (shallow + 1) * minMove >= top.threshold) continue;
       for (let d = 0; d <= shallow; d++) {
+        fillLevel(h, d);
         // 深さ 2 までの状態を作り直す（評価は済んでいるので状態だけ）
         const from = tree.levelStart[d];
         const to = tree.levelStart[d + 1];
@@ -334,7 +367,7 @@ export class MoveDecoder {
         }
       }
       for (let d = shallow + 1; d <= depth; d++) {
-        if (h.cost + d * moveCost >= top.threshold) break;
+        if (h.cost + d * minMove >= top.threshold) break;
         evalLevel(h, i, d);
       }
     }
@@ -470,6 +503,18 @@ export class MoveDecoder {
   reset(state: CubeState, orients?: number[]): void {
     const os = orients ?? Array.from({ length: NUM_ORIENTATIONS }, (_, i) => i);
     this.beam = os.map((orient) => ({ state: new Uint8Array(state), orient, cost: 0, obsCost: 0, tail: null }));
+    this.lastGoodBeam = this.beam;
+    this.uncertainStreak = 0;
+    this.status = "tracking";
+  }
+
+  // 別の経路（精密解析）が決めた状態・姿勢・手順に乗り換える。prefix がそれまでの手順になる
+  rebase(state: CubeState, orient: number, prefix: DecodedMove[]): void {
+    let tail = null as MoveNode | null;
+    prefix.forEach((m, i) => {
+      tail = { move: m.move, t0: m.t0 ?? m.t, t: m.t, orient: m.orient, inferred: !!m.inferred, prev: tail, len: i + 1 };
+    });
+    this.beam = [{ state: new Uint8Array(state), orient, cost: 0, obsCost: 0, tail }];
     this.lastGoodBeam = this.beam;
     this.uncertainStreak = 0;
     this.status = "tracking";

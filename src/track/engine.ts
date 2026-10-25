@@ -4,6 +4,7 @@ import { type CubeState, isSolved, VIEW } from "../cube/model";
 import type { Lab } from "../vision/color";
 import { ColorModel, type ColorModelOptions } from "./colorModel";
 import { type DecoderOptions, MoveDecoder } from "./decoder";
+import { movePrior } from "./prior";
 import { FaceObserver, type FrameReading, type ObserverOptions } from "./observer";
 import { DEFAULT_TIMING, type LoggedFrame, type MoveTiming, moveTiming } from "./timing";
 import type { DecodedMove, Observation, TrackStatus } from "./types";
@@ -14,6 +15,8 @@ export interface EngineOptions {
   colors: Partial<ColorModelOptions>;
   logMs: number; // 手の正確な時刻を求めるために残すフレームの記録（ms。Infinity で全部）
   keepObservations?: boolean; // 観測をすべて残す（ソルブ後の再構成で、前後両方向から解き直すため）
+  maxObservations?: number; // 残す観測の数の上限（リアルタイムの追跡で、精密解析への乗り換えに使う分だけ）
+  personal?: number[][]; // 自分のソルブの手順（手順の知識に加える）
 }
 
 export interface TrackUpdate {
@@ -47,13 +50,17 @@ export class TrackerEngine {
     this.decoder = new MoveDecoder(start, options.decoder, orients);
     this.logMs = options.logMs ?? 12000;
     this.keepObservations = !!options.keepObservations;
+    this.maxObservations = options.maxObservations ?? Infinity;
+    if (options.personal?.length && this.decoder.prior) this.decoder.prior = movePrior(options.personal);
   }
+  private maxObservations: number;
 
   setOptions(options: Partial<EngineOptions>): void {
     if (options.decoder) this.decoder.setOptions(options.decoder);
     if (options.observer) Object.assign(this.observer.options, options.observer);
     if (options.colors) Object.assign(this.colors.options, options.colors);
     if (options.logMs !== undefined) this.logMs = options.logMs;
+    if (options.personal && this.decoder.options.priorWeight > 0) this.decoder.prior = movePrior(options.personal);
   }
 
   reset(state: CubeState, orients?: number[]): void {
@@ -61,12 +68,31 @@ export class TrackerEngine {
     this.observer.reset();
   }
 
+  // 精密解析（別の Worker）が時刻 t までを解き直した結果に乗り換え、t より後の観測をもう一度通す。
+  // keep: 解析を始めたときにすでにあった手の数（その手は残し、後ろに解析の手順をつなぐ）
+  rebase(state: CubeState, orient: number, moves: DecodedMove[], t: number, keep: number): TrackUpdate {
+    const prefix = [...this.decoder.bestMoves().slice(0, keep), ...moves];
+    this.decoder.rebase(state, orient, prefix);
+    let first = this.observationLog.findIndex((o) => o.t > t);
+    if (first < 0) first = this.observationLog.length;
+    this.observationLog.splice(0, first);
+    let last: Observation | undefined;
+    for (const o of this.observationLog) {
+      this.decoder.observe(o);
+      last = o;
+    }
+    return this.snapshot(last);
+  }
+
   push(frame: FrameReading): TrackUpdate | null {
     this.frames.push({ t: frame.t, faces: frame.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, spread: f.spread, masked: f.masked })) });
     while (this.frames.length && frame.t - this.frames[0].t > this.logMs) this.frames.shift();
     const obs = this.observer.push(frame);
     if (!obs) return null;
-    if (this.keepObservations) this.observationLog.push(obs);
+    if (this.keepObservations) {
+      this.observationLog.push(obs);
+      if (this.observationLog.length > this.maxObservations) this.observationLog.splice(0, this.observationLog.length - this.maxObservations);
+    }
     return this.observe(obs, frame);
   }
 
