@@ -11,6 +11,7 @@ import type { FrameMessage, StreamPartial } from "../vision/protocol";
 import type { RefineInput, RefineResult } from "../vision/refine";
 import { FrameRecorder } from "../vision/recorder";
 import { RefineClient, VisionClient } from "../vision/visionClient";
+import { ARUCO_NAMES, ARUCO_REFS } from "../aruco/palette";
 import { type Settings, settingsStore } from "./settings";
 import { type Calibration, loadCalibration, loadSolves, personalSequences, saveCalibration } from "./storage";
 import { createStore } from "./store";
@@ -74,7 +75,11 @@ export function displayColors(refs: Lab[], names: string[], scheme: Settings["sc
   return refs.map(([L, a, b]) => rgbCss(labToRgb([Math.min(92, Math.max(45, L * 1.1)), a * 1.25, b * 1.25])));
 }
 
+// 認識の解像度（長辺）。ArUco マーカーは 1 セルが小さいので、少なくとも 1280 で読む
+const workWidthFor = (s: Settings) => (s.stickers === "aruco" ? Math.max(s.workWidth, 1280) : s.workWidth);
+
 class Controller {
+  private stickers: Settings["stickers"] | null = null; // 最後に反映したステッカーの種類
   readonly store = createStore<AppState>({
     screen: initialScreen(),
     panel: "free",
@@ -160,11 +165,23 @@ class Controller {
 
   private applySettings(s: Settings): void {
     if (!this.vision) return;
-    this.vision.workWidth = s.workWidth;
-    this.vision.setConfig({ mode: s.detection });
+    if (this.stickers !== s.stickers) {
+      // ステッカーの種類を変えた: 色の代表色が別物になるので、いまの追跡はやめる（スキャンし直すか、揃った状態から始める）
+      const had = !!this.store.get().cube || !!this.store.get().scan;
+      if (this.stickers !== null && had) {
+        this.cancelAnalysis();
+        this.vision.stopTracking();
+        this.store.set({ cube: null, track: null, scan: null });
+        this.toast(s.stickers === "aruco" ? "ArUco マーカーに切り替えました。「揃った状態から開始」かスキャンで始めてください" : "普通の色に切り替えました。スキャンし直してください", 6000);
+      }
+      this.stickers = s.stickers;
+    }
+    this.vision.workWidth = workWidthFor(s);
+    this.vision.setConfig({ mode: s.detection, stickers: s.stickers });
     this.vision.setTrackingOptions(this.engineOptions(s));
-    // デモの合成映像には本物の手が映らないので、手の検出は動かさない（CPU を食うだけ）
-    const wantHands = s.handMask && !this.store.get().demo;
+    // デモの合成映像には本物の手が映らないので、手の検出は動かさない（CPU を食うだけ）。
+    // ArUco マーカーは隠れたマーカーを読まないので、手の検出は要らない
+    const wantHands = s.handMask && !this.store.get().demo && s.stickers !== "aruco";
     if (wantHands && this.hands.status === "off") this.hands.start();
     if (!wantHands && this.hands.status !== "off") this.hands.stop();
   }
@@ -246,7 +263,7 @@ class Controller {
     const { SyntheticCube } = await import("../synthetic/syntheticCube");
     this.camera.stop();
     this.synthetic?.stop();
-    const syn = new SyntheticCube();
+    const syn = new SyntheticCube({ aruco: settingsStore.get().stickers === "aruco" });
     this.synthetic = syn;
     syn.setView("front", 0);
     const info = await this.camera.attach(syn.stream());
@@ -349,6 +366,8 @@ class Controller {
 
   // 前回の色設定で、完成状態から始める
   startFromSolved(): void {
+    // ArUco マーカーは色がマーカーの ID で決まるので、スキャンしなくても代表色が分かる
+    if (settingsStore.get().stickers === "aruco") return this.startTrackingFrom(solvedState(), ARUCO_REFS, ARUCO_NAMES);
     const cal = this.store.get().calibration;
     if (!cal) return this.beginScan();
     this.startTrackingFrom(solvedState(), cal.refs, cal.names);
@@ -405,7 +424,7 @@ class Controller {
     this.recorder.clear();
     const session: AnalysisSession = { id: -1, keep: opts.keep, timed: opts.timed, timer: 0, handT: -Infinity, started: false, from: performance.now(), input: null as unknown as RefineInput };
     this.session = session;
-    if (!(await this.recorder.start(this.camera.video, s.workWidth, opts.timed ? 150000 : 20000)) || this.session !== session) {
+    if (!(await this.recorder.start(this.camera.video, workWidthFor(s), opts.timed ? 150000 : 20000)) || this.session !== session) {
       if (this.session === session) this.session = null;
       return false;
     }
@@ -416,7 +435,7 @@ class Controller {
       from: session.from,
       to: Infinity,
       engine: this.engineOptions(),
-      pipeline: { mode: s.detection },
+      pipeline: { mode: s.detection, stickers: s.stickers },
       ...(opts.timed ? {} : { keepPatchesMs: 3000 }),
     };
     const id = await this.refiner.startStream((p) => this.onAnalysisPartial(session, p));
@@ -487,6 +506,11 @@ class Controller {
 
   // キューブを完成させた（見失った後など）: 完成状態からやり直す
   resetToSolved(): void {
+    if (settingsStore.get().stickers === "aruco") {
+      this.startTrackingFrom(solvedState(), ARUCO_REFS, ARUCO_NAMES);
+      this.toast("完成状態から追跡し直します");
+      return;
+    }
     const cube = this.store.get().cube;
     const cal = this.store.get().calibration;
     const refs = this.store.get().track?.refs ?? cube?.refs ?? cal?.refs;

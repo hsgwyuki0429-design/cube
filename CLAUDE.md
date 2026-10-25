@@ -17,12 +17,15 @@
 元の企画は `docs/cube-vision-plan.md`（オンライン対戦などはまだ範囲外）。
 
 **フェーズ0追加検証（色付き ArUco ステッカー）**: 色判定の代わりに、各ステッカーに色付き ArUco マーカー
-（ID = facelet 番号）を貼る案を検証中。本体の「ArUco」の画面（`src/aruco/`、入口は `src/ui/ArucoScreen.tsx`。初めて開いたときに
-読み込む）で、スマホのスロー撮影（240fps）の動画を後から解析する。
+（ID = facelet 番号）を貼る案を検証中。設定の「ステッカー」を ArUco にすると、普通のプレイ（追跡・スキャン・精密解析・タイマー）も
+ArUco で動く: `processFrame` の入口で分岐し（`PipelineConfig.stickers`、`src/vision/arucoFrame.ts`）、マーカーから組み立てた面の
+各セルを代表色（`src/aruco/palette.ts`）の Lab にして同じ `FrameResult` で返す。代表色が固定なのでスキャンなしで揃った状態から始められる。
+デモ・E2E は `?stickers=aruco`・`E2E_STICKERS=aruco`。本体の「ArUco」の画面（`src/aruco/`、入口は `src/ui/ArucoScreen.tsx`。初めて開いたときに
+読み込む）では、スマホのスロー撮影（240fps）の動画を後から解析する。
 キューブモードは見えている面を組み立てて（射影変換・法線・キューブの傾き）、本体のオフラインのデコーダで手順を推定し、
 テストモードは方式（グレー / max(RGB) / パラメータ調整）× 色 × 大きさの検出率を出す。本体の追跡・認識のコードとは独立していて、
 解析 Worker（OpenCV.js をもう 1 つ持つ）は PWA の事前のキャッシュに入れない。`#aruco`・`aruco.html`（移動するだけ）で直接開ける。詳細・判断の記録は
-`docs/aruco-phase0.md`。触ったら `npx vitest run tests/aruco.test.ts tests/arucoCube.test.ts` と、合成動画での E2E
+`docs/aruco-phase0.md`。触ったら `npx vitest run tests/aruco.test.ts tests/arucoCube.test.ts tests/arucoLive.test.ts`、`E2E_STICKERS=aruco npm run e2e`、合成動画での E2E
 （`scripts/aruco-e2e.mjs`）を回す。
 
 ---

@@ -180,22 +180,42 @@ export function FreePanel() {
 export function StartCard() {
   const cal = useStore(controller.store, (s) => s.calibration);
   const camera = useStore(controller.store, (s) => s.camera);
+  const aruco = useStore(settingsStore, (s) => s.stickers === "aruco");
   return (
     <div>
-      <div class="status-banner">
-        <strong>まずキューブの状態を読み取ります</strong>
-        6面を順番にカメラへ見せると、色と配置を記録して追跡を始めます。完成したキューブでも、崩れたキューブでもOKです。
-      </div>
-      <div class="btn-row">
-        <button class="btn primary" disabled={camera !== "on"} onClick={() => controller.beginScan()}>
-          6面スキャンを始める
-        </button>
-        {cal && (
-          <button class="btn" disabled={camera !== "on"} onClick={() => controller.startFromSolved()}>
-            完成状態から開始（前回の色）
-          </button>
-        )}
-      </div>
+      {aruco ? (
+        <>
+          <div class="status-banner">
+            <strong>ArUco マーカーのキューブ</strong>
+            色をマーカーの ID で判定するので、揃ったキューブならスキャンなしで始められます。崩れたキューブは 6 面をスキャンしてください。
+          </div>
+          <div class="btn-row">
+            <button class="btn primary" disabled={camera !== "on"} onClick={() => controller.startFromSolved()}>
+              揃った状態から開始
+            </button>
+            <button class="btn" disabled={camera !== "on"} onClick={() => controller.beginScan()}>
+              6面スキャン
+            </button>
+          </div>
+        </>
+      ) : (
+        <>
+          <div class="status-banner">
+            <strong>まずキューブの状態を読み取ります</strong>
+            6面を順番にカメラへ見せると、色と配置を記録して追跡を始めます。完成したキューブでも、崩れたキューブでもOKです。
+          </div>
+          <div class="btn-row">
+            <button class="btn primary" disabled={camera !== "on"} onClick={() => controller.beginScan()}>
+              6面スキャンを始める
+            </button>
+            {cal && (
+              <button class="btn" disabled={camera !== "on"} onClick={() => controller.startFromSolved()}>
+                完成状態から開始（前回の色）
+              </button>
+            )}
+          </div>
+        </>
+      )}
       {camera !== "on" && <p class="muted small">先にカメラを開始してください。カメラがなくても「デモで試す」で動きを確認できます。</p>}
       <div class="section">
         <h3>うまく追跡するコツ</h3>

@@ -21,7 +21,8 @@
 | 手順の再構成 | 録画をインスペクションから全フレーム解析し（止めたときには大半が済んでいる）、スクランブル後の状態と完成の両側から辻褄が合う手順を選び直す（途中が指で隠れていても、前後からつなぐ）。数十秒〜1 分ほどで、全手順・区間・3D リプレイを表示 |
 | 正確なタイム | 計測中の映像を端末内に一時録画し、**全フレームを1枚ずつ解析し直して**タイムと手順を確定（数秒〜数十秒。止めた瞬間は速報値）。タイムは「最初の手の回し始め」〜「最後の手の回し終わり」で、誤差はフレーム間隔の半分程度（60fps なら ±8ms） |
 | 分析・履歴 | 手数・TPS・クロス/F2L/OLL/PLL の区間、ベスト・ao5・ao12。3D リプレイ、JSON/CSV 書き出し |
-| デモ | カメラがなくても、合成カメラ（three.js で描いたキューブの映像）で全機能を試せる |
+| ArUco ステッカー | 各ステッカーに色付き ArUco マーカーを貼ったキューブなら、設定の「ステッカー」を「ArUco マーカー」にすると、色を読まずにマーカーの ID でステッカーを判定して追跡・スキャン・タイマーを使える（照明や色の取り違えに強い。揃っていればスキャンなしで開始）。「ArUco」の画面では、スロー撮影（240fps）の動画から手順を推定できる |
+| デモ | カメラがなくても、合成カメラ（three.js で描いたキューブの映像）で全機能を試せる（`?stickers=aruco` で ArUco マーカーのキューブ） |
 
 ## 使い方
 
@@ -176,7 +177,7 @@ npm run dev        # http://localhost:5173 を開く
 | `npm run dev` | 開発サーバー |
 | `npm run dev:lan` | LAN 公開 + 自己署名 HTTPS（スマホ実機用） |
 | `npm test` | ユニット・結合テスト |
-| `npm run e2e` | E2E（要 `npm run build`。`E2E_VIEW=top/corner/front` `E2E_TPS` `E2E_SEEDS` `E2E_MODE=timer`） |
+| `npm run e2e` | E2E（要 `npm run build`。`E2E_VIEW=top/corner/front` `E2E_TPS` `E2E_SEEDS` `E2E_MODE=timer` `E2E_STICKERS=aruco`） |
 | `npm run typecheck` | 型チェック |
 | `npm run build` | 本番ビルド（`dist/`。静的ホスティングにそのまま置けます） |
 | `ARUCO_VIDEO=… node scripts/aruco-e2e.mjs` | ArUco 検証ページの E2E（要 `npm run build`。`docs/aruco-phase0.md`） |
