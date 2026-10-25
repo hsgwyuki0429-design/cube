@@ -64,7 +64,12 @@ export const TUNED_PARAMS: Partial<ArucoParams> = {
 
 // 符号の種類ごとの既定（方式のパラメータで上書きできる）。入れ子の候補をまとめない設定（minGroupDistance を小さく）は、
 // unique54 で本物まで読めなくなったので使わない（外側の偽物は MIN_FIT で捨てて、内側を読み直す: rescueInner）
-const SCHEME_PARAMS: Record<StickerScheme, Partial<ArucoParams>> = { aruco54: {}, aruco12: {}, unique54: {} };
+// 3×3 の符号は二値化の窓を 3〜23 の 5 刻みで試す（既定は 10 刻み）。明るいマスが離れて並ぶ符号（12 種類の緑）は窓の大きさに
+// よって枠が途切れて四角の候補にならず、合成画像で 12 種類の緑 77% → 81%・全体 88% → 91%（取りこぼしの救済と合わせて）。
+// 処理は 1280×720 で 25 → 35ms。精密解析（時間をかけてよい）は 3〜33（THOROUGH_PARAMS、55ms）
+const WINDOWS3: Partial<ArucoParams> = { adaptiveThreshWinSizeStep: 5, adaptiveThreshWinSizeMax: 23 };
+const SCHEME_PARAMS: Record<StickerScheme, Partial<ArucoParams>> = { aruco54: {}, aruco12: WINDOWS3, unique54: WINDOWS3 };
+export const THOROUGH_PARAMS: Partial<ArucoParams> = { adaptiveThreshWinSizeStep: 5, adaptiveThreshWinSizeMax: 33 };
 const MIN_FIT = Number((globalThis as { process?: { env: Record<string, string | undefined> } }).process?.env.ARUCO_MIN_FIT ?? 0.85);
 
 export interface DetectorConfig {
@@ -169,6 +174,15 @@ export class ArucoBench {
           if (this.scheme === "unique54" && m.fit < MIN_FIT) m = this.rescueInner(img, c);
           if (m) markers.push(m);
         }
+        // 3×3 の符号: OpenCV が符号に合わないとして捨てた四角を、マスの中心付近だけで読み直す（rescueRejected）
+        const codes = codesOf(this.scheme);
+        if (codes.length) {
+          const rej = Array.from({ length: rejected.size() }, (_, k) => Array.from(rejected.get(k).data32F as Float32Array));
+          for (const r of rescueRejected(img, rej, codes, markers)) {
+            const m = this.describe(img, r.id, r.corners);
+            if (m.fit >= MIN_FIT) markers.push(m);
+          }
+        }
       } finally {
         corners.delete();
         ids.delete();
@@ -267,6 +281,27 @@ export function decodeQuad(img: ImageLike, pts: Pt[], codes: number[], n = 3): {
     for (let rot = 0; rot < 4; rot++, x = rotCode(x, n)) if (x === code) return { id, rot };
   }
   return null;
+}
+
+// OpenCV が符号に合わないとして捨てた四角（rejected）を、マスの中心付近だけで読み直す（3×3 の符号）。
+// 明るいマスが離れて並ぶ符号（12 種類の緑など）は、ぶれるとマス全体の画素の多数決では暗いマスと読まれて捨てられる。
+// すでに読めたマーカーと重なるものは除く。corners は (x0, y0, …) の 4 隅、戻り値の角はマーカーの向き（左上から時計回り）
+export function rescueRejected(img: ImageLike, rejected: number[][], codes: number[], found: { corners: number[]; side: number }[]): { id: number; corners: number[] }[] {
+  const out: { id: number; corners: number[] }[] = [];
+  const centers = found.map((m) => ({ x: (m.corners[0] + m.corners[2] + m.corners[4] + m.corners[6]) / 4, y: (m.corners[1] + m.corners[3] + m.corners[5] + m.corners[7]) / 4, r: m.side * 0.5 }));
+  for (const c of rejected) {
+    const pts: Pt[] = [0, 1, 2, 3].map((i) => [c[i * 2], c[i * 2 + 1]]);
+    const cx = (pts[0][0] + pts[1][0] + pts[2][0] + pts[3][0]) / 4;
+    const cy = (pts[0][1] + pts[1][1] + pts[2][1] + pts[3][1]) / 4;
+    if (centers.some((q) => Math.hypot(q.x - cx, q.y - cy) < q.r)) continue;
+    const hit = decodeQuad(img, pts, codes);
+    if (!hit) continue;
+    const corners = [0, 1, 2, 3].flatMap((i) => pts[(i + hit.rot) % 4]);
+    out.push({ id: hit.id, corners });
+    const side = (Math.hypot(pts[1][0] - pts[0][0], pts[1][1] - pts[0][1]) + Math.hypot(pts[2][0] - pts[1][0], pts[2][1] - pts[1][1])) / 2;
+    centers.push({ x: cx, y: cy, r: side * 0.5 });
+  }
+  return out;
 }
 
 // 符号を時計回りに 90°（ビット r*n+c → c*n + (n-1-r)）

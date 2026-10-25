@@ -12,6 +12,7 @@ import type { RefineInput, RefineResult } from "../vision/refine";
 import { FrameRecorder } from "../vision/recorder";
 import { RefineClient, VisionClient } from "../vision/visionClient";
 import { stickerScheme } from "../aruco/codes";
+import { ARUCO_OBSERVER, DEFAULT_OBSERVER } from "../track/observer";
 import { ARUCO_NAMES, ARUCO_REFS } from "../aruco/palette";
 import { type Settings, settingsStore } from "./settings";
 import { type Calibration, loadCalibration, loadSolves, personalSequences, saveCalibration } from "./storage";
@@ -191,7 +192,7 @@ class Controller {
   engineOptions(s: Settings = settingsStore.get()): Partial<EngineOptions> {
     return {
       decoder: { beamWidth: s.beamWidth, maxMovesPerStep: s.maxMovesPerStep, rotationCost: s.rotationCost },
-      observer: { stableMs: s.stableMs },
+      observer: { stableMs: s.stableMs, ...(isAruco(s) ? ARUCO_OBSERVER : { minKnown: DEFAULT_OBSERVER.minKnown, minSideKnown: 3, mergeSlots: false }) },
       colors: { maxDistance: s.maxColorDistance },
       personal: personalSequences(loadSolves()),
     };

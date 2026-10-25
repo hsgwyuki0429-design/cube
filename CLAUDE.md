@@ -21,6 +21,9 @@
 1 枚の ID と向きから面の真ん中が分かる `centerOffset` ので、センターが隠れても面を組み立てる）、自作 3×3 の 12 種類 `aruco12`（ID = 面、センターは +6）、
 最初に印刷した DICT_4X4_100 の 54 種類（ID = facelet 番号）。3×3 は明るい印刷色 `PRINT_COLORS`。印刷用 PDF は `docs/stickers/`、`node scripts/aruco-stickers.mjs` で作る。
 unique54 は符号の空きが少ないので、色はフレームの中で比べ（`frameColorFilter`）、ステッカーの縁ごと拾った偽の四角は内側を読み直す（`rescueInner`）。
+3×3 の符号は OpenCV が捨てた四角もマスの中心で読み直し（`rescueRejected`）、二値化の窓を細かく試す（12 種類の緑の符号が読みにくかった）。
+面は 3×3 だけでなく 1 列・1 枚でも使う（`partial`: キューブの傾きに合うときだけ、3D の傾きには使わない）。観測器は ArUco 用に上・横の面を 1 マスから・
+面の組み合わせの揺れを許す（`ARUCO_OBSERVER`。ライブと精密解析で同じ）。
 12 種類は誤り訂正がないので、2 ビットで入れ替わりうる ID の組（`CONFUSABLE12`）の相手の色に写ったマーカーを捨てる（`colorConsistent`。色そのものの一致は求めない: 暖かい照明で薄い青・緑が灰色・黄緑に写った）。ライブは角を向けても正面を決める（`frontAlways`）。設定の「ステッカー」を ArUco にすると、普通のプレイ（追跡・スキャン・精密解析・タイマー）も
 ArUco で動く: `processFrame` の入口で分岐し（`PipelineConfig.stickers`、`src/vision/arucoFrame.ts`）、マーカーから組み立てた面の
 各セルを代表色（`src/aruco/palette.ts`）の Lab にして同じ `FrameResult` で返す。代表色が固定なのでスキャンなしで揃った状態から始められる。
