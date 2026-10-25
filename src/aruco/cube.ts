@@ -10,11 +10,14 @@ import { simplifyMoves } from "../track/merge";
 import type { DecodedMove, FaceObservation, Observation } from "../track/types";
 import { type Mat3, type Pt, applyH, fitHomography, invertH } from "../vision/homography";
 import { defaultFocal } from "../vision/pose";
+import { type Decoded, type StickerScheme, decode } from "./codes";
 import type { Marker } from "./detect";
+import { type ColorKey, FACE_COLORS, classifyColor } from "./stickers";
 
 export interface VisibleFace {
   slot: number; // カメラフレームの面（0 上 / 1 右 / 2 正面 / 3 下 / 4 左）
-  ids: number[]; // 9 セル（row*3+col、行 = 画像の下向き・列 = 右向き）のステッカー ID。-1 = 見えない
+  colors: number[]; // 9 セル（row*3+col、行 = 画像の下向き・列 = 右向き）のステッカーの色（センターの面 0〜5）。-1 = 見えない
+  ids: number[]; // 同じ並びのステッカー（揃った状態での facelet 番号）。54 種類の符号のときだけ。分からなければ -1
   outline: Pt[]; // 3×3 の外枠（画像座標、左上から時計回り）
   H: Mat3; // 面の座標（x = 列・y = 行、0〜3）→ 画像。本体の認識の DetectedFace（rot = 0）と同じ
 }
@@ -139,15 +142,47 @@ export interface FacesResult {
 
 // 1 フレームのマーカーから、見えている面（カメラフレームの面に割り当て、セルの並びもカメラフレームの規約）を作る。
 // prevTilt: 直前のフレームのキューブの傾き。面が 1 つしか見えないときも、上面の向き（どちらが正面側か）を決められる
-export function reconstructFaces(markers: Marker[], size: { width: number; height: number }, prevTilt: number[] | null = null, o: FaceOptions = DEFAULT_FACE): FacesResult {
-  // ID 0〜53 のみ。同じ ID が 2 つあれば大きい方
-  const byId = new Map<number, Marker>();
+// 写った色（マーカーの明るいセルの平均）が、読んだ ID の色と明らかに違えば誤読として捨てる。
+// カメラの色は照明で揺れるので、白と黄・赤と橙・黄と橙は区別しない（12 種類の符号は、距離 2 の組をこれ以外の色どうしにしてある）
+const CLOSE: Record<ColorKey, ColorKey[]> = {
+  white: ["white", "yellow"],
+  red: ["red", "orange"],
+  green: ["green"],
+  yellow: ["yellow", "white", "orange"],
+  orange: ["orange", "red", "yellow"],
+  blue: ["blue"],
+};
+export function colorMatches(face: number, rgb: [number, number, number]): boolean {
+  return CLOSE[FACE_COLORS[face]].includes(classifyColor(rgb));
+}
+
+interface Coded extends Marker {
+  dec: Decoded;
+}
+
+export function reconstructFaces(
+  markers: Marker[],
+  size: { width: number; height: number },
+  prevTilt: number[] | null = null,
+  scheme: StickerScheme = "aruco54",
+  o: FaceOptions = DEFAULT_FACE,
+): FacesResult {
+  // ステッカーの ID のみ・写った色が ID の色と合うもの。54 種類の符号で同じ ID が 2 つあれば大きい方
+  const coded: Coded[] = [];
+  const byId = new Map<number, Coded>();
   for (const m of markers) {
-    if (m.id < 0 || m.id >= 54) continue;
-    const p = byId.get(m.id);
-    if (!p || m.side > p.side) byId.set(m.id, m);
+    const dec = decode(scheme, m.id);
+    if (!dec || !colorMatches(dec.face, m.rgb)) continue;
+    const c: Coded = { ...m, dec };
+    if (dec.sticker < 0) {
+      coded.push(c);
+      continue;
+    }
+    const p = byId.get(dec.sticker);
+    if (!p || m.side > p.side) byId.set(dec.sticker, c);
   }
-  let pool = [...byId.values()].sort((a, b) => b.side - a.side);
+  coded.push(...byId.values());
+  let pool: Marker[] = coded.sort((a, b) => b.side - a.side);
   const faces: NonNullable<ReturnType<typeof toFace>>[] = [];
   while (pool.length) {
     const ref = pool[0];
@@ -256,7 +291,7 @@ const rot3 = (R: number[], v: V3): V3 => [R[0] * v[0] + R[1] * v[1] + R[2] * v[2
 function toFace(g: Group, size: { width: number; height: number }) {
   const cells = [...g.cells.values()];
   const span = (xs: number[]) => Math.max(...xs) - Math.min(...xs);
-  if (!cells.some((c) => c.m.id % 9 === 4) && (span(cells.map((c) => c.i)) !== 2 || span(cells.map((c) => c.j)) !== 2)) return null;
+  if (!cells.some((c) => (c.m as Coded).dec.center) && (span(cells.map((c) => c.i)) !== 2 || span(cells.map((c) => c.j)) !== 2)) return null;
   return { g, ...planeFrame(g.G, size), count: cells.length };
 }
 
@@ -278,7 +313,7 @@ function layout(face: NonNullable<ReturnType<typeof toFace>>, slot: number, E: n
   const best = options.reduce((a, b) => (dot3(b.row, want) > dot3(a.row, want) ? b : a));
   const cells = [...g.cells.values()];
   const rc = cells.map((c) => ({ c, rc: best.map(c.i, c.j) }));
-  const center = rc.find((x) => x.c.m.id % 9 === 4);
+  const center = rc.find((x) => (x.c.m as Coded).dec.center);
   let dr: number;
   let dc: number;
   if (center) {
@@ -292,11 +327,15 @@ function layout(face: NonNullable<ReturnType<typeof toFace>>, slot: number, E: n
     dc = -Math.min(...cols);
   }
   const ids = new Array(9).fill(-1);
+  const colors = new Array(9).fill(-1);
   for (const x of rc) {
     const r = x.rc[0] + dr;
     const c = x.rc[1] + dc;
     if (r < 0 || r > 2 || c < 0 || c > 2) continue;
-    ids[r * 3 + c] = x.c.m.id;
+    const dec = (x.c.m as Coded).dec;
+    // センターの符号が真ん中以外にある（同じ色のセンターとそれ以外の取り違え）なら、色は同じなのでそのまま使う
+    colors[r * 3 + c] = dec.face;
+    ids[r * 3 + c] = dec.sticker;
   }
   // セルの角（r, c は 0.5 刻み）の画像座標
   const corner = (r: number, c: number): Pt => {
@@ -314,7 +353,7 @@ function layout(face: NonNullable<ReturnType<typeof toFace>>, slot: number, E: n
     outline,
   );
   if (!H) return null;
-  return { ids, outline, H };
+  return { colors, ids, outline, H };
 }
 
 // ---- 観測と復号 ----
@@ -332,8 +371,8 @@ type Reading = Map<number, Int8Array>;
 function readingOf(faces: VisibleFace[]): Reading {
   const r: Reading = new Map();
   for (const f of faces) {
-    if (f.ids.filter((id) => id >= 0).length < 3) continue;
-    r.set(f.slot, Int8Array.from(f.ids, (id) => (id < 0 ? -1 : Math.floor(id / 9))));
+    if (f.colors.filter((c) => c >= 0).length < 3) continue;
+    r.set(f.slot, Int8Array.from(f.colors));
   }
   return r;
 }
@@ -405,10 +444,10 @@ export function buildObservations(frames: CubeFrame[], stableFrames = 3): Observ
 }
 
 // フレームごとのマーカーから面を組み立てる（傾きを次のフレームへ引き継ぐ）
-export function facesOverTime(frames: { t: number; markers: Marker[] }[], size: { width: number; height: number }): CubeFrame[] {
+export function facesOverTime(frames: { t: number; markers: Marker[] }[], size: { width: number; height: number }, scheme: StickerScheme = "aruco54"): CubeFrame[] {
   let tilt: number[] | null = null;
   return frames.map((f) => {
-    const r = reconstructFaces(f.markers, size, tilt);
+    const r = reconstructFaces(f.markers, size, tilt, scheme);
     tilt = r.tilt;
     return { t: f.t, faces: r.faces };
   });

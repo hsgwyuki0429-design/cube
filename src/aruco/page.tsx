@@ -4,6 +4,7 @@
 // 解析はすべて端末内（Worker）。動画はどこにも送らない。
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import "./aruco.css";
+import { SCHEME_LABEL, type StickerScheme } from "./codes";
 import type { CubeResult, VisibleFace } from "./cube";
 import { CubeResults } from "./cubePanel";
 import { DEFAULT_CONFIGS, type DetectorConfig, PARAM_KEYS, TUNED_PARAMS } from "./detect";
@@ -34,7 +35,9 @@ export function ArucoPage() {
   const [ready, setReady] = useState<number | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [fileUrl, setFileUrl] = useState<string | null>(null);
-  const [sheetKey, setSheetKey] = useState("test");
+  const [scheme, setScheme] = useState<StickerScheme>("aruco12");
+  const [runScheme, setRunScheme] = useState<StickerScheme>("aruco12");
+  const [sheetKey, setSheetKey] = useState("t12");
   const [captureFps, setCaptureFps] = useState("");
   const [maxSide, setMaxSide] = useState(0);
   const [stride, setStride] = useState(1);
@@ -106,16 +109,18 @@ export function ArucoPage() {
     framesRef.current = [];
     setRunConfigs(configs);
     setRunMode(mode);
+    setRunScheme(scheme);
     setCube(null);
     setInfo(null);
     setProgress(null);
     setError(null);
     setRunning(true);
     setVersion((v) => v + 1);
-    workerRef.current.postMessage({ type: "analyze", file, options: { configs, maxSide, stride } });
+    workerRef.current.postMessage({ type: "analyze", file, options: { configs, maxSide, stride, scheme } });
   };
 
-  const sheet = SHEETS.find((s) => s.key === sheetKey)!;
+  const sheets = SHEETS.filter((s) => s.scheme === scheme);
+  const sheet = sheets.find((s) => s.key === sheetKey) ?? sheets[0];
   const fileFps = info?.fps ?? 0;
   const realFps = Number(captureFps) > 0 ? Number(captureFps) : fileFps;
   const timeScale = fileFps > 0 && realFps > 0 ? fileFps / realFps : 1;
@@ -178,6 +183,14 @@ export function ArucoPage() {
         <div class="card-head">1. 動画と条件</div>
         <div class="card-body form">
           <label>
+            ステッカーの種類
+            <select value={scheme} onChange={(e) => setScheme((e.target as HTMLSelectElement).value as StickerScheme)}>
+              {(["aruco12", "aruco54"] as const).map((k) => (
+                <option value={k}>{SCHEME_LABEL[k]}</option>
+              ))}
+            </select>
+          </label>
+          <label>
             動画ファイル（MP4 / MOV）
             <input type="file" accept="video/*,.mov,.mp4" onChange={(e) => setFile((e.target as HTMLInputElement).files?.[0] ?? null)} />
           </label>
@@ -186,7 +199,7 @@ export function ArucoPage() {
               <label>
                 写したシート
                 <select value={sheetKey} onChange={(e) => setSheetKey((e.target as HTMLSelectElement).value)}>
-                  {SHEETS.map((s) => (
+                  {sheets.map((s) => (
                     <option value={s.key}>{s.label}</option>
                   ))}
                 </select>
@@ -286,10 +299,10 @@ export function ArucoPage() {
       {runMode === "cube" && cubeBusy && <div class="status-banner warn section">面を組み立てて手順を推定しています…</div>}
       {runMode === "cube" && cube && <CubeResults result={cube.result} truthText={truth} onTruth={setTruth} />}
       {runMode === "cube" && cube && fileUrl && info && (
-        <Viewer url={fileUrl} frames={framesRef.current} info={info} timeScale={timeScale} configNames={runConfigs.map((c) => c.name)} cube={cube} />
+        <Viewer url={fileUrl} frames={framesRef.current} info={info} timeScale={timeScale} configNames={runConfigs.map((c) => c.name)} scheme={runScheme} cube={cube} />
       )}
       {summary && <Results summary={summary} sheet={sheet} configs={runConfigs} meta={meta} />}
-      {summary && fileUrl && info && <Viewer url={fileUrl} frames={framesRef.current} info={info} timeScale={timeScale} configNames={runConfigs.map((c) => c.name)} summary={summary} />}
+      {summary && fileUrl && info && <Viewer url={fileUrl} frames={framesRef.current} info={info} timeScale={timeScale} configNames={runConfigs.map((c) => c.name)} scheme={runScheme} summary={summary} />}
     </div>
   );
 }

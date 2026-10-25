@@ -2,6 +2,7 @@
 // 動画ファイルを読み込ませて解析し、結果の表と画面を e2e-output/aruco/ に書き出す。
 //
 //   npm run build && ARUCO_VIDEO=path/to/video.mp4 node scripts/aruco-e2e.mjs                  # テストモード（シート）
+//   ARUCO_SCHEME=aruco54 …                                                                    # 54 種類（4×4）のステッカー（既定は 12 種類）
 //   ARUCO_MODE=cube ARUCO_TRUTH="R U R' U'" [ARUCO_END_SOLVED=1] ARUCO_VIDEO=… node scripts/aruco-e2e.mjs  # キューブモード
 //   （合成動画は tests/debug/arucoVideo.debug.test.ts・arucoCubeVideo.debug.test.ts で作れる）
 import { spawn } from "node:child_process";
@@ -12,7 +13,8 @@ import { chromium } from "playwright-core";
 
 const VIDEO = process.env.ARUCO_VIDEO;
 const OUT = process.env.E2E_OUT ?? "e2e-output/aruco";
-const SHEET = process.env.ARUCO_SHEET ?? "test";
+const SCHEME = process.env.ARUCO_SCHEME ?? "aruco12"; // aruco12 | aruco54（src/aruco/codes.ts）
+const SHEET = process.env.ARUCO_SHEET ?? (SCHEME === "aruco12" ? "t12" : "test");
 const MODE = process.env.ARUCO_MODE ?? "sheet"; // sheet | cube
 const TRUTH = process.env.ARUCO_TRUTH ?? "";
 const CONFIGS = process.env.ARUCO_CONFIGS; // 例: "0,1"（既定は全部）
@@ -100,13 +102,14 @@ try {
   page.on("pageerror", (e) => console.log("[pageerror]", e.message));
   await page.goto(`http://localhost:${PORT}/aruco.html`);
   await page.waitForFunction(() => !document.body.textContent.includes("OpenCV.js を読み込み中"), null, { timeout: 120000 });
+  await page.selectOption('label:has-text("ステッカーの種類") select', SCHEME);
   await page.setInputFiles('input[type="file"]', VIDEO);
   if (MODE === "cube") {
     failed = !(await runCube(page));
     throw "skip";
   }
   await page.click("text=シート（検出率）");
-  await page.selectOption("select >> nth=0", SHEET);
+  await page.selectOption('label:has-text("写したシート") select', SHEET);
   if (CONFIGS) {
     const want = new Set(CONFIGS.split(",").map(Number));
     const boxes = page.locator('fieldset input[type="checkbox"]');

@@ -7,7 +7,10 @@ import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { ArucoBench, DEFAULT_CONFIGS, type Marker } from "../src/aruco/detect";
 import { demuxFile, readSamples, rotationOf } from "../src/aruco/demux";
+import { ARUCO12_CODES, byteList, code4x4, decode, makeDictionary, markerBits as schemeBits } from "../src/aruco/codes";
+import { colorMatches } from "../src/aruco/cube";
 import { markerBits } from "../src/aruco/dict4x4";
+import { PRINT_COLORS } from "../src/aruco/palette";
 import { type FrameRecord, summarize, toCsv, toMarkdown } from "../src/aruco/stats";
 import { SHEETS, classifyColor, stickerOf } from "../src/aruco/stickers";
 import { type CV, initOpenCv } from "../src/vision/quads";
@@ -149,7 +152,7 @@ describe("集計（検出結果から）", () => {
   const frame = (i: number, markers: Marker[]): FrameRecord => ({ t: i * 4, results: [{ markers, ms: 10 }] });
 
   it("途切れ・大きさの割り当て・速さ・誤検出", () => {
-    const sheet = { key: "t", label: "t", ids: [90], sizes: [12, 18] };
+    const sheet = { key: "t", label: "t", ids: [90], sizes: [12, 18], scheme: "aruco54" as const };
     const frames: FrameRecord[] = [];
     for (let i = 0; i < 20; i++) {
       const ms: Marker[] = [];
@@ -177,7 +180,7 @@ describe("集計（検出結果から）", () => {
   });
 
   it("撮影 fps を指定すると実時間に直す（スロー再生で書き出された動画）", () => {
-    const sheet = { key: "t", label: "t", ids: [1], sizes: [18] };
+    const sheet = { key: "t", label: "t", ids: [1], sizes: [18], scheme: "aruco54" as const };
     // 30fps の動画に見えるが、実際は 240fps（8 倍のスロー）
     const frames = Array.from({ length: 10 }, (_, i) => ({ t: (i * 1000) / 30, results: [{ markers: i === 4 ? [] : [marker(1, 50, 50, 30)], ms: 5 }] }));
     const sum = summarize({ frames, configs: ["a"], sheet, width: 200, height: 200, timeScale: 30 / 240 });
@@ -230,5 +233,75 @@ describe("動画の分解", () => {
       }
       expect(n).toBe(120);
     }
+  });
+});
+
+// 12 種類（3×3）の符号（src/aruco/codes.ts）
+describe("12 種類（3×3）の符号", () => {
+  const pop = (x: number) => {
+    let k = 0;
+    while (x) (x &= x - 1), k++;
+    return k;
+  };
+  const rot = (c: number) => {
+    let out = 0;
+    for (let r = 0; r < 3; r++) for (let q = 0; q < 3; q++) if ((c >> (r * 3 + q)) & 1) out |= 1 << (q * 3 + (2 - r));
+    return out;
+  };
+  const rots = (c: number) => [c, rot(c), rot(rot(c)), rot(rot(rot(c)))];
+  const dist = (a: number, b: number) => Math.min(...rots(b).map((x) => pop(a ^ x)));
+
+  it("距離 2 以上・同じ色のセンターとそれ以外は 3 以上・距離 2 の組は見分けやすい色どうし", () => {
+    const close = new Set(["0,3", "3,0", "1,4", "4,1", "3,4", "4,3"]); // 白と黄・赤と橙・黄と橙
+    ARUCO12_CODES.forEach((c, i) => {
+      expect(Math.min(...rots(c).slice(1).map((x) => pop(c ^ x)))).toBeGreaterThanOrEqual(2); // 向きが決まる
+      for (let j = i + 1; j < 12; j++) {
+        const d = dist(c, ARUCO12_CODES[j]);
+        expect(d).toBeGreaterThanOrEqual(2);
+        if (i % 6 === j % 6) expect(d).toBeGreaterThanOrEqual(3);
+        if (d === 2) expect(close.has(`${i % 6},${j % 6}`)).toBe(false);
+      }
+    });
+  });
+
+  it("バイト列の組み立てが OpenCV と同じ（DICT_4X4_100 で照合）・作った辞書で描くと同じビット", () => {
+    const d = cv.getPredefinedDictionary(cv.DICT_4X4_100);
+    const ref = d.bytesList.data as Uint8Array;
+    for (let id = 0; id < 100; id++) {
+      const mine = byteList(code4x4(id), 4);
+      expect(Array.from(mine)).toEqual(Array.from(ref.subarray(id * mine.length, (id + 1) * mine.length)));
+    }
+    d.delete();
+    const d12 = makeDictionary(cv, "aruco12");
+    for (let id = 0; id < 12; id++) {
+      const m = new cv.Mat();
+      cv.generateImageMarker(d12, id, 5, m, 1);
+      expect(Array.from(m.data as Uint8Array).map((v) => (v > 127 ? 1 : 0))).toEqual(Array.from(schemeBits("aruco12", id)));
+      m.delete();
+    }
+    d12.delete();
+  });
+
+  it("ID → 色・センター", () => {
+    expect(decode("aruco12", 0)).toEqual({ face: 0, center: false, sticker: -1 });
+    expect(decode("aruco12", 11)).toEqual({ face: 5, center: true, sticker: -1 });
+    expect(decode("aruco12", 12)).toBeNull();
+    expect(decode("aruco54", 22)).toEqual({ face: 2, center: true, sticker: 22 });
+  });
+
+  it("印刷する明るい色は、写った色の照合でそれぞれの面の色と合う", () => {
+    PRINT_COLORS.forEach((hex, face) => {
+      const rgb = [1, 3, 5].map((i) => Number.parseInt(hex.slice(i, i + 2), 16)) as [number, number, number];
+      expect(colorMatches(face, rgb)).toBe(true);
+      // 緑・青は他の面の色とは合わない（誤読を捨てられる）
+      if (face === 2 || face === 5) for (let g = 0; g < 6; g++) if (g !== face) expect(colorMatches(g, rgb)).toBe(false);
+    });
+  });
+
+  it("印刷用 PDF のスクリプトと符号・色が同じ", async () => {
+    // @ts-expect-error 型のない .mjs
+    const sheet = await import("../scripts/aruco-stickers.mjs");
+    expect(sheet.CODES).toEqual(ARUCO12_CODES);
+    expect(sheet.COLORS).toEqual(PRINT_COLORS);
   });
 });

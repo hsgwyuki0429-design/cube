@@ -2,7 +2,8 @@
 // デモモード（キューブなしで試す）と、ヘッドレス Chromium での端から端までのテストに使う。
 // 正解の手順（truth）を持っているので、追跡結果と比較できる。
 import * as THREE from "three";
-import { markerBits } from "../aruco/dict4x4";
+import { type StickerScheme, idForFacelet, markerBits, markerSize } from "../aruco/codes";
+import { PRINT_COLORS } from "../aruco/palette";
 import { FACE_TURN, NORMAL, ORIENTATIONS, ROWDIR, type CubeState, applyMove, cubeFaceAt, faceletAt, moveAmount, moveFace, solvedState, F, U } from "../cube/model";
 
 const COLORS = [0xf2f2f2, 0xc8102e, 0x009b48, 0xffd500, 0xff5800, 0x0046ad]; // U R F D L B
@@ -30,24 +31,26 @@ export interface SyntheticOptions {
   fps?: number;
   hands?: boolean; // 回転中に指（肌色の物体）が一部を隠す
   wobble?: boolean;
-  aruco?: boolean; // 各ステッカーに色付き ArUco マーカー（ID = 揃った状態での facelet 番号）を描く
+  aruco?: StickerScheme | null; // 各ステッカーに色付き ArUco マーカーを描く（符号の種類。src/aruco/codes.ts）
 }
 
 // ArUco ステッカー: 外側に辺の 8% の色の余白、マーカーの白いセルをステッカーの色に置き換える（印刷した PDF と同じ）。
 // マーカーの上辺はその面の「上」（行 0 の側 = -ROWDIR）
-function arucoSticker(geom: THREE.PlaneGeometry, id: number, face: number): THREE.Mesh {
+function arucoSticker(geom: THREE.PlaneGeometry, scheme: StickerScheme, facelet: number, face: number): THREE.Mesh {
   const N = 100;
   const canvas = document.createElement("canvas");
   canvas.width = canvas.height = N;
   const ctx = canvas.getContext("2d")!;
-  const color = `#${COLORS[face].toString(16).padStart(6, "0")}`;
+  // 12 種類は印刷する明るい色、54 種類は最初に印刷した濃い色
+  const color = scheme === "aruco12" ? PRINT_COLORS[face] : `#${COLORS[face].toString(16).padStart(6, "0")}`;
   ctx.fillStyle = color;
   ctx.fillRect(0, 0, N, N);
-  const bits = markerBits(id);
+  const bits = markerBits(scheme, idForFacelet(scheme, facelet));
+  const k = markerSize(scheme) + 2;
   const m = N * 0.08;
-  const cell = (N - 2 * m) / 6;
+  const cell = (N - 2 * m) / k;
   ctx.fillStyle = "#151515";
-  for (let r = 0; r < 6; r++) for (let c = 0; c < 6; c++) if (!bits[r * 6 + c]) ctx.fillRect(m + c * cell, m + r * cell, cell + 0.5, cell + 0.5);
+  for (let r = 0; r < k; r++) for (let c = 0; c < k; c++) if (!bits[r * k + c]) ctx.fillRect(m + c * cell, m + r * cell, cell + 0.5, cell + 0.5);
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 4;
@@ -89,7 +92,7 @@ export class SyntheticCube {
   busy = false;
 
   constructor(options: SyntheticOptions = {}) {
-    this.opts = { width: 960, height: 540, fps: 30, hands: true, wobble: true, aruco: false, ...options };
+    this.opts = { width: 960, height: 540, fps: 30, hands: true, wobble: true, aruco: null, ...options };
     this.canvas = document.createElement("canvas");
     this.canvas.width = this.opts.width;
     this.canvas.height = this.opts.height;
@@ -127,7 +130,7 @@ export class SyntheticCube {
           NORMAL.forEach((n, f) => {
             if (n[0] * x + n[1] * y + n[2] * z !== 1) return;
             if (this.opts.aruco) {
-              obj.add(arucoSticker(sticker, faceletAt([x, y, z], n), f));
+              obj.add(arucoSticker(sticker, this.opts.aruco, faceletAt([x, y, z], n), f));
               return;
             }
             const s = new THREE.Mesh(sticker, mats[f]);

@@ -2,6 +2,8 @@
 // どのステッカーがどの向きで貼られているか（ID と上向き）を 3D で追う。画素ごとに視線と面の交点を求めて描く。
 import { FACE_TURN, NORMAL, ORIENTATIONS, ROWDIR, type Vec3, apply, faceletAt, faceletGeometry, moveAmount, moveFace } from "../src/cube/model";
 import type { CV } from "../src/vision/quads";
+import { type StickerScheme, idForFacelet, markerBits, markerSize } from "../src/aruco/codes";
+import { PRINT_COLORS } from "../src/aruco/palette";
 import { PALETTE, axisAngle, mulMat } from "./render";
 
 export interface Sticker {
@@ -51,6 +53,7 @@ export interface CubeRenderOptions {
   noise?: number;
   seed?: number;
   sticker?: number; // ステッカーの辺（キュービー = 1）
+  scheme?: StickerScheme; // 符号の種類（既定は 54 種類）。12 種類は印刷する明るい色で描く
 }
 
 const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -62,6 +65,8 @@ const norm = (a: Vec3): Vec3 => scl(a, 1 / Math.hypot(...a));
 const matv = (m: readonly number[], v: Vec3): Vec3 => [m[0] * v[0] + m[1] * v[1] + m[2] * v[2], m[3] * v[0] + m[4] * v[1] + m[5] * v[2], m[6] * v[0] + m[7] * v[1] + m[8] * v[2]];
 
 const bitsCache = new Map<number, Uint8Array>();
+const hexRgb = (h: string): [number, number, number] => [1, 3, 5].map((i) => Number.parseInt(h.slice(i, i + 2), 16)) as [number, number, number];
+
 function bitsOf(cv: CV, id: number): Uint8Array {
   let b = bitsCache.get(id);
   if (!b) {
@@ -173,8 +178,10 @@ function renderOnce(cv: CV, o: CubeRenderOptions, fraction: number): Float32Arra
     const y1 = Math.min(h - 1, Math.ceil(Math.max(...pts.map((p) => p[1]))));
     const aa = dotv(q.a, q.a);
     const bb = dotv(q.b, q.b);
-    const bits = q.sticker ? bitsOf(cv, q.sticker.id) : null;
-    const color = q.sticker ? PALETTE[Math.floor(q.sticker.id / 9)] : [20, 20, 22];
+    const scheme = o.scheme ?? "aruco54";
+    const cells = markerSize(scheme) + 2;
+    const bits = q.sticker ? (scheme === "aruco54" ? bitsOf(cv, q.sticker.id) : markerBits(scheme, idForFacelet(scheme, q.sticker.id)).map((b) => b * 255)) : null;
+    const color = q.sticker ? (scheme === "aruco12" ? hexRgb(PRINT_COLORS[Math.floor(q.sticker.id / 9)]) : PALETTE[Math.floor(q.sticker.id / 9)]) : [20, 20, 22];
     const black = [24, 24, 26];
     const pn = dotv(q.n, sub(q.p0, o.eye));
     // 視線 d = fwd + right·sx + upv·sy（sx, sy は画素から決まる）。内側のループはスカラーで
@@ -212,7 +219,7 @@ function renderOnce(cv: CV, o: CubeRenderOptions, fraction: number): Float32Arra
             if (bits) {
               const mu = (u - m) / (1 - 2 * m);
               const mv = (v - m) / (1 - 2 * m);
-              if (mu >= 0 && mv >= 0 && mu < 1 && mv < 1 && bits[Math.floor(mv * 6) * 6 + Math.floor(mu * 6)] < 128) col = black;
+              if (mu >= 0 && mv >= 0 && mu < 1 && mv < 1 && bits[Math.floor(mv * cells) * cells + Math.floor(mu * cells)] < 128) col = black;
             }
             sub2[k * 3] = col[0] * q.light;
             sub2[k * 3 + 1] = col[1] * q.light;
