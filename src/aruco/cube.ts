@@ -314,45 +314,80 @@ export interface CubeFrame {
 
 const MISMATCH = 1.5; // 1 枚の矛盾のコスト（色の観測と同じ。src/track/colorModel.ts）
 
-function signature(faces: VisibleFace[]): string {
-  return faces.map((f) => `${f.slot}:${f.ids.map((id) => (id < 0 ? "." : Math.floor(id / 9))).join("")}`).join("|");
+// 1 フレームの読み: カメラフレームの面ごとの 9 セルの色（-1 = 読めない）。3 マス以上読めた面だけ
+type Reading = Map<number, Int8Array>;
+
+function readingOf(faces: VisibleFace[]): Reading {
+  const r: Reading = new Map();
+  for (const f of faces) {
+    if (f.ids.filter((id) => id >= 0).length < 3) continue;
+    r.set(f.slot, Int8Array.from(f.ids, (id) => (id < 0 ? -1 : Math.floor(id / 9))));
+  }
+  return r;
 }
 
-// 見え方（面ごとの色の並び）が stableFrames 枚続いて、前の観測と違うときに観測を出す
+// 両方で読めたセルの色が食い違うか
+function conflicts(a: Reading, b: Reading): boolean {
+  for (const [slot, x] of a) {
+    const y = b.get(slot);
+    if (!y) continue;
+    for (let c = 0; c < 9; c++) if (x[c] >= 0 && y[c] >= 0 && x[c] !== y[c]) return true;
+  }
+  return false;
+}
+
+// a で読めて ref で読めていないセルの数
+function newCells(a: Reading, ref: Reading): number {
+  let n = 0;
+  for (const [slot, x] of a) {
+    const y = ref.get(slot);
+    for (let c = 0; c < 9; c++) if (x[c] >= 0 && (!y || y[c] < 0)) n++;
+  }
+  return n;
+}
+
+function mergeInto(into: Reading, b: Reading): void {
+  for (const [slot, y] of b) {
+    const x = into.get(slot);
+    if (!x) into.set(slot, Int8Array.from(y));
+    else for (let c = 0; c < 9; c++) if (x[c] < 0) x[c] = y[c];
+  }
+}
+
+const cloneReading = (r: Reading): Reading => new Map([...r].map(([k, v]) => [k, Int8Array.from(v)]));
+
+// 見え方が stableFrames 枚続いたら観測を出す。斜めの面の小さいマーカーはフレームごとに読めたり読めなかったりするので、
+// まったく同じ読みが続くことは求めない: 読めたセルどうしが食い違わないフレームは同じ見え方として読みを合わせる。
+// 前の観測と食い違う（手が起きた）か、新しく 3 マス以上読めたときに出す
 export function buildObservations(frames: CubeFrame[], stableFrames = 3): Observation[] {
   const out: Observation[] = [];
-  let lastSig = "";
+  let last: Reading | null = null;
   let lastSeen = frames.length ? frames[0].t : 0;
-  let runSig = "";
-  let runStart = 0;
-  let runLen = 0;
+  let run: { reading: Reading; start: number; count: number; done: boolean } | null = null;
   for (let i = 0; i < frames.length; i++) {
-    const f = frames[i];
-    const faces = f.faces.filter((x) => x.ids.filter((id) => id >= 0).length >= 3);
-    const sig = signature(faces);
-    if (sig === lastSig) lastSeen = f.t;
-    if (sig !== runSig) {
-      runSig = sig;
-      runStart = i;
-      runLen = 0;
-    }
-    runLen++;
-    if (runLen !== stableFrames || !faces.length || sig === lastSig) continue;
-    const obsFaces: FaceObservation[] = faces.map((x) => {
+    const r = readingOf(frames[i].faces);
+    if (!r.size) continue; // 何も読めないフレーム（ぶれ・手で隠れた）は見え方を区切らない
+    const t = frames[i].t;
+    if (last && !conflicts(r, last)) lastSeen = t;
+    if (!run || conflicts(r, run.reading)) run = { reading: cloneReading(r), start: i, count: 0, done: false };
+    else mergeInto(run.reading, r);
+    run.count++;
+    if (run.done || run.count < stableFrames) continue;
+    run.done = true;
+    if (last && !conflicts(run.reading, last) && newCells(run.reading, last) < 3) continue;
+    const faces: FaceObservation[] = [...run.reading].map(([slot, colors]) => {
       const cost = new Float32Array(54);
-      const labels = new Int8Array(9).fill(-1);
-      x.ids.forEach((id, cell) => {
-        if (id < 0) return;
-        const color = Math.floor(id / 9);
-        labels[cell] = color;
+      const labels = Int8Array.from(colors);
+      colors.forEach((color, cell) => {
+        if (color < 0) return;
         for (let c = 0; c < 6; c++) cost[cell * 6 + c] = c === color ? 0 : MISMATCH;
       });
-      return { slot: x.slot, cost, labels };
+      return { slot, cost, labels };
     });
-    const t = frames[runStart].t;
-    out.push({ t, tPrevEnd: Math.min(lastSeen, t), faces: obsFaces });
-    lastSig = sig;
-    lastSeen = f.t;
+    const t0 = frames[run.start].t;
+    out.push({ t: t0, tPrevEnd: Math.min(lastSeen, t0), faces: faces.sort((a, b) => a.slot - b.slot) });
+    last = cloneReading(run.reading);
+    lastSeen = t;
   }
   return out;
 }
