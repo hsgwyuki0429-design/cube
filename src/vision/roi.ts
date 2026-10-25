@@ -94,7 +94,7 @@ export function processTracked(
   stats?: RoiStats,
 ): FrameResult {
   // ArUco: マーカーは小さいので切り出して縮めず、全体で読む
-  if (config.stickers === "aruco") return processFrame(cv, img, t, config, memory, refs, hands);
+  if (config.stickers && config.stickers !== "color") return processFrame(cv, img, t, config, memory, refs, hands);
   const last = memory.last;
   const bounds = cv && config.mode === "auto" && last && t - last.t < RECENT_MS && last.faces.length ? lastBounds(last, img.width, img.height) : null;
   if (bounds) {

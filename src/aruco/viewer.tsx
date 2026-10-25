@@ -6,7 +6,8 @@ import type { CubeResult, VisibleFace } from "./cube";
 import { FaceNet, SLOT_NAMES, heldName } from "./cubePanel";
 import type { VideoInfo } from "./protocol";
 import type { FrameRecord, Summary } from "./stats";
-import { stickerName } from "./stickers";
+import { type StickerScheme, decode } from "./codes";
+import { markerLabel } from "./stickers";
 
 export interface ViewerProps {
   url: string;
@@ -14,11 +15,12 @@ export interface ViewerProps {
   info: VideoInfo;
   timeScale: number;
   configNames: string[];
+  scheme: StickerScheme;
   summary?: Summary;
   cube?: { faces: VisibleFace[][]; result: CubeResult };
 }
 
-export function Viewer({ url, frames, info, timeScale, configNames, summary, cube }: ViewerProps) {
+export function Viewer({ url, frames, info, timeScale, configNames, scheme, summary, cube }: ViewerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const timelineRef = useRef<HTMLCanvasElement>(null);
@@ -121,7 +123,7 @@ export function Viewer({ url, frames, info, timeScale, configNames, summary, cub
       const assign = summary?.slotOf[config]?.[index];
       markers.forEach((m, mi) => {
         const slot = summary && assign && assign[mi] >= 0 ? summary.slots[assign[mi]] : null;
-        const known = summary ? !!slot : m.id < 54;
+        const known = summary ? !!slot : !!decode(scheme, m.id);
         const p = [0, 1, 2, 3].map((i) => P(m.corners[i * 2], m.corners[i * 2 + 1]));
         ctx.strokeStyle = known ? "#33c27f" : "#ffb020";
         ctx.lineWidth = 2;
@@ -138,14 +140,14 @@ export function Viewer({ url, frames, info, timeScale, configNames, summary, cub
         ctx.stroke();
         const cx = p.reduce((a, q) => a + q[0], 0) / 4;
         const cy = p.reduce((a, q) => a + q[1], 0) / 4;
-        label(slot ? `${slot.name} ${slot.size}` : known ? stickerName(m.id) : `#${m.id}?`, cx, cy);
+        label(slot ? `${slot.name} ${slot.size}` : known ? markerLabel(scheme, m.id) : `#${m.id}?`, cx, cy);
       });
     };
     draw();
     const ro = new ResizeObserver(draw);
     ro.observe(v);
     return () => ro.disconnect();
-  }, [index, config, frames, summary, cube, info]);
+  }, [index, config, frames, summary, cube, info, scheme]);
 
   // タイムライン。テストモード: 行 = マーカー（緑 = 読めた、赤 = 読めない、空 = 区間外）。
   // キューブモード: 行 = 面（濃さ = 読めたマス）と、推定した手（青 = 見えた手、橙 = 推定した手）
@@ -181,7 +183,7 @@ export function Viewer({ url, frames, info, timeScale, configNames, summary, cub
       } else if (cube) {
         for (let slot = 0; slot < 5; slot++) {
           let known = 0;
-          for (let i = a; i < b && i < n; i++) known = Math.max(known, cube.faces[i]?.find((f) => f.slot === slot)?.ids.filter((id) => id >= 0).length ?? 0);
+          for (let i = a; i < b && i < n; i++) known = Math.max(known, cube.faces[i]?.find((f) => f.slot === slot)?.colors.filter((c) => c >= 0).length ?? 0);
           if (!known) continue;
           ctx.fillStyle = `rgba(51,194,127,${0.25 + (0.75 * known) / 9})`;
           ctx.fillRect(x, slot * rowH, 1, rowH - 1);

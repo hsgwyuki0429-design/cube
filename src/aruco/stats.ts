@@ -2,7 +2,7 @@
 // 写したシートの各マーカー（ID × 大きさ = スロット）について、見えていた区間での検出率・最長の途切れ・
 // 動きの速さ別の検出率を出し、方式 × 色 × 大きさの表にまとめる。
 import type { Marker } from "./detect";
-import { COLOR_LABEL, COLOR_ORDER, type ColorKey, type SheetSpec, classifyColor, stickerName, stickerOf } from "./stickers";
+import { COLOR_LABEL, COLOR_ORDER, type ColorKey, FACE_COLORS, type SheetSpec, classifyColor, markerLabel, stickerOf } from "./stickers";
 
 export interface FrameRecord {
   t: number; // 動画の時刻（ms、最初のフレームが 0）
@@ -120,7 +120,7 @@ export function summarize(input: StatsInput): Summary {
     let k = 0;
     for (const id of sheet.ids) {
       for (const size of sheet.sizes) {
-        const st = slotStat(realT, ci, id, size, hitsBySlot[k++]);
+        const st = slotStat(realT, ci, id, size, hitsBySlot[k++], sheet.scheme);
         st.speed.forEach((b, i) => {
           cfgSpeed[i].n += b.n;
           cfgSpeed[i].hits += b.hits;
@@ -296,10 +296,11 @@ function bestScale(sides: number[], sizes: number[]): number {
   return best;
 }
 
-function slotStat(realT: number[], ci: number, id: number, size: number, hits: (Hit | null)[]): SlotStat {
+function slotStat(realT: number[], ci: number, id: number, size: number, hits: (Hit | null)[], scheme: SheetSpec["scheme"]): SlotStat {
   const n = hits.length;
   const track = new Uint8Array(n);
-  const spec = stickerOf(id);
+  // 仕様で色が決まる ID（54 種類の 0〜53、12 種類の全部）。テストページの 90〜92 は写った色で決める
+  const spec = scheme === "aruco12" ? (id >= 0 && id < 12 ? { color: FACE_COLORS[id % 6] } : null) : stickerOf(id);
   const speed = SPEED_EDGES.slice(1).map(() => ({ n: 0, hits: 0 }));
   const idx: number[] = [];
   hits.forEach((h, i) => h && idx.push(i));
@@ -307,7 +308,7 @@ function slotStat(realT: number[], ci: number, id: number, size: number, hits: (
     config: ci,
     id,
     size,
-    name: stickerName(id),
+    name: markerLabel(scheme, id),
     color: spec?.color ?? null,
     colorFromSpec: !!spec,
     rgb: null,

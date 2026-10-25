@@ -5,6 +5,8 @@ import type { DecodedMove } from "../track/types";
 import type { CubeResult, VisibleFace } from "./cube";
 import { stickerName } from "./stickers";
 
+// 面の展開図のセルの表示名: 54 種類はステッカー（U0 など）、12 種類は位置が分からないので空
+
 export const SLOT_NAMES = ["上", "右", "正面", "下", "左"];
 const CSS_COLORS = ["#f2f2f2", "#d1263a", "#16a05a", "#f5d000", "#ff7a1a", "#2563d9"];
 
@@ -153,9 +155,10 @@ export function FaceNet({ faces }: { faces: VisibleFace[] }) {
           <div class="face" style={{ gridRow: pos[slot][0], gridColumn: pos[slot][1] }}>
             <div class="face-label">{SLOT_NAMES[slot]}</div>
             {Array.from({ length: 9 }, (_, cell) => {
+              const color = f ? f.colors[cell] : -1;
               const id = f ? f.ids[cell] : -1;
               return (
-                <div class="cell" style={id >= 0 ? { background: CSS_COLORS[Math.floor(id / 9)] } : undefined} title={id >= 0 ? stickerName(id) : ""}>
+                <div class="cell" style={color >= 0 ? { background: CSS_COLORS[color] } : undefined} title={id >= 0 ? stickerName(id) : ""}>
                   {id >= 0 ? stickerName(id) : ""}
                 </div>
               );

@@ -4,6 +4,7 @@
 //   max  … max(R,G,B)（HSV の V）。色付きのセルも明るく残る
 import { type Pt, applyH, fitHomography } from "../vision/homography";
 import type { CV } from "../vision/quads";
+import { type StickerScheme, makeDictionary, markerBits, markerSize } from "./codes";
 
 export type Preprocess = "gray" | "max";
 
@@ -97,7 +98,7 @@ export interface DetectResult {
 export class ArucoBench {
   private dict: any;
   private detectors: any[];
-  private bits = new Map<number, Uint8Array>();
+  private cells: number; // マーカーの枠を含むマスの数（4×4 の符号なら 6）
   private rgba: any = null;
   private gray: any = null;
   private max: any = null;
@@ -105,8 +106,10 @@ export class ArucoBench {
   constructor(
     private cv: CV,
     readonly configs: DetectorConfig[],
+    readonly scheme: StickerScheme = "aruco54",
   ) {
-    this.dict = cv.getPredefinedDictionary(cv.DICT_4X4_100);
+    this.dict = makeDictionary(cv, scheme);
+    this.cells = markerSize(scheme) + 2;
     this.detectors = configs.map((c) => {
       const p = new cv.aruco_DetectorParameters();
       for (const k of PARAM_KEYS) {
@@ -163,19 +166,6 @@ export class ArucoBench {
     return out;
   }
 
-  // マーカーのビット（6×6、255 = 明るい）
-  private bitsOf(id: number): Uint8Array {
-    let b = this.bits.get(id);
-    if (!b) {
-      const m = new this.cv.Mat();
-      this.cv.generateImageMarker(this.dict, id, 6, m, 1);
-      b = new Uint8Array(m.data);
-      m.delete();
-      this.bits.set(id, b);
-    }
-    return b;
-  }
-
   private describe(img: ImageLike, id: number, c: number[]): Marker {
     const pts: Pt[] = [0, 1, 2, 3].map((i) => [c[i * 2], c[i * 2 + 1]]);
     let side = 0;
@@ -185,7 +175,7 @@ export class ArucoBench {
       side += Math.hypot(b[0] - a[0], b[1] - a[1]) / 4;
     }
     const angle = (Math.atan2(pts[1][1] - pts[0][1], pts[1][0] - pts[0][0]) * 180) / Math.PI;
-    const m = measureCells(img, pts, this.bitsOf(id));
+    const m = measureCells(img, pts, markerBits(this.scheme, id), this.cells);
     return { id, corners: c.map((v) => Math.round(v * 10) / 10), side, angle, ...m };
   }
 
@@ -214,13 +204,14 @@ export function maxChannel(src: Uint8ClampedArray | Uint8Array, dst: Uint8Array)
 }
 
 // マーカーのセルの中心付近（3×3 点）を読み、明るいセルの色と、明るいセル − 黒いセルの差を出す
-export function measureCells(img: ImageLike, corners: Pt[], bits: Uint8Array): Pick<Marker, "rgb" | "contrastGray" | "contrastMax"> {
+// bits: 枠を含む cells×cells（1 = 明るい）
+export function measureCells(img: ImageLike, corners: Pt[], bits: Uint8Array, cells = 6): Pick<Marker, "rgb" | "contrastGray" | "contrastMax"> {
   const H = fitHomography(
     [
       [0, 0],
-      [6, 0],
-      [6, 6],
-      [0, 6],
+      [cells, 0],
+      [cells, cells],
+      [0, cells],
     ],
     corners,
   );
@@ -229,9 +220,9 @@ export function measureCells(img: ImageLike, corners: Pt[], bits: Uint8Array): P
   let nl = 0;
   let nd = 0;
   if (H) {
-    for (let r = 0; r < 6; r++) {
-      for (let c = 0; c < 6; c++) {
-        const isLight = bits[r * 6 + c] > 127;
+    for (let r = 0; r < cells; r++) {
+      for (let c = 0; c < cells; c++) {
+        const isLight = bits[r * cells + c] > 0;
         for (const dy of [-0.2, 0, 0.2]) {
           for (const dx of [-0.2, 0, 0.2]) {
             const [x, y] = applyH(H, c + 0.5 + dx, r + 0.5 + dy);

@@ -1,4 +1,5 @@
 // ArUco 検証ページ ⇄ 解析 Worker のメッセージ
+import type { StickerScheme } from "./codes";
 import type { CubeResult, VisibleFace } from "./cube";
 import type { DetectorConfig } from "./detect";
 import type { FrameRecord } from "./stats";
@@ -7,6 +8,7 @@ export interface AnalyzeOptions {
   configs: DetectorConfig[];
   maxSide: number; // 解析する画像の長辺（0 = 原寸）
   stride: number; // n フレームに 1 枚だけ解析する（1 = 全部）
+  scheme: StickerScheme; // ステッカーの符号の種類
 }
 
 export interface VideoInfo {

@@ -180,7 +180,7 @@ export function FreePanel() {
 export function StartCard() {
   const cal = useStore(controller.store, (s) => s.calibration);
   const camera = useStore(controller.store, (s) => s.camera);
-  const aruco = useStore(settingsStore, (s) => s.stickers === "aruco");
+  const aruco = useStore(settingsStore, (s) => s.stickers !== "color");
   return (
     <div>
       {aruco ? (

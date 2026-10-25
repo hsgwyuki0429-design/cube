@@ -99,3 +99,50 @@ describe("回している動画から手順を復元する", () => {
     expect(r.moves.map((m) => MOVE_NAMES[m.move]).join(" ")).toBe(`${tperm} ${tperm}`);
   }, 300000);
 });
+
+// 12 種類（3×3）の符号: ステッカーの位置は分からないが、色とセンターが分かれば同じように追える
+describe("12 種類（3×3）のステッカー", () => {
+  let bench12: ArucoBench;
+  beforeAll(() => {
+    bench12 = new ArucoBench(cv, [DEFAULT_CONFIGS[1]], "aruco12");
+  });
+  const detect12 = (st: Sticker[], orient: number, turn?: { move: number; fraction: number; spread?: number }, size = SIZE) =>
+    bench12.detect(renderArucoCube(cv, { ...size, stickers: st, orient, eye: EYE, turn, noise: 2, scheme: "aruco12" }))[0].markers;
+
+  for (const [alg, orient, label] of [
+    ["R U F' D2 L", 0, "崩した状態"],
+    ["F R' U", rotateOrientation(rotateOrientation(0, "x", 1), "y", 2), "別の面が上"],
+  ] as const) {
+    it(`${label}: 正面・上・右のマスの色が正しい`, () => {
+      const st = stickersAfter(alg);
+      const faces = reconstructFaces(detect12(st, orient), SIZE, null, "aruco12").faces;
+      const at = stickerAt(st);
+      expect(faces.map((f) => f.slot)).toEqual([0, 1, 2]);
+      for (const f of faces) {
+        const want = Array.from({ length: 9 }, (_, cell) => Math.floor(at[VIEW[(orient * 6 + f.slot) * 9 + cell]] / 9));
+        expect(f.colors.map((c, cell) => (c < 0 ? -1 : want[cell]))).toEqual(f.colors);
+        expect(f.colors.filter((c) => c >= 0).length).toBeGreaterThanOrEqual(f.slot === 2 ? 9 : 6);
+        expect(f.ids.every((id) => id === -1)).toBe(true); // 12 種類ではステッカーの位置は分からない
+      }
+    });
+  }
+
+  it("回している動画から Sune を復元する", () => {
+    const VIDEO_SIZE = { width: 800, height: 600 };
+    const frames: { t: number; markers: Marker[] }[] = [];
+    let st = solvedStickers();
+    let t = 0;
+    const push = (turn?: { move: number; fraction: number; spread?: number }) => {
+      frames.push({ t, markers: detect12(st, 0, turn, VIDEO_SIZE) });
+      t += 1000 / 240;
+    };
+    for (let k = 0; k < 3; k++) push();
+    for (const m of parseMoves("R U R' U R U2 R'")) {
+      for (const fr of [0.25, 0.5, 0.8]) push({ move: m, fraction: fr, spread: 0.12 });
+      st = applyMoveStickers(st, m);
+      for (let k = 0; k < 3; k++) push();
+    }
+    const r = decodeCube(facesOverTime(frames, VIDEO_SIZE, "aruco12"), false);
+    expect(r.moves.map((m) => MOVE_NAMES[m.move]).join(" ")).toBe("R U R' U R U2 R'");
+  }, 120000);
+});

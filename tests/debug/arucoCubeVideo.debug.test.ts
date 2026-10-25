@@ -1,8 +1,9 @@
 // キューブモードの E2E 用の合成動画: ArUco ステッカーを貼ったキューブを揃った状態から回す（240fps、約 10 手/秒、ぶれ付き）
-//   ARUCO_VIDEO=out.mp4 [ARUCO_ALG="R U R' U'"] npx vitest run -c vitest.debug.config.ts tests/debug/arucoCubeVideo.debug.test.ts
+//   ARUCO_VIDEO=out.mp4 [ARUCO_ALG="R U R' U'"] [ARUCO_SCHEME=aruco54] npx vitest run -c vitest.debug.config.ts tests/debug/arucoCubeVideo.debug.test.ts
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { it } from "vitest";
+import type { StickerScheme } from "../../src/aruco/codes";
 import { parseMoves } from "../../src/cube/model";
 import { initOpenCv } from "../../src/vision/quads";
 import { applyMoveStickers, renderArucoCube, solvedStickers } from "../arucoCube";
@@ -13,6 +14,7 @@ it("合成動画を書き出す", async () => {
   const tperm = "R U R' U' R' F R2 U' R' U' R U R' F'";
   const alg = process.env.ARUCO_ALG ?? `${tperm} ${tperm}`;
   const cv = await initOpenCv(createRequire(import.meta.url)("@techstark/opencv-js"));
+  const scheme = (process.env.ARUCO_SCHEME ?? "aruco12") as StickerScheme;
   const W = Number(process.env.ARUCO_W ?? 1280);
   const H = Number(process.env.ARUCO_H ?? 720);
   const FPS = 240;
@@ -26,7 +28,7 @@ it("合成動画を書き出す", async () => {
   const write = async (turn?: { move: number; fraction: number; spread: number }) => {
     // 手の揺れ: 視点をゆっくり動かす
     const wob = Math.sin(n / 90) * 0.15;
-    const img = renderArucoCube(cv, { width: W, height: H, stickers: st, orient: 0, eye: [2.4 + wob, 2.4, 5.5], turn, noise: 2, seed: n + 1 });
+    const img = renderArucoCube(cv, { width: W, height: H, stickers: st, orient: 0, eye: [2.4 + wob, 2.4, 5.5], turn, noise: 2, seed: n + 1, scheme });
     n++;
     const rgb = Buffer.alloc(W * H * 3);
     for (let p = 0; p < W * H; p++) {

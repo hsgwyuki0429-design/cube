@@ -12,7 +12,7 @@ let cv: CV | null = null;
 let cancelled = false;
 let busy = false;
 // 直前の解析（キューブモードで面の組み立て・手順の推定をやり直すため）
-let last: { frames: FrameRecord[]; width: number; height: number } | null = null;
+let last: { frames: FrameRecord[]; width: number; height: number; scheme: AnalyzeOptions["scheme"] } | null = null;
 
 const post = (msg: FromArucoWorker) => (self as unknown as Worker).postMessage(msg);
 
@@ -35,6 +35,7 @@ self.onmessage = async (event: MessageEvent<ToArucoWorker>) => {
       const cubeFrames = facesOverTime(
         last.frames.map((f) => ({ t: f.t * msg.timeScale, markers: f.results[msg.config]?.markers ?? [] })),
         { width: last.width, height: last.height },
+        last.scheme,
       );
       const result = decodeCube(cubeFrames, msg.endSolved);
       post({ type: "cube", faces: cubeFrames.map((f) => f.faces), result });
@@ -80,9 +81,9 @@ async function analyze(file: Blob, opt: AnalyzeOptions): Promise<void> {
   const canvas = new OffscreenCanvas(aw, ah);
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) throw new Error("2D canvas を使えません");
-  const bench = new ArucoBench(cvm, opt.configs);
+  const bench = new ArucoBench(cvm, opt.configs, opt.scheme);
   const all: FrameRecord[] = [];
-  last = { frames: all, width: aw, height: ah };
+  last = { frames: all, width: aw, height: ah, scheme: opt.scheme };
   const stride = Math.max(1, Math.floor(opt.stride));
   const pending: VideoFrame[] = [];
   let error: unknown = null;
