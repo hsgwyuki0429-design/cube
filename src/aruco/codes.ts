@@ -16,6 +16,25 @@ export const SCHEME_LABEL: Record<StickerScheme, string> = {
 // ビット r*3+c（1 = 明るい = ステッカーの色）
 export const ARUCO12_CODES = [141, 237, 85, 39, 327, 115, 215, 187, 206, 58, 92, 31];
 
+// 回転を含めたハミング距離
+const pop = (x: number) => {
+  let k = 0;
+  while (x) (x &= x - 1), k++;
+  return k;
+};
+function rot3(c: number): number {
+  let out = 0;
+  for (let r = 0; r < 3; r++) for (let q = 0; q < 3; q++) if ((c >> (r * 3 + q)) & 1) out |= 1 << (q * 3 + (2 - r));
+  return out;
+}
+export function distance12(a: number, b: number): number {
+  let d = Infinity;
+  for (let k = 0, x = ARUCO12_CODES[b]; k < 4; k++, x = rot3(x)) d = Math.min(d, pop(ARUCO12_CODES[a] ^ x));
+  return d;
+}
+// 2 ビットの読み違いで入れ替わりうる ID（距離 2 の組: 白–赤・緑–白センター・緑–橙センター・赤センター–黄センター）
+export const CONFUSABLE12: number[][] = ARUCO12_CODES.map((_, i) => ARUCO12_CODES.map((_, j) => j).filter((j) => j !== i && distance12(i, j) <= 2));
+
 export const markerSize = (s: StickerScheme) => (s === "aruco12" ? 3 : 4);
 export const idCount = (s: StickerScheme) => (s === "aruco12" ? 12 : 54);
 

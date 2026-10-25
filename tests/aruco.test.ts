@@ -7,8 +7,8 @@ import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { ArucoBench, DEFAULT_CONFIGS, type Marker } from "../src/aruco/detect";
 import { demuxFile, readSamples, rotationOf } from "../src/aruco/demux";
-import { ARUCO12_CODES, byteList, code4x4, decode, makeDictionary, markerBits as schemeBits } from "../src/aruco/codes";
-import { colorMatches } from "../src/aruco/cube";
+import { ARUCO12_CODES, CONFUSABLE12, byteList, code4x4, decode, makeDictionary, markerBits as schemeBits } from "../src/aruco/codes";
+import { colorConsistent } from "../src/aruco/cube";
 import { markerBits } from "../src/aruco/dict4x4";
 import { PRINT_COLORS } from "../src/aruco/palette";
 import { type FrameRecord, summarize, toCsv, toMarkdown } from "../src/aruco/stats";
@@ -289,13 +289,19 @@ describe("12 種類（3×3）の符号", () => {
     expect(decode("aruco54", 22)).toEqual({ face: 2, center: true, sticker: 22 });
   });
 
-  it("印刷する明るい色は、写った色の照合でそれぞれの面の色と合う", () => {
-    PRINT_COLORS.forEach((hex, face) => {
-      const rgb = [1, 3, 5].map((i) => Number.parseInt(hex.slice(i, i + 2), 16)) as [number, number, number];
-      expect(colorMatches(face, rgb)).toBe(true);
-      // 緑・青は他の面の色とは合わない（誤読を捨てられる）
-      if (face === 2 || face === 5) for (let g = 0; g < 6; g++) if (g !== face) expect(colorMatches(g, rgb)).toBe(false);
-    });
+  it("色の照合: 自分の色は通し、2 ビットで入れ替わりうる ID の色に見えたら捨てる・照明で色がずれても捨てない", () => {
+    const rgbOf = (hex: string) => [1, 3, 5].map((i) => Number.parseInt(hex.slice(i, i + 2), 16)) as [number, number, number];
+    expect(CONFUSABLE12.map((js, i) => js.map((j) => `${i}-${j}`)).flat().sort()).toEqual(["0-1", "1-0", "10-2", "2-10", "2-6", "6-2", "7-9", "9-7"]);
+    for (let id = 0; id < 12; id++) {
+      expect(colorConsistent("aruco12", id, rgbOf(PRINT_COLORS[id % 6]))).toBe(true);
+      for (const j of CONFUSABLE12[id]) expect(colorConsistent("aruco12", id, rgbOf(PRINT_COLORS[j % 6]))).toBe(false);
+    }
+    // 実物の動画（暖かい照明）で写った色: 薄い青は灰色、薄い緑は黄緑に写った
+    expect(colorConsistent("aruco12", 5, [93, 99, 109])).toBe(true);
+    expect(colorConsistent("aruco12", 2, [76, 79, 53])).toBe(true);
+    // 54 種類は写った色が ID の色に近いこと
+    expect(colorConsistent("aruco54", 45, rgbOf(PRINT_COLORS[5]))).toBe(true);
+    expect(colorConsistent("aruco54", 45, [93, 99, 109])).toBe(false);
   });
 
   it("印刷用 PDF のスクリプトと符号・色が同じ", async () => {

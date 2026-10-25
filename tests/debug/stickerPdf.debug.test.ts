@@ -7,9 +7,8 @@ import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, expect, it } from "vitest";
-import { colorMatches } from "../../src/aruco/cube";
+import { colorConsistent } from "../../src/aruco/cube";
 import { ArucoBench, DEFAULT_CONFIGS } from "../../src/aruco/detect";
-import { decode } from "../../src/aruco/codes";
 import { type CV, initOpenCv } from "../../src/vision/quads";
 
 let cv: CV;
@@ -52,7 +51,7 @@ for (const dpi of [150, 100]) {
       const count = new Array(12).fill(0);
       for (const m of markers) {
         count[m.id]++;
-        expect(colorMatches(decode("aruco12", m.id)!.face, m.rgb)).toBe(true);
+        expect(colorConsistent("aruco12", m.id, m.rgb)).toBe(true);
       }
       expect(count, `ページ ${i + 1}`).toEqual(want);
     });
