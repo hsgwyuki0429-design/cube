@@ -179,6 +179,7 @@ npm run dev        # http://localhost:5173 を開く
 | `npm run e2e` | E2E（要 `npm run build`。`E2E_VIEW=top/corner/front` `E2E_TPS` `E2E_SEEDS` `E2E_MODE=timer`） |
 | `npm run typecheck` | 型チェック |
 | `npm run build` | 本番ビルド（`dist/`。静的ホスティングにそのまま置けます） |
+| `ARUCO_VIDEO=… node scripts/aruco-e2e.mjs` | ArUco 検証ページの E2E（要 `npm run build`。`docs/aruco-phase0.md`） |
 
 ## 構成
 
@@ -191,6 +192,7 @@ src/scan/        6面スキャン（取り込み・色割り当て・自動補�
 src/app/         アプリの状態（コントローラ・タイマー・設定・保存）
 src/ui/          画面（Preact）
 src/synthetic/   合成カメラ（three.js）とデモの台本
+src/aruco/       色付き ArUco ステッカーの検証ページ（aruco.html。240fps の録画から手順の推定・検出率。docs/aruco-phase0.md）
 tests/           Vitest（tests/render.ts はテスト用のソフトウェアレンダラ、tests/speed.ts は高速回転のシミュレーション）
 scripts/e2e.mjs  ヘッドレス Chromium による E2E
 ```

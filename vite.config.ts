@@ -88,7 +88,10 @@ export default defineConfig(({ mode }) => ({
       workbox: {
         globPatterns: ["**/*.{js,css,html,svg,png}"],
         // 手の検出（約21MB）は任意機能なので、最初に使ったときにキャッシュする
-        globIgnores: ["mediapipe/**", "**/hands.worker-*.js"],
+        // ArUco の検証ページ（OpenCV.js を自前の Worker に持つ）もアプリの利用者には要らないので入れない
+        globIgnores: ["mediapipe/**", "**/hands.worker-*.js", "**/aruco.worker-*.js", "aruco.html", "**/aruco-*.js", "**/aruco-*.css"],
+        // 本体の Service Worker は画面の移動を index.html で返す。検証ページへの移動は横取りしない
+        navigateFallbackDenylist: [/aruco\.html$/],
         maximumFileSizeToCacheInBytes: 24 * 1024 * 1024,
         runtimeCaching: [
           {
@@ -108,7 +111,13 @@ export default defineConfig(({ mode }) => ({
   worker: { format: "es" },
   // cubing.js のソルバーは自前の Worker で動く。プリロード補助コードがメインのチャンクから
   // 読み込まれると Worker 内で document を参照して落ちるので、注入しない
-  build: { target: "es2022", chunkSizeWarningLimit: 16000, modulePreload: false },
+  // aruco.html は色付き ArUco ステッカーの検証ページ（src/aruco）
+  build: {
+    target: "es2022",
+    chunkSizeWarningLimit: 16000,
+    modulePreload: false,
+    rollupOptions: { input: { main: resolve(root, "index.html"), aruco: resolve(root, "aruco.html") } },
+  },
   optimizeDeps: { exclude: ["cubing"] },
   server: { host: mode === "lan" ? true : undefined },
 }));

@@ -49,12 +49,19 @@ export function HelpPage() {
             <li>中層（M/E/S）回しは、両側の面を回したのと同じ扱いで記録されます（センター基準のため）。</li>
             <li>3x3 専用です。</li>
           </ul>
+          <h3>検証中: ArUco ステッカー</h3>
+          <ul>
+            <li>
+              各ステッカーに色付きの ArUco マーカーを貼り、スロー撮影（240fps）の動画から手順を読み取る検証ページ:{" "}
+              <a href="./aruco.html">ArUco ステッカー検証</a>
+            </li>
+          </ul>
           <h3>オープンソース</h3>
           <ul class="small">
             <li>cubing.js（MPL-2.0 / GPL-3.0）— 3D キューブ・ソルバー・スクランブル</li>
             <li>OpenCV.js（Apache-2.0）— ステッカー検出</li>
             <li>MediaPipe Tasks Vision（Apache-2.0）— 手の検出</li>
-            <li>three.js（MIT）、Preact（MIT）</li>
+            <li>three.js（MIT）、Preact（MIT）、mp4box.js（BSD-3-Clause）— 動画の分解（ArUco の検証ページ）</li>
             <li>追跡のビームサーチ・色割り当ては AllefDouglasDev/rubik-cube（MIT）を参考にしています</li>
           </ul>
         </div>
