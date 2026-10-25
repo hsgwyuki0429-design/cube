@@ -4,13 +4,13 @@
 // ID = 揃った状態での facelet 番号なので、ID÷9 がそのステッカーの色（センターの面）。色を読む代わりに確かな色が分かる。
 // 面の組み立て: マーカー 1 枚の 4 隅からその面の平面の射影変換が分かる。同じ面のマーカーはその座標で
 // 「ほぼ同じ大きさの、軸にそろった正方形」が格子の間隔で並ぶ。直交する面や回している途中の層はそうならないので外れる。
-import { ROWDIR, solvedState } from "../cube/model";
+import { NORMAL, ROWDIR, VIEW, applyMove, faceletGeometry, moveFace, solvedState } from "../cube/model";
 import { DEFAULT_OFFLINE, decodeOffline } from "../track/offline";
 import { simplifyMoves } from "../track/merge";
 import type { DecodedMove, FaceObservation, Observation } from "../track/types";
 import { type Mat3, type Pt, applyH, fitHomography, invertH } from "../vision/homography";
 import { defaultFocal } from "../vision/pose";
-import { CONFUSABLE12, type Decoded, type StickerScheme, decode } from "./codes";
+import { CONFUSABLE12, type Decoded, type StickerScheme, centerOffset, decode } from "./codes";
 import type { Marker } from "./detect";
 import { type ColorKey, FACE_COLORS, classifyColor } from "./stickers";
 
@@ -162,7 +162,33 @@ export function colorConsistent(scheme: StickerScheme, id: number, rgb: [number,
   const c = classifyColor(rgb);
   if (CLOSE[FACE_COLORS[dec.face]].includes(c)) return true;
   if (scheme === "aruco54") return false;
+  // unique54 は距離 2 の相手がほぼ全色にいるので、1 枚ずつは判定しない（同じフレームの他のマーカーと比べる: frameColorFilter）
+  if (scheme === "unique54") return true;
   return !CONFUSABLE12[id].some((j) => FACE_COLORS[decode(scheme, j)!.face] === c);
+}
+
+// 写った色を同じフレームの他のマーカーの色と比べる（unique54）。照明で色がずれても同じ色のステッカーは同じようにずれるので、
+// 読んだ色の仲間（自分を除く）より別の色の仲間にずっと近いマーカーを誤読として捨てる。色味は最大のチャンネルで割って比べる（明暗によらない）
+export function frameColorFilter<T extends { rgb: [number, number, number]; face: number }>(ms: T[]): T[] {
+  const chroma = (rgb: [number, number, number]) => {
+    const m = Math.max(rgb[0], rgb[1], rgb[2], 1);
+    return [rgb[0] / m, rgb[1] / m, rgb[2] / m];
+  };
+  const xs = ms.map((m) => chroma(m.rgb));
+  const dist = (a: number[], b: number[]) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+  const med = (vs: number[][]) => [0, 1, 2].map((k) => median(vs.map((v) => v[k])));
+  return ms.filter((m, i) => {
+    let own: number | null = null;
+    let other = Infinity;
+    for (let f = 0; f < 6; f++) {
+      const group = xs.filter((_, j) => j !== i && ms[j].face === f);
+      if (f === m.face) {
+        if (group.length) own = dist(xs[i], med(group));
+      } else if (group.length >= 2) other = Math.min(other, dist(xs[i], med(group)));
+    }
+    if (own === null) return other > 0.1;
+    return !(other < 0.15 && other < own * 0.5);
+  });
 }
 
 interface Coded extends Marker {
@@ -180,7 +206,8 @@ export function reconstructFaces(
   // ステッカーの ID のみ・写った色が ID の色と合うもの。54 種類の符号で同じ ID が 2 つあれば大きい方
   const coded: Coded[] = [];
   const byId = new Map<number, Coded>();
-  for (const m of markers) {
+  const checked = scheme === "unique54" ? frameColorFilter(markers.filter((m) => decode(scheme, m.id)).map((m) => ({ ...m, face: decode(scheme, m.id)!.face }))) : markers;
+  for (const m of checked) {
     const dec = decode(scheme, m.id);
     if (!dec || !colorConsistent(scheme, m.id, m.rgb)) continue;
     const c: Coded = { ...m, dec };
@@ -324,7 +351,12 @@ const rot3 = (R: number[], v: V3): V3 => [R[0] * v[0] + R[1] * v[1] + R[2] * v[2
 function toFace(g: Group, size: { width: number; height: number }) {
   const cells = [...g.cells.values()];
   const span = (xs: number[]) => Math.max(...xs) - Math.min(...xs);
-  if (!cells.some((c) => (c.m as Coded).dec.center) && (span(cells.map((c) => c.i)) !== 2 || span(cells.map((c) => c.j)) !== 2)) return null;
+  // 位置が決まること: センターがある・3×3 に広がっている・ステッカーごとに位置と向きが決まった符号（ID と向きから真ん中が分かる）で
+  // 2 行 2 列以上に広がっている（一直線の 3 枚は回している途中の層の側面のことが多いので、ID だけでは面にしない）
+  const center = cells.some((c) => (c.m as Coded).dec.center);
+  const full = span(cells.map((c) => c.i)) === 2 && span(cells.map((c) => c.j)) === 2;
+  const identity = cells.some((c) => (c.m as Coded).dec.sticker >= 0) && new Set(cells.map((c) => c.i)).size >= 2 && new Set(cells.map((c) => c.j)).size >= 2;
+  if (!center && !full && !identity) return null;
   return { g, ...planeFrame(g.G, size), count: cells.length };
 }
 
@@ -344,12 +376,32 @@ function layout(face: NonNullable<ReturnType<typeof toFace>>, slot: number, E: n
     { row: neg(r1), map: (i, j) => [-i, j], inv: (r, c) => [-r, c] },
   ];
   const best = options.reduce((a, b) => (dot3(b.row, want) > dot3(a.row, want) ? b : a));
-  const cells = [...g.cells.values()];
+  let cells = [...g.cells.values()];
+  // ステッカーごとに位置と向きが決まった符号: 各マーカーの ID と向きから真ん中の位置を出し、多数決で決める。
+  // 食い違うマーカー（同じ色の別の ID への読み違い・別の面）は外す
+  let voted: [number, number] | null = null;
+  const votes = cells.filter((c) => (c.m as Coded).dec.sticker >= 0).map((c) => ({ c, at: centerVote(c) }));
+  if (votes.length) {
+    const count = new Map<string, number>();
+    for (const v of votes) count.set(`${v.at[0]},${v.at[1]}`, (count.get(`${v.at[0]},${v.at[1]}`) ?? 0) + 1);
+    const inside = (k: string) => {
+      const [ci, cj] = k.split(",").map(Number);
+      return cells.filter((c) => Math.abs(c.i - ci) <= 1 && Math.abs(c.j - cj) <= 1).length;
+    };
+    const key = [...count.keys()].sort((a, b) => count.get(b)! - count.get(a)! || inside(b) - inside(a))[0];
+    voted = key.split(",").map(Number) as [number, number];
+    const bad = new Set(votes.filter((v) => `${v.at[0]},${v.at[1]}` !== key).map((v) => v.c));
+    cells = cells.filter((c) => !bad.has(c));
+  }
   const rc = cells.map((c) => ({ c, rc: best.map(c.i, c.j) }));
   const center = rc.find((x) => (x.c.m as Coded).dec.center);
   let dr: number;
   let dc: number;
-  if (center) {
+  if (voted) {
+    const [r, c] = best.map(voted[0], voted[1]);
+    dr = 1 - r;
+    dc = 1 - c;
+  } else if (center) {
     dr = 1 - center.rc[0];
     dc = 1 - center.rc[1];
   } else {
@@ -387,6 +439,19 @@ function layout(face: NonNullable<ReturnType<typeof toFace>>, slot: number, E: n
   );
   if (!H) return null;
   return { colors, ids, outline, H };
+}
+
+// マーカーの ID（揃った状態の位置）と向き（基準の座標で 90° 単位）から、その面の真ん中のセル（基準の座標の i, j）
+function centerVote(c: { m: Marker; rot: number; i: number; j: number }): [number, number] {
+  const [x, y] = centerOffset((c.m as Coded).dec.sticker);
+  // マーカーの右・下の軸を基準の座標へ（rot = マーカーの上辺の向き。基準の座標は右 +i・下 +j）
+  const v: [number, number] = [
+    [x, y],
+    [-y, x],
+    [-x, -y],
+    [y, -x],
+  ][c.rot] as [number, number];
+  return [c.i + v[0], c.j + v[1]];
 }
 
 // ---- 観測と復号 ----
@@ -476,6 +541,70 @@ export function buildObservations(frames: CubeFrame[], stableFrames = 3): Observ
   return out;
 }
 
+// 手ごとの回し始め・回し終わりを、フレームごとの面から決め直す（3D を実際の速さと間で動かすため）。
+// 回している途中の層は面として組み立てないので、観測の区切りだけでは回し始めと回し終わりがほぼ同じ時刻になる。
+// 回した層の側面のマス（回している面そのものは格子ごと回るので使わない）のうち、回す前と後で色が変わるものを見て、
+// 回す前の色が最後にそろって見えたフレームと、回した後の色が最初にそろって見えたフレームの間を回していた時間とする
+export function turnTimes(frames: CubeFrame[], moves: DecodedMove[]): DecodedMove[] {
+  let state = solvedState();
+  let k = 0; // 探し始めるフレーム（前の手の回し終わり）
+  return moves.map((m) => {
+    const before = state;
+    const after = applyMove(state, m.move);
+    state = after;
+    const n = NORMAL[moveFace(m.move)];
+    // このフレームが、回す前（-1）・回した後（1）のどちらにそろって見えるか（どちらでもなければ 0）
+    const side = (f: CubeFrame): number => {
+      let pre = 0;
+      let post = 0;
+      let other = 0;
+      for (const face of f.faces) {
+        face.colors.forEach((c, cell) => {
+          if (c < 0) return;
+          const fl = VIEW[(m.orient * 6 + face.slot) * 9 + cell];
+          if (before[fl] === after[fl]) return;
+          const g = faceletGeometry(fl);
+          if (g.pos[0] * n[0] + g.pos[1] * n[1] + g.pos[2] * n[2] !== 1 || g.normal.every((v, i) => v === n[i])) return;
+          if (c === before[fl]) pre++;
+          else if (c === after[fl]) post++;
+          else other++;
+        });
+      }
+      if (pre >= 2 && !post && !other) return -1;
+      if (post >= 2 && !pre && !other) return 1;
+      return 0;
+    };
+    let iT = k;
+    while (iT + 1 < frames.length && frames[iT + 1].t <= m.t) iT++;
+    let end = iT;
+    while (end + 1 < frames.length && frames[end + 1].t <= m.t + 400) end++;
+    const sides = frames.slice(k, end + 1).map(side);
+    const at = (i: number) => sides[i - k] ?? 0;
+    // 回し終わり: 回した後の色が 2 フレーム続けて見えた最初のフレーム（回している途中にたまたまそろって見えたものを除く）
+    let firstPost = -1;
+    for (let i = k + 1; i <= end; i++) if (at(i) === 1 && (i === end || at(i + 1) === 1)) {
+      firstPost = i;
+      break;
+    }
+    if (firstPost < 0) return m;
+    // 回し始め: その前で、回す前の色が 2 フレーム続けて見えた最後のフレームの次（なければ 1 フレームだけのものでも）
+    let lastPre = -1;
+    for (let i = firstPost - 1; i >= k; i--) if (at(i) === -1 && (i === k || at(i - 1) === -1)) {
+      lastPre = i;
+      break;
+    }
+    if (lastPre < 0) for (let i = firstPost - 1; i >= k; i--) if (at(i) === -1) {
+      lastPre = i;
+      break;
+    }
+    if (lastPre < 0) return m;
+    k = firstPost;
+    const t0 = (frames[lastPre].t + frames[lastPre + 1].t) / 2;
+    const t = (frames[firstPost - 1].t + frames[firstPost].t) / 2;
+    return { ...m, t0, t };
+  });
+}
+
 // フレームごとのマーカーから面を組み立てる（傾きを次のフレームへ引き継ぐ）
 export function facesOverTime(frames: { t: number; markers: Marker[] }[], size: { width: number; height: number }, scheme: StickerScheme = "aruco54"): CubeFrame[] {
   let tilt: number[] | null = null;
@@ -503,9 +632,10 @@ export function decodeCube(frames: CubeFrame[], endSolved: boolean, stableFrames
   const obs = buildObservations(frames, stableFrames);
   const lastT = frames.length ? frames[frames.length - 1].t : 0;
   const r = decodeOffline(obs, solvedState(), endSolved ? solvedState() : null, lastT, DEFAULT_OFFLINE);
+  const raw = turnTimes(frames, r.moves);
   return {
-    moves: simplifyMoves(r.moves),
-    raw: r.moves,
+    moves: simplifyMoves(raw),
+    raw,
     method: r.method,
     reachedEnd: r.reachedEnd,
     observations: obs.length,

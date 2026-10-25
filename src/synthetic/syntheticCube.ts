@@ -41,8 +41,8 @@ function arucoSticker(geom: THREE.PlaneGeometry, scheme: StickerScheme, facelet:
   const canvas = document.createElement("canvas");
   canvas.width = canvas.height = N;
   const ctx = canvas.getContext("2d")!;
-  // 12 種類は印刷する明るい色、54 種類は最初に印刷した濃い色
-  const color = scheme === "aruco12" ? PRINT_COLORS[face] : `#${COLORS[face].toString(16).padStart(6, "0")}`;
+  // 3×3 の符号（12 種類・マスごとの 54 種類）は印刷する明るい色、4×4 の 54 種類は最初に印刷した濃い色
+  const color = scheme !== "aruco54" ? PRINT_COLORS[face] : `#${COLORS[face].toString(16).padStart(6, "0")}`;
   ctx.fillStyle = color;
   ctx.fillRect(0, 0, N, N);
   const bits = markerBits(scheme, idForFacelet(scheme, facelet));

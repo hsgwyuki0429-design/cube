@@ -18,9 +18,9 @@ export function stickerOf(id: number): { face: number; pos: number; color: Color
   return { face, pos: id % 9, color: FACE_COLORS[face] };
 }
 
-// マーカーの表示名。54 種類は U0〜B8、12 種類は面の文字（センターは「U中」）
-export function markerLabel(scheme: "aruco54" | "aruco12", id: number): string {
-  if (scheme === "aruco54") return stickerName(id);
+// マーカーの表示名。54 種類（unique54・aruco54）は U0〜B8、12 種類は面の文字（センターは「U中」）
+export function markerLabel(scheme: "aruco54" | "aruco12" | "unique54", id: number): string {
+  if (scheme !== "aruco12") return stickerName(id);
   if (id < 0 || id >= 12) return `#${id}`;
   return `${FACE_NAMES[id % 6]}${id >= 6 ? "中" : ""}`;
 }
@@ -36,12 +36,15 @@ export interface SheetSpec {
   label: string;
   ids: number[];
   sizes: number[]; // ステッカーの辺の長さ（mm）
-  scheme: "aruco54" | "aruco12"; // 符号の種類（src/aruco/codes.ts）
+  scheme: "aruco54" | "aruco12" | "unique54"; // 符号の種類（src/aruco/codes.ts）
 }
 
 const range = (n: number) => Array.from({ length: n }, (_, i) => i);
 
 export const SHEETS: SheetSpec[] = [
+  // マスごとに違う 54 種類（3×3）: 印刷用 PDF の 1・2 ページ目（18mm・15mm が 1 セットずつ）
+  { key: "u18", label: "ステッカー 18mm（54 種類・3×3）", ids: range(STICKER_IDS), sizes: [18], scheme: "unique54" },
+  { key: "u15", label: "ステッカー 15mm（54 種類・3×3）", ids: range(STICKER_IDS), sizes: [15], scheme: "unique54" },
   // 12 種類（3×3）: 同じ ID のステッカーが何枚もあるので、ID と大きさが 1 枚ずつのテストページだけ
   { key: "t12", label: "テストページ（12 種類 × 12/15/18mm）", ids: range(12), sizes: [12, 15, 18], scheme: "aruco12" },
   { key: "test", label: "テストページ（ID 90〜92 × 12/15/18mm）", ids: [90, 91, 92], sizes: [12, 15, 18], scheme: "aruco54" },

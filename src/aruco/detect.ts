@@ -4,7 +4,7 @@
 //   max  … max(R,G,B)（HSV の V）。色付きのセルも明るく残る
 import { type Pt, applyH, fitHomography } from "../vision/homography";
 import type { CV } from "../vision/quads";
-import { type StickerScheme, makeDictionary, markerBits, markerSize } from "./codes";
+import { type StickerScheme, codesOf, makeDictionary, markerBits, markerSize } from "./codes";
 
 export type Preprocess = "gray" | "max";
 
@@ -19,6 +19,7 @@ export interface ArucoParams {
   polygonalApproxAccuracyRate: number;
   minCornerDistanceRate: number;
   minMarkerDistanceRate: number;
+  minGroupDistance: number;
   cornerRefinementMethod: number; // 0 なし / 1 サブピクセル / 2 輪郭
   perspectiveRemovePixelPerCell: number;
   perspectiveRemoveIgnoredMarginPerCell: number;
@@ -37,6 +38,7 @@ export const PARAM_KEYS: (keyof ArucoParams)[] = [
   "polygonalApproxAccuracyRate",
   "minCornerDistanceRate",
   "minMarkerDistanceRate",
+  "minGroupDistance",
   "cornerRefinementMethod",
   "perspectiveRemovePixelPerCell",
   "perspectiveRemoveIgnoredMarginPerCell",
@@ -60,6 +62,11 @@ export const TUNED_PARAMS: Partial<ArucoParams> = {
   cornerRefinementMethod: 1,
 };
 
+// 符号の種類ごとの既定（方式のパラメータで上書きできる）。入れ子の候補をまとめない設定（minGroupDistance を小さく）は、
+// unique54 で本物まで読めなくなったので使わない（外側の偽物は MIN_FIT で捨てて、内側を読み直す: rescueInner）
+const SCHEME_PARAMS: Record<StickerScheme, Partial<ArucoParams>> = { aruco54: {}, aruco12: {}, unique54: {} };
+const MIN_FIT = Number((globalThis as { process?: { env: Record<string, string | undefined> } }).process?.env.ARUCO_MIN_FIT ?? 0.85);
+
 export interface DetectorConfig {
   name: string;
   preprocess: Preprocess;
@@ -81,6 +88,7 @@ export interface Marker {
   rgb: [number, number, number]; // 明るいセル（色付き）の平均
   contrastGray: number; // 明るいセル − 黒いセル（グレー）
   contrastMax: number; // 同じく max(R,G,B)
+  fit: number; // マスの中心付近の点のうち、明暗が符号どおりの割合（明るいセルと黒いセルの平均の中間で分ける）
 }
 
 export interface ImageLike {
@@ -112,8 +120,9 @@ export class ArucoBench {
     this.cells = markerSize(scheme) + 2;
     this.detectors = configs.map((c) => {
       const p = new cv.aruco_DetectorParameters();
+      const params = { ...SCHEME_PARAMS[scheme], ...c.params };
       for (const k of PARAM_KEYS) {
-        const v = c.params[k];
+        const v = params[k];
         if (typeof v === "number" && Number.isFinite(v)) p[k] = v;
       }
       const det = new cv.aruco_ArucoDetector(this.dict, p, new cv.aruco_RefineParameters(10, 3, true));
@@ -154,7 +163,11 @@ export class ArucoBench {
         for (let k = 0; k < count; k++) {
           const id = ids.data32S[k];
           const c = Array.from(corners.get(k).data32F as Float32Array);
-          markers.push(this.describe(img, id, c));
+          let m: Marker | null = this.describe(img, id, c);
+          // 符号の空きが少ない辞書（unique54）は、ずれた四角（ステッカーの外側の色の縁ごと拾った候補）も別の符号として読めてしまい、
+          // OpenCV は入れ子の外側が読めると内側の本物を試さない。マスの中心の明暗が符号どおりでなければ、色の縁の幅だけ内側を読み直す
+          if (this.scheme === "unique54" && m.fit < MIN_FIT) m = this.rescueInner(img, c);
+          if (m) markers.push(m);
         }
       } finally {
         corners.delete();
@@ -179,6 +192,21 @@ export class ArucoBench {
     return { id, corners: c.map((v) => Math.round(v * 10) / 10), side, angle, ...m };
   }
 
+  // 外側の四角（ステッカーの縁）の内側 STICKER_MARGIN にある本物のマーカーを自前で読む（3×3 の符号）
+  private rescueInner(img: ImageLike, c: number[]): Marker | null {
+    const pts: Pt[] = [0, 1, 2, 3].map((i) => [c[i * 2], c[i * 2 + 1]]);
+    const cx = (pts[0][0] + pts[1][0] + pts[2][0] + pts[3][0]) / 4;
+    const cy = (pts[0][1] + pts[1][1] + pts[2][1] + pts[3][1]) / 4;
+    const k = 1 - 2 * STICKER_MARGIN;
+    const inner: Pt[] = pts.map(([x, y]) => [cx + (x - cx) * k, cy + (y - cy) * k]);
+    const hit = decodeQuad(img, inner, codesOf(this.scheme));
+    if (!hit) return null;
+    // 符号が時計回りに rot 回だけ回って写っている → マーカーの左上はサンプリングの角 rot
+    const ordered = [0, 1, 2, 3].flatMap((i) => inner[(i + hit.rot) % 4]);
+    const m = this.describe(img, hit.id, ordered);
+    return m.fit >= MIN_FIT ? m : null;
+  }
+
   private freeMats(): void {
     for (const m of [this.rgba, this.gray, this.max]) m?.delete();
     this.rgba = this.gray = this.max = null;
@@ -190,6 +218,62 @@ export class ArucoBench {
     this.detectors = [];
     this.dict.delete();
   }
+}
+
+const STICKER_MARGIN = 0.08; // ステッカーの辺に対する色の縁（印刷用 PDF と同じ）
+
+// 四角の中の (n+2)×(n+2) のマスを読み、枠が黒く、中の n×n が辞書のどれか（回転を含む）に一致すれば ID と回転
+export function decodeQuad(img: ImageLike, pts: Pt[], codes: number[], n = 3): { id: number; rot: number } | null {
+  const cells = n + 2;
+  const H = fitHomography(
+    [
+      [0, 0],
+      [cells, 0],
+      [cells, cells],
+      [0, cells],
+    ],
+    pts,
+  );
+  if (!H) return null;
+  const val: number[] = [];
+  for (let r = 0; r < cells; r++) {
+    for (let c = 0; c < cells; c++) {
+      let sum = 0;
+      let cnt = 0;
+      for (const dy of [-0.2, 0, 0.2]) {
+        for (const dx of [-0.2, 0, 0.2]) {
+          const [x, y] = applyH(H, c + 0.5 + dx, r + 0.5 + dy);
+          const xi = Math.round(x);
+          const yi = Math.round(y);
+          if (xi < 0 || yi < 0 || xi >= img.width || yi >= img.height) continue;
+          const i = (yi * img.width + xi) * 4;
+          sum += Math.max(img.data[i], img.data[i + 1], img.data[i + 2]);
+          cnt++;
+        }
+      }
+      if (!cnt) return null;
+      val.push(sum / cnt);
+    }
+  }
+  const lo = Math.min(...val);
+  const hi = Math.max(...val);
+  if (hi - lo < 30) return null;
+  const thr = (lo + hi) / 2;
+  for (let r = 0; r < cells; r++) for (let c = 0; c < cells; c++) if ((r === 0 || c === 0 || r === cells - 1 || c === cells - 1) && val[r * cells + c] > thr) return null;
+  let code = 0;
+  for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if (val[(r + 1) * cells + c + 1] > thr) code |= 1 << (r * n + c);
+  for (let id = 0; id < codes.length; id++) {
+    let x = codes[id];
+    for (let rot = 0; rot < 4; rot++, x = rotCode(x, n)) if (x === code) return { id, rot };
+  }
+  return null;
+}
+
+// 符号を時計回りに 90°（ビット r*n+c → c*n + (n-1-r)）
+function rotCode(code: number, n: number): number {
+  let out = 0;
+  for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if ((code >> (r * n + c)) & 1) out |= 1 << (c * n + (n - 1 - r));
+  return out;
 }
 
 const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
@@ -205,7 +289,7 @@ export function maxChannel(src: Uint8ClampedArray | Uint8Array, dst: Uint8Array)
 
 // マーカーのセルの中心付近（3×3 点）を読み、明るいセルの色と、明るいセル − 黒いセルの差を出す
 // bits: 枠を含む cells×cells（1 = 明るい）
-export function measureCells(img: ImageLike, corners: Pt[], bits: Uint8Array, cells = 6): Pick<Marker, "rgb" | "contrastGray" | "contrastMax"> {
+export function measureCells(img: ImageLike, corners: Pt[], bits: Uint8Array, cells = 6): Pick<Marker, "rgb" | "contrastGray" | "contrastMax" | "fit"> {
   const H = fitHomography(
     [
       [0, 0],
@@ -219,6 +303,7 @@ export function measureCells(img: ImageLike, corners: Pt[], bits: Uint8Array, ce
   const dark = [0, 0, 0, 0, 0];
   let nl = 0;
   let nd = 0;
+  const samples: { v: number; light: boolean }[] = []; // max(R,G,B) と、符号で明るいはずか
   if (H) {
     for (let r = 0; r < cells; r++) {
       for (let c = 0; c < cells; c++) {
@@ -239,6 +324,7 @@ export function measureCells(img: ImageLike, corners: Pt[], bits: Uint8Array, ce
             acc[2] += B;
             acc[3] += 0.299 * R + 0.587 * G + 0.114 * B;
             acc[4] += Math.max(R, G, B);
+            samples.push({ v: Math.max(R, G, B), light: isLight });
             if (isLight) nl++;
             else nd++;
           }
@@ -248,9 +334,12 @@ export function measureCells(img: ImageLike, corners: Pt[], bits: Uint8Array, ce
   }
   const L = light.map((v) => v / Math.max(1, nl));
   const D = dark.map((v) => v / Math.max(1, nd));
+  const mid = (L[4] + D[4]) / 2;
+  const fit = samples.length ? samples.filter((p) => p.v > mid === p.light).length / samples.length : 0;
   return {
     rgb: [Math.round(L[0]), Math.round(L[1]), Math.round(L[2])],
     contrastGray: nl && nd ? Math.round(L[3] - D[3]) : 0,
     contrastMax: nl && nd ? Math.round(L[4] - D[4]) : 0,
+    fit,
   };
 }

@@ -50,9 +50,9 @@ window.__cubevision = controller;
 window.__cubevisionTimer = timerStore;
 
 const params = new URLSearchParams(location.search);
-// テスト用: ?stickers=aruco12（または aruco = 54 種類）で ArUco マーカーのキューブにする（デモの合成キューブもマーカー付きで描く）
+// テスト用: ?stickers=unique54（aruco12 = 12 種類・aruco = 4×4 の 54 種類）で ArUco マーカーのキューブにする（デモの合成キューブもマーカー付きで描く）
 const stickersParam = params.get("stickers");
-if (stickersParam === "aruco12" || stickersParam === "aruco" || stickersParam === "color") settingsStore.set({ stickers: stickersParam });
+if (stickersParam === "unique54" || stickersParam === "aruco12" || stickersParam === "aruco" || stickersParam === "color") settingsStore.set({ stickers: stickersParam });
 if (params.has("demo")) {
   const e2e = params.get("demo") === "e2e";
   controller.startDemo({

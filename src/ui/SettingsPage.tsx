@@ -129,7 +129,7 @@ export function SettingsPage() {
             label="ステッカー"
             desc="ArUco マーカー: 各ステッカーに色付きの ArUco マーカーを貼ったキューブ。色を読まずにマーカーの ID でステッカーを判定します（照明・色の取り違えに強い）。スキャンなしで「揃った状態から開始」できます。切り替えると追跡をやめます"
           >
-            <Select k="stickers" options={[["color", "普通の色"], ["aruco12", "ArUco マーカー（12 種類・3×3）"], ["aruco", "ArUco マーカー（54 種類・4×4・最初に印刷した版）"]]} />
+            <Select k="stickers" options={[["color", "普通の色"], ["unique54", "ArUco マーカー（54 種類・3×3・マスごとに違う）"], ["aruco12", "ArUco マーカー（12 種類・3×3）"], ["aruco", "ArUco マーカー（54 種類・4×4・最初に印刷した版）"]]} />
           </Field>
           <Field label="面の検出" desc="自動: 画面のどこにあっても面を探します。ガイド枠: 画面中央の枠に面を合わせる（暗い場所や検出が不安定なとき）。ArUco マーカーでは使いません">
             <Select k="detection" options={[["auto", "自動（推奨）"], ["guide", "ガイド枠"]]} />

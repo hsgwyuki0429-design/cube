@@ -7,8 +7,9 @@ import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { ArucoBench, DEFAULT_CONFIGS, type Marker } from "../src/aruco/detect";
 import { demuxFile, readSamples, rotationOf } from "../src/aruco/demux";
-import { ARUCO12_CODES, CONFUSABLE12, byteList, code4x4, decode, makeDictionary, markerBits as schemeBits } from "../src/aruco/codes";
-import { colorConsistent } from "../src/aruco/cube";
+import { ARUCO12_CODES, CONFUSABLE12, UNIQUE54_CODES, byteList, centerOffset, distance3, code4x4, decode, makeDictionary, markerBits as schemeBits } from "../src/aruco/codes";
+import { colorConsistent, frameColorFilter } from "../src/aruco/cube";
+import { moveAt, moveSpans, playerTimestamp } from "../src/aruco/timeline";
 import { markerBits } from "../src/aruco/dict4x4";
 import { PRINT_COLORS } from "../src/aruco/palette";
 import { type FrameRecord, summarize, toCsv, toMarkdown } from "../src/aruco/stats";
@@ -148,6 +149,7 @@ describe("集計（検出結果から）", () => {
     rgb: [200, 200, 200],
     contrastGray: 100,
     contrastMax: 120,
+    fit: 1,
   });
   const frame = (i: number, markers: Marker[]): FrameRecord => ({ t: i * 4, results: [{ markers, ms: 10 }] });
 
@@ -304,10 +306,65 @@ describe("12 種類（3×3）の符号", () => {
     expect(colorConsistent("aruco54", 45, [93, 99, 109])).toBe(false);
   });
 
+  it("マスごとに違う 54 種類: 回転を含めて全部違い・向きが決まり・OpenCV の辞書と同じビット・真ん中の向き", () => {
+    expect(UNIQUE54_CODES.length).toBe(54);
+    UNIQUE54_CODES.forEach((c, i) => {
+      for (let j = i + 1; j < 54; j++) expect(distance3(c, UNIQUE54_CODES[j])).toBeGreaterThanOrEqual(2);
+      expect(Math.min(...rots(c).slice(1).map((x) => pop(c ^ x)))).toBeGreaterThanOrEqual(2);
+    });
+    const d = makeDictionary(cv, "unique54");
+    for (let id = 0; id < 54; id++) {
+      const m = new cv.Mat();
+      cv.generateImageMarker(d, id, 5, m, 1);
+      expect(Array.from(m.data as Uint8Array).map((v) => (v > 127 ? 1 : 0))).toEqual(Array.from(schemeBits("unique54", id)));
+      m.delete();
+    }
+    d.delete();
+    expect(decode("unique54", 22)).toEqual({ face: 2, center: true, sticker: 22 });
+    expect(centerOffset(0)).toEqual([1, 1]); // 左上の角: 真ん中は右下
+    expect(centerOffset(5)).toEqual([-1, 0]); // 右の辺: 真ん中は左
+    expect(centerOffset(4)).toEqual([0, 0]);
+  });
+
+  it("写った色をフレームの中で比べる: 照明で全体の色がずれても捨てず、仲間と違う色の誤読は捨てる", () => {
+    // 暖かい照明: 白は黄みがかり、青は灰色っぽく写る（実物の動画の値）
+    const warm: Record<number, [number, number, number]> = { 0: [176, 158, 129], 5: [93, 99, 109], 1: [200, 90, 80] };
+    const ms = [0, 0, 0, 5, 5, 5, 1, 1].map((face) => ({ face, rgb: warm[face] }));
+    expect(frameColorFilter(ms).length).toBe(8);
+    // 白に写ったのに青と読んだもの（青の仲間から遠く、白の仲間に近い）は捨てる
+    const wrong = { face: 5, rgb: [178, 160, 130] as [number, number, number] };
+    expect(frameColorFilter([...ms, wrong]).includes(wrong)).toBe(false);
+  });
+
   it("印刷用 PDF のスクリプトと符号・色が同じ", async () => {
     // @ts-expect-error 型のない .mjs
     const sheet = await import("../scripts/aruco-stickers.mjs");
     expect(sheet.CODES).toEqual(ARUCO12_CODES);
+    expect(sheet.CODES_U54).toEqual(UNIQUE54_CODES);
     expect(sheet.COLORS).toEqual(PRINT_COLORS);
+  });
+});
+
+// 動画解析の 3D を実際の速さと間で動かす（src/aruco/timeline.ts）
+describe("3D の再生の時間", () => {
+  const mv = (t0: number | undefined, t: number) => ({ move: 0, t0, t, orient: 0 });
+  it("回している間は比例で進み、手の間は前の手の終わりで止まる", () => {
+    const moves = [mv(1000, 1100), mv(1500, 1700)];
+    const spans = moveSpans(moves);
+    const pStart = [0, 1000];
+    const pDur = [1000, 1500];
+    expect(playerTimestamp(500, spans, pStart, pDur)).toBe(0);
+    expect(playerTimestamp(1050, spans, pStart, pDur)).toBe(500);
+    expect(playerTimestamp(1300, spans, pStart, pDur)).toBe(1000); // 間: 1 手目の終わり
+    expect(playerTimestamp(1600, spans, pStart, pDur)).toBe(1750);
+    expect(playerTimestamp(9999, spans, pStart, pDur)).toBe(2500);
+    expect(moveAt(1300, spans)).toBe(0);
+    expect(moveAt(900, spans)).toBe(-1);
+  });
+  it("回し始めの分からない手・重なる手は、前の手の後ろにずらす", () => {
+    const spans = moveSpans([mv(1000, 1200), mv(1100, 1150), mv(undefined, 1400)]);
+    expect(spans[1].start).toBe(1200);
+    expect(spans[1].end).toBeGreaterThan(spans[1].start);
+    expect(spans[2]).toEqual({ start: 1280, end: 1400 });
   });
 });

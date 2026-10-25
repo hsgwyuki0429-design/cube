@@ -11,6 +11,7 @@ import type { FrameMessage, StreamPartial } from "../vision/protocol";
 import type { RefineInput, RefineResult } from "../vision/refine";
 import { FrameRecorder } from "../vision/recorder";
 import { RefineClient, VisionClient } from "../vision/visionClient";
+import { stickerScheme } from "../aruco/codes";
 import { ARUCO_NAMES, ARUCO_REFS } from "../aruco/palette";
 import { type Settings, settingsStore } from "./settings";
 import { type Calibration, loadCalibration, loadSolves, personalSequences, saveCalibration } from "./storage";
@@ -265,7 +266,7 @@ class Controller {
     this.camera.stop();
     this.synthetic?.stop();
     const st = settingsStore.get().stickers;
-    const syn = new SyntheticCube({ aruco: st === "aruco12" ? "aruco12" : st === "aruco" ? "aruco54" : undefined });
+    const syn = new SyntheticCube({ aruco: st === "color" ? undefined : stickerScheme(st) });
     this.synthetic = syn;
     syn.setView("front", 0);
     const info = await this.camera.attach(syn.stream());

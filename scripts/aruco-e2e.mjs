@@ -99,6 +99,40 @@ async function runCube(page) {
   });
   await page.waitForTimeout(2500);
   await page.locator(".card", { hasText: "3. 動画で確かめる" }).screenshot({ path: `${OUT}/${basename(VIDEO)}.end.png` });
+  // 動画の 3D: 手の回し始めと回し終わりの間の時刻では、3D もその手の途中（実際の速さで回す）
+  const mid = await page.evaluate(async () => {
+    const { cube, info } = window.__aruco;
+    const ms = cube.result.moves;
+    const k = Math.min(5, ms.length - 1);
+    const m = ms[k];
+    if (m.t0 === undefined) return "skip";
+    const v = document.querySelector(".viewer video");
+    v.pause();
+    const scale = window.__aruco.timeScale ?? 1;
+    v.currentTime = ((m.t0 + m.t) / 2 / scale) / 1000 + (window.__aruco.offset ?? 0) + 0.25 / Math.max(1, info.fps);
+    await new Promise((r) => setTimeout(r, 1200));
+    const p = document.querySelector(".cube-3d twisty-player");
+    const idx = await p.experimentalModel.indexer.get();
+    const ts = await p.experimentalModel.timestampRequest.get();
+    const s = idx.indexToMoveStartTimestamp(k);
+    const hint = [...document.querySelectorAll(".aruco .hint")].map((h) => h.textContent).find((x) => x.includes("実時間"));
+    return { k, ts, s, e: s + idx.moveDuration(k), t0: m.t0, t: m.t, cur: v.currentTime, hint };
+  });
+  console.log("動画の途中の 3D:", JSON.stringify(mid));
+  if (mid !== "skip" && !(mid.ts > mid.s && mid.ts < mid.e)) throw new Error("動画の手の途中で、3D がその手の途中になっていない");
+  // 手順の再生: 実際の速さで、最初の手の回し始め〜最後の手の回し終わり（+ 前後 0.4 秒）かかる
+  const replay = page.locator(".cube-replay");
+  await replay.locator("text=⏮ 最初へ").click();
+  const r0 = Date.now();
+  await replay.locator("text=▶ 再生").click();
+  await replay.locator("text=▶ 再生").waitFor({ timeout: 60000 });
+  const took = Date.now() - r0;
+  const span = await page.evaluate(() => {
+    const ms = window.__aruco.cube.result.moves;
+    return ms[ms.length - 1].t - (ms[0].t0 ?? ms[0].t) + 800;
+  });
+  console.log(`手順の再生: ${took}ms（実際の長さ ${Math.round(span)}ms）`);
+  if (Math.abs(took - span) > 600) throw new Error("手順の再生が実際の速さになっていない");
   await page.locator(".card", { hasText: "2. 推定した手順" }).screenshot({ path: `${OUT}/${basename(VIDEO)}.replay.png` });
   if (!TRUTH) return true;
   const want = TRUTH.trim().split(/\s+/).join(" ");
