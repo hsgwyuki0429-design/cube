@@ -1,7 +1,8 @@
 // 止まっているフレームを飛ばす（ソルブ中から精密解析を進めるとき、キューブも手も止まっている間に追いつくため）。
 // 精密解析は 1 フレームに 0.2〜1 秒かかり、全フレームを処理すると実時間に追いつかない。間引くと速い手を読み違える
 // （実際の動画で、30fps 相当にしただけで崩れた）ので、動いている間は全フレームを処理し、止まっている間だけ飛ばす。
-// 動き出したら、飛ばした直前の 1 枚も処理する（回し始めの時刻を決めるのに、動く直前の静止フレームが要る）
+// 動き出したら、飛ばした直前の 1 枚も処理する（回し始めの時刻を決めるのに、動く直前の静止フレームが要る）。
+// 止まった最初の 1 枚も処理する（回し終わりの時刻のため）
 import type { PixelSource } from "./sampler";
 
 const GRID = 40; // 明るさを比べる点の数（縦横）
@@ -23,6 +24,7 @@ function thumb(img: PixelSource): Float32Array {
 
 export class StillSkipper {
   private prev: Float32Array | null = null;
+  private moving = true; // 直前のフレームで動いていたか
   private lastDone = -Infinity;
   private held: { img: PixelSource; t: number } | null = null; // 飛ばした直前のフレーム
   skipped = 0;
@@ -37,7 +39,10 @@ export class StillSkipper {
       diff = s / cur.length;
     }
     this.prev = cur;
-    if (diff < STILL && t - this.lastDone < KEEP_MS) {
+    const wasMoving = this.moving;
+    this.moving = diff >= STILL;
+    // 止まった最初の 1 枚は処理する（回し終わりの時刻を決めるのに、止まった直後のフレームが要る）
+    if (!this.moving && !wasMoving && t - this.lastDone < KEEP_MS) {
       this.held = { img: copy(img), t };
       this.skipped++;
       return [];

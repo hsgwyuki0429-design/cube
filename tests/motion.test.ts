@@ -8,13 +8,16 @@ describe("still-frame skipper", () => {
     const s = new StillSkipper();
     const t = (k: number) => k * 16;
     expect(s.next(frame(100), t(0)).length).toBe(1); // 最初
-    expect(s.next(frame(100), t(1)).length).toBe(0);
+    expect(s.next(frame(100), t(1)).length).toBe(1); // 止まった最初の 1 枚
     expect(s.next(frame(100), t(2)).length).toBe(0);
     const moved = s.next(frame(140), t(3));
     // 動き出した: 直前の静止フレームと今のフレーム
     expect(moved.map((x) => x.t)).toEqual([t(2), t(3)]);
     // 動いている間は全部
     expect(s.next(frame(180), t(4)).length).toBe(1);
+    // 止まった最初の 1 枚は処理し、その次から飛ばす
+    expect(s.next(frame(180), t(5)).length).toBe(1);
+    expect(s.next(frame(180), t(6)).length).toBe(0);
   });
 
   it("still processes one frame every 200 ms while static", () => {
