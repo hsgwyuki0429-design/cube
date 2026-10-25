@@ -43,7 +43,7 @@ function recolor(root: Object3D, colors: string[] | null) {
   });
 }
 
-function matToQuat(m: readonly number[]): Quaternion {
+export function matToQuat(m: readonly number[]): Quaternion {
   return new Quaternion().setFromRotationMatrix(new Matrix4().set(m[0], m[1], m[2], 0, m[3], m[4], m[5], 0, m[6], m[7], m[8], 0, 0, 0, 0, 1));
 }
 

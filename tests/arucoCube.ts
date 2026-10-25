@@ -197,7 +197,7 @@ function renderOnce(cv: CV, o: CubeRenderOptions, fraction: number): Float32Arra
     const scheme = o.scheme ?? "aruco54";
     const cells = markerSize(scheme) + 2;
     const bits = q.sticker ? (scheme === "aruco54" ? bitsOf(cv, q.sticker.id) : markerBits(scheme, idForFacelet(scheme, q.sticker.id)).map((b) => b * 255)) : null;
-    const color = q.sticker ? (scheme === "aruco12" ? hexRgb(PRINT_COLORS[Math.floor(q.sticker.id / 9)]) : PALETTE[Math.floor(q.sticker.id / 9)]) : q.tile !== undefined ? PALETTE[q.tile] : [20, 20, 22];
+    const color = q.sticker ? (scheme !== "aruco54" ? hexRgb(PRINT_COLORS[Math.floor(q.sticker.id / 9)]) : PALETTE[Math.floor(q.sticker.id / 9)]) : q.tile !== undefined ? PALETTE[q.tile] : [20, 20, 22];
     const black = [24, 24, 26];
     const pn = dotv(q.n, sub(q.p0, o.eye));
     // 視線 d = fwd + right·sx + upv·sy（sx, sy は画素から決まる）。内側のループはスカラーで

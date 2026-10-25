@@ -14,7 +14,7 @@ export interface Settings {
   detection: "auto" | "guide";
   // ステッカーの種類。aruco12 / aruco: 各ステッカーに色付き ArUco マーカー（色を読まず ID で判定する）。
   // aruco12 は 3×3 の 12 種類、aruco は最初に印刷した 4×4 の 54 種類（src/aruco/codes.ts）
-  stickers: "color" | "aruco" | "aruco12";
+  stickers: "color" | "aruco" | "aruco12" | "unique54";
   handMask: boolean;
   debug: boolean;
   inspection: boolean;

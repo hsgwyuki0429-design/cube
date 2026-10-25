@@ -2,6 +2,7 @@
 // 精密解析（Refiner）で、カメラの速さ（30fps）の映像から手順を追えること。
 import { createRequire } from "node:module";
 import { beforeAll, describe, expect, it } from "vitest";
+import { stickerScheme } from "../src/aruco/codes";
 import { ARUCO_REFS } from "../src/aruco/palette";
 import { MOVE_NAMES, VIEW, type Vec3, parseMoves, solvedState } from "../src/cube/model";
 import { TrackerEngine } from "../src/track/engine";
@@ -40,8 +41,8 @@ describe("ArUco の認識（本体の経路）", () => {
 
 describe("30fps のカメラで回す（揃った状態から）", () => {
   const alg = "R U R' U' F2 D L' B";
-  function run(withRefiner: boolean, stickers: "aruco" | "aruco12" = "aruco") {
-    const scheme = stickers === "aruco12" ? "aruco12" : "aruco54";
+  function run(withRefiner: boolean, stickers: "aruco" | "aruco12" | "unique54" = "aruco") {
+    const scheme = stickerScheme(stickers);
     const pipeline = { ...PIPELINE, stickers };
     const truth = parseMoves(alg);
     const engine = new TrackerEngine(solvedState(), ARUCO_REFS);
@@ -73,6 +74,13 @@ describe("30fps のカメラで回す（揃った状態から）", () => {
     expect(live).toBe(truth.map((m) => MOVE_NAMES[m]).join(" "));
     const rr = refiner!.result(null);
     expect(rr.moves.map((m) => MOVE_NAMES[m.move]).join(" ")).toBe(alg);
+  }, 300000);
+
+  it("マスごとに違う 54 種類（3×3）のステッカーで、ライブの追跡と精密解析で手順が正しい", () => {
+    const { engine, refiner, truth } = run(true, "unique54");
+    const live = simplifyMoves(engine.decoder.bestMoves()).map((m) => MOVE_NAMES[m.move]).join(" ");
+    expect(live).toBe(truth.map((m) => MOVE_NAMES[m]).join(" "));
+    expect(refiner!.result(null).moves.map((m) => MOVE_NAMES[m.move]).join(" ")).toBe(alg);
   }, 300000);
 
   it("12 種類（3×3）のステッカーでも、ライブの追跡で手順が正しい", () => {

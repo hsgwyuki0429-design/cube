@@ -4,7 +4,7 @@
 // 解析はすべて端末内（Worker）。動画はどこにも送らない。
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import "./aruco.css";
-import { SCHEME_LABEL, type StickerScheme } from "./codes";
+import { SCHEMES, SCHEME_LABEL, type StickerScheme } from "./codes";
 import type { CubeResult, VisibleFace } from "./cube";
 import { CubeResults } from "./cubePanel";
 import { DEFAULT_CONFIGS, type DetectorConfig, PARAM_KEYS, TUNED_PARAMS } from "./detect";
@@ -35,8 +35,8 @@ export function ArucoPage() {
   const [ready, setReady] = useState<number | null>(null);
   const [file, setFile] = useState<File | null>(null);
   const [fileUrl, setFileUrl] = useState<string | null>(null);
-  const [scheme, setScheme] = useState<StickerScheme>("aruco12");
-  const [runScheme, setRunScheme] = useState<StickerScheme>("aruco12");
+  const [scheme, setScheme] = useState<StickerScheme>("unique54");
+  const [runScheme, setRunScheme] = useState<StickerScheme>("unique54");
   const [sheetKey, setSheetKey] = useState("t12");
   const [captureFps, setCaptureFps] = useState("");
   const [maxSide, setMaxSide] = useState(0);
@@ -146,8 +146,8 @@ export function ArucoPage() {
 
   // テスト（scripts/aruco-e2e.mjs）とデバッグ用
   useEffect(() => {
-    (window as unknown as { __aruco?: unknown }).__aruco = { frames: framesRef.current, summary, info, cube };
-  }, [summary, info, cube]);
+    (window as unknown as { __aruco?: unknown }).__aruco = { frames: framesRef.current, summary, info, cube, timeScale };
+  }, [summary, info, cube, timeScale]);
 
   const meta = () => ({
     動画: file?.name ?? "",
@@ -185,7 +185,7 @@ export function ArucoPage() {
           <label>
             ステッカーの種類
             <select value={scheme} onChange={(e) => setScheme((e.target as HTMLSelectElement).value as StickerScheme)}>
-              {(["aruco12", "aruco54"] as const).map((k) => (
+              {SCHEMES.map((k) => (
                 <option value={k}>{SCHEME_LABEL[k]}</option>
               ))}
             </select>

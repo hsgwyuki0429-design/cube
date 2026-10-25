@@ -168,3 +168,76 @@ describe("12 種類（3×3）のステッカー", () => {
     expect(r.moves.map((m) => MOVE_NAMES[m.move]).join(" ")).toBe("R U R' U R U2 R'");
   }, 120000);
 });
+
+describe("マスごとに違う 54 種類（3×3）のステッカー", () => {
+  let benchU: ArucoBench;
+  let bench12b: ArucoBench;
+  beforeAll(() => {
+    benchU = new ArucoBench(cv, [DEFAULT_CONFIGS[1]], "unique54");
+    bench12b = new ArucoBench(cv, [DEFAULT_CONFIGS[1]], "aruco12");
+  });
+  const render = (st: Sticker[], orient: number, scheme: "unique54" | "aruco12", turn?: { move: number; fraction: number; spread?: number }, size = SIZE) =>
+    renderArucoCube(cv, { ...size, stickers: st, orient, eye: EYE, turn, noise: 2, scheme });
+
+  for (const [alg, orient, label] of [
+    ["R U F' D2 L", 0, "崩した状態"],
+    ["F R' U", rotateOrientation(rotateOrientation(0, "x", 1), "y", 2), "別の面が上"],
+  ] as const) {
+    it(`${label}: 正面・上・右のマスの ID と色が正しい`, () => {
+      const st = stickersAfter(alg);
+      const faces = reconstructFaces(benchU.detect(render(st, orient, "unique54"))[0].markers, SIZE, null, "unique54").faces;
+      const at = stickerAt(st);
+      expect(faces.map((f) => f.slot)).toEqual([0, 1, 2]);
+      for (const f of faces) {
+        const want = Array.from({ length: 9 }, (_, cell) => at[VIEW[(orient * 6 + f.slot) * 9 + cell]]);
+        expect(f.ids.map((id, cell) => (id < 0 ? -1 : want[cell]))).toEqual(f.ids);
+        expect(f.colors.map((c, cell) => (c < 0 ? -1 : Math.floor(want[cell] / 9)))).toEqual(f.colors);
+        expect(f.ids.filter((id) => id >= 0).length).toBeGreaterThanOrEqual(f.slot === 2 ? 9 : 6);
+      }
+    });
+  }
+
+  it("センターと下の段が隠れても、1 枚ずつの ID と向きから正面を組み立てる（12 種類では位置が決まらない）", () => {
+    const st = stickersAfter("R U F' D2 L");
+    const at = stickerAt(st);
+    // 正面（F）の真ん中と下の段のステッカーを外す（指で隠れた代わり）
+    const hidden = new Set([22, 24, 25, 26].map((f) => at[f]));
+    const visible = st.filter((s) => !hidden.has(s.id));
+    const front = (scheme: "unique54" | "aruco12", b: ArucoBench) =>
+      reconstructFaces(b.detect(render(visible, 0, scheme))[0].markers, SIZE, null, scheme).faces.find((f) => f.slot === 2);
+    const u = front("unique54", benchU)!;
+    expect(u).toBeTruthy();
+    expect(u.colors.map((c, cell) => (c < 0 ? -1 : Math.floor(at[VIEW[2 * 9 + cell]] / 9)))).toEqual(u.colors);
+    expect(u.colors.filter((c) => c >= 0).length).toBe(5);
+    expect(front("aruco12", bench12b)).toBeUndefined();
+  });
+
+  it("回している動画から Sune を復元する", () => {
+    const VIDEO_SIZE = { width: 800, height: 600 };
+    const frames: { t: number; markers: Marker[] }[] = [];
+    let st = solvedStickers();
+    let t = 0;
+    const push = (turn?: { move: number; fraction: number; spread?: number }) => {
+      frames.push({ t, markers: benchU.detect(render(st, 0, "unique54", turn, VIDEO_SIZE))[0].markers });
+      t += 1000 / 240;
+    };
+    for (let k = 0; k < 3; k++) push();
+    for (const m of parseMoves("R U R' U R U2 R'")) {
+      for (const fr of [0.25, 0.5, 0.8]) push({ move: m, fraction: fr, spread: 0.12 });
+      st = applyMoveStickers(st, m);
+      for (let k = 0; k < 3; k++) push();
+    }
+    const r = decodeCube(facesOverTime(frames, VIDEO_SIZE, "unique54"), false);
+    expect(r.moves.map((m) => MOVE_NAMES[m.move]).join(" ")).toBe("R U R' U R U2 R'");
+    // 手の時刻: 止まった 3 フレーム → 回している 3 フレーム → 止まった 3 フレーム（1 フレーム 4.2ms）。
+    // 回し始め〜回し終わりは回している 3 フレームを挟む（約 12〜17ms）、手と手の間は止まった 3 フレームぶん空く
+    const F = 1000 / 240;
+    r.moves.forEach((m, i) => {
+      expect(m.t0).toBeDefined();
+      expect(m.t - m.t0!).toBeGreaterThan(2.5 * F);
+      expect(m.t - m.t0!).toBeLessThan(4.5 * F);
+      expect(Math.abs(m.t0! - (3 + i * 6 - 0.5) * F)).toBeLessThan(1.5 * F);
+      if (i) expect(m.t0! - r.moves[i - 1].t).toBeGreaterThan(1.5 * F);
+    });
+  }, 120000);
+});

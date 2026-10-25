@@ -58,3 +58,22 @@ for (const dpi of [150, 100]) {
     bench.delete();
   });
 }
+
+// マスごとに違う 54 種類: 1・2 ページ目は 2 セット（どの ID も 2 枚）。3 ページ目の展開図（9mm）は 150dpi なら 1 枚ずつ読める
+const PDF_U54 = "docs/stickers/cubevision_unique54_stickers.pdf";
+for (const dpi of [150, 100]) {
+  it(`54 種類: ${dpi}dpi でステッカーのページを正しく読む`, () => {
+    const dir = mkdtempSync(join(tmpdir(), "stickers-"));
+    execFileSync("pdftoppm", ["-r", String(dpi), "-f", "1", "-l", "2", PDF_U54, join(dir, "p")]);
+    const bench = new ArucoBench(cv, [DEFAULT_CONFIGS[1]], "unique54");
+    for (const i of [1, 2]) {
+      const markers = bench.detect(readPpm(join(dir, `p-${i}.ppm`)))[0].markers;
+      const count = new Array(54).fill(0);
+      for (const m of markers) count[m.id]++;
+      expect(count, `ページ ${i}`).toEqual(new Array(54).fill(2));
+      // 印刷した向きのまま（マーカーの上辺が上: 角 0 → 1 が右向き）
+      for (const m of markers) expect(Math.abs(m.angle)).toBeLessThan(5);
+    }
+    bench.delete();
+  });
+}

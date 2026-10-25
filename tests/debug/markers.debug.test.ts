@@ -3,7 +3,7 @@
 //   npx vitest run -c vitest.debug.config.ts tests/debug/markers.debug.test.ts
 import { createRequire } from "node:module";
 import { it } from "vitest";
-import { ARUCO12_CODES } from "../../src/aruco/codes";
+import { ARUCO12_CODES, UNIQUE54_CODES } from "../../src/aruco/codes";
 import { maxChannel } from "../../src/aruco/detect";
 import { initOpenCv } from "../../src/vision/quads";
 
@@ -234,7 +234,8 @@ it("辞書の比較", async () => {
     { name: "自作 4×4 の 12 個・訂正 1", n: 4, codes: custom4, dict: makeDict(cv, custom4, 4, 1), face: f12 },
     { name: "自作 4×4 の 12 個・訂正 0", n: 4, codes: custom4, dict: makeDict(cv, custom4, 4, 0), face: f12 },
     { name: "自作 3×3 の 12 個", n: 3, codes: custom3, dict: makeDict(cv, custom3, 3, 0), face: f12 },
-  ];
+    { name: "自作 3×3 の 54 個（マスごと）", n: 3, codes: UNIQUE54_CODES, dict: makeDict(cv, UNIQUE54_CODES, 3, 0), face: f54 },
+  ].filter((sc) => !process.env.SCHEMES || process.env.SCHEMES.split(",").some((k) => sc.name.includes(k)));
   for (const sc of schemes) console.log(`R ${sc.name}: 最小距離 ${minDistance(sc.codes, sc.n)}・直せるビット ${sc.dict.maxCorrectionBits}`);
 
   const detectors = schemes.map((sc) => {

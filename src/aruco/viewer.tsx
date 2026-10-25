@@ -1,8 +1,8 @@
 // 動画の上に、解析したフレームの検出結果を重ねる。動画の表示時刻にいちばん近い解析フレームを使う。
 // テストモード: マーカーごとの読めた・読めない。キューブモード: 組み立てた面と推定した手
-import { useEffect, useMemo, useRef, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { MOVE_NAMES } from "../cube/model";
-import { Cube3D } from "../ui/Cube3D";
+import { TimedCube3D } from "./timedCube";
 import type { CubeResult, VisibleFace } from "./cube";
 import { FaceNet, SLOT_NAMES, heldName } from "./cubePanel";
 import type { VideoInfo } from "./protocol";
@@ -27,6 +27,7 @@ export function Viewer({ url, frames, info, timeScale, configNames, scheme, summ
   const timelineRef = useRef<HTMLCanvasElement>(null);
   const [config, setConfig] = useState(0);
   const [index, setIndex] = useState(0);
+  const [realMs, setRealMs] = useState(0); // 表示中のフレームの実時間（3D を動画に合わせる）
   const offsetRef = useRef<number | null>(null); // 動画の最初のフレームの mediaTime（秒）
 
   const nearest = (ms: number) => {
@@ -49,20 +50,24 @@ export function Viewer({ url, frames, info, timeScale, configNames, scheme, summ
     const onFrame = (_now: number, meta: { mediaTime: number }) => {
       if (offsetRef.current === null) offsetRef.current = v.currentTime < 0.001 ? meta.mediaTime : 0;
       setIndex(nearest((meta.mediaTime - offsetRef.current) * 1000));
+      setRealMs((meta.mediaTime - offsetRef.current) * 1000 * timeScale);
       handle = v.requestVideoFrameCallback(onFrame);
     };
     const rvfc = typeof v.requestVideoFrameCallback === "function";
     if (rvfc) handle = v.requestVideoFrameCallback(onFrame);
     // requestVideoFrameCallback がないブラウザは timeupdate で（粗い）
     const onTime = () => {
-      if (!rvfc) setIndex(nearest(v.currentTime * 1000));
+      if (!rvfc) {
+        setIndex(nearest(v.currentTime * 1000));
+        setRealMs(v.currentTime * 1000 * timeScale);
+      }
     };
     v.addEventListener("timeupdate", onTime);
     return () => {
       if (rvfc) v.cancelVideoFrameCallback(handle);
       v.removeEventListener("timeupdate", onTime);
     };
-  }, [url, frames]);
+  }, [url, frames, timeScale]);
 
   const seek = (i: number) => {
     const v = videoRef.current;
@@ -72,6 +77,7 @@ export function Viewer({ url, frames, info, timeScale, configNames, scheme, summ
     // フレームの途中の時刻にして、隣のフレームに丸められないようにする
     v.currentTime = (offsetRef.current ?? 0) + frames[k].t / 1000 + 0.25 / Math.max(1, info.fps);
     setIndex(k);
+    setRealMs(frames[k].t * timeScale);
   };
   const seekReal = (ms: number) => seek(nearest(ms / timeScale));
 
@@ -216,11 +222,6 @@ export function Viewer({ url, frames, info, timeScale, configNames, scheme, summ
     if (list[0]) seekReal(list[0].t0 ?? list[0].t);
   };
   const doneMoves = moves.filter((m) => m.t <= nowReal);
-  // 3D は回し始めた手から動かす（回し終わりまで待つと、動画より遅れて見える）
-  const started = moves.filter((m) => (m.t0 ?? m.t) <= nowReal);
-  const startedKey = started.map((m) => m.move).join(",");
-  const startedMoves = useMemo(() => started.map((m) => m.move), [startedKey]);
-  const heldOrient = (started[started.length - 1] ?? moves[0])?.orient ?? null;
   const turning = moves.find((m) => (m.t0 ?? m.t) <= nowReal && nowReal < m.t);
   const missedHere = slots.filter((s) => s.track[index] === 1);
   const f = frames[index];
@@ -300,8 +301,8 @@ export function Viewer({ url, frames, info, timeScale, configNames, scheme, summ
               <FaceNet faces={faces} />
               {moves.length > 0 && (
                 <div class="cube-3d">
-                  <Cube3D epoch={0} setupMoves={[]} moves={startedMoves} orient={heldOrient} />
-                  <div class="hint">推定した手順で動かしたキューブ（動画の時刻に合わせる・カメラから見た持ち方）</div>
+                  <TimedCube3D moves={moves} time={realMs} held />
+                  <div class="hint">推定した手順で動かしたキューブ（動画の時刻に合わせ、回し始め〜回し終わりの速さで回す・カメラから見た持ち方）</div>
                 </div>
               )}
             </div>
