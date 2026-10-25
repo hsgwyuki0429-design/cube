@@ -90,6 +90,8 @@ export default defineConfig(({ mode }) => ({
         // 手の検出（約21MB）は任意機能なので、最初に使ったときにキャッシュする
         // ArUco の検証ページ（OpenCV.js を自前の Worker に持つ）もアプリの利用者には要らないので入れない
         globIgnores: ["mediapipe/**", "**/hands.worker-*.js", "**/aruco.worker-*.js", "aruco.html", "**/aruco-*.js", "**/aruco-*.css"],
+        // 本体の Service Worker は画面の移動を index.html で返す。検証ページへの移動は横取りしない
+        navigateFallbackDenylist: [/aruco\.html$/],
         maximumFileSizeToCacheInBytes: 24 * 1024 * 1024,
         runtimeCaching: [
           {

@@ -51,7 +51,8 @@ export const TUNED_PARAMS: Partial<ArucoParams> = {
   adaptiveThreshWinSizeStep: 4, // 窓を細かく試す（遅くなる）
   adaptiveThreshConstant: 5,
   minMarkerPerimeterRate: 0.01, // 1080p で辺 5px まで（既定 0.03 は辺 14px）
-  polygonalApproxAccuracyRate: 0.05, // ぼけた角
+  // polygonalApproxAccuracyRate（輪郭の四角形近似の許容）は緩めない: 0.05 にすると、マーカーが密に並ぶキューブの上で
+  // 読めるマーカーが 27 → 11 に減った（合成のキューブ。シートでは差がない）
   minOtsuStdDev: 3, // 青・赤のセルと黒の差が小さい
   perspectiveRemovePixelPerCell: 8,
   perspectiveRemoveIgnoredMarginPerCell: 0.2,

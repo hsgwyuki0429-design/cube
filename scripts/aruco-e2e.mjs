@@ -1,8 +1,9 @@
 // ArUco 検証ページ（aruco.html）の端から端までのテスト: ビルド済みのページをヘッドレス Chromium で開き、
 // 動画ファイルを読み込ませて解析し、結果の表と画面を e2e-output/aruco/ に書き出す。
 //
-//   npm run build && ARUCO_VIDEO=path/to/video.mp4 node scripts/aruco-e2e.mjs
-//   （合成動画は tests/debug/arucoVideo.debug.test.ts で作れる）
+//   npm run build && ARUCO_VIDEO=path/to/video.mp4 node scripts/aruco-e2e.mjs                  # テストモード（シート）
+//   ARUCO_MODE=cube ARUCO_TRUTH="R U R' U'" [ARUCO_END_SOLVED=1] ARUCO_VIDEO=… node scripts/aruco-e2e.mjs  # キューブモード
+//   （合成動画は tests/debug/arucoVideo.debug.test.ts・arucoCubeVideo.debug.test.ts で作れる）
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
@@ -12,6 +13,8 @@ import { chromium } from "playwright-core";
 const VIDEO = process.env.ARUCO_VIDEO;
 const OUT = process.env.E2E_OUT ?? "e2e-output/aruco";
 const SHEET = process.env.ARUCO_SHEET ?? "test";
+const MODE = process.env.ARUCO_MODE ?? "sheet"; // sheet | cube
+const TRUTH = process.env.ARUCO_TRUTH ?? "";
 const CONFIGS = process.env.ARUCO_CONFIGS; // 例: "0,1"（既定は全部）
 const CHROME = process.env.CHROME_PATH ?? (existsSync("/opt/pw-browsers/chromium") ? "/opt/pw-browsers/chromium" : undefined);
 if (!VIDEO || !existsSync(VIDEO)) {
@@ -38,6 +41,57 @@ await new Promise((resolve, reject) => {
   setTimeout(resolve, 8000);
 });
 
+// キューブモード: 解析して推定した手順を正解と比べる。一致すれば true
+async function runCube(page) {
+  if (process.env.ARUCO_END_SOLVED) await page.check("text=最後は揃った状態");
+  const t0 = Date.now();
+  await page.click("text=解析する");
+  await page.waitForFunction(() => document.body.textContent.includes("2. 推定した手順") || document.querySelector(".status-banner.bad"), null, { timeout: 1800000 });
+  const err = await page.locator(".status-banner.bad").allTextContents();
+  if (err.length) throw new Error(err.join("\n"));
+  console.log(`解析 ${((Date.now() - t0) / 1000).toFixed(1)} 秒`);
+  if (TRUTH) await page.fill('input[type="text"]', TRUTH);
+  const res = await page.evaluate(() => {
+    const { cube } = window.__aruco;
+    const names = ["U", "R", "F", "D", "L", "B"].flatMap((f) => [f, f + "2", f + "'"]);
+    return { moves: cube.result.moves.map((m) => names[m.move] + (m.inferred ? "*" : "")).join(" "), result: { ...cube.result, moves: undefined, raw: undefined } };
+  });
+  console.log("推定:", res.moves);
+  if (process.env.ARUCO_DUMP) {
+    // フレームごとの面の読めたマス（調査用）
+    const dump = await page.evaluate(() => {
+      const { cube, frames } = window.__aruco;
+      return cube.faces.map((fs, i) => `${frames[i].t.toFixed(1)} ${frames[i].results[0].markers.length} ${fs.map((f) => `${f.slot}:${f.ids.filter((x) => x >= 0).length}`).join(",")}`).join("\n");
+    });
+    writeFileSync(`${OUT}/${basename(VIDEO)}.faces.txt`, dump);
+    const mv = await page.evaluate(() => window.__aruco.cube.result.moves.map((m) => `${m.move} ${m.t0?.toFixed(1)} ${m.t.toFixed(1)} ${m.inferred ? "inf" : ""}`).join("\n"));
+    writeFileSync(`${OUT}/${basename(VIDEO)}.moves.txt`, mv);
+  }
+  console.log(JSON.stringify(res.result));
+  const verdict = await page.locator(".status-banner.ok, .status-banner.bad").allTextContents();
+  console.log(verdict.join("\n"));
+  await page.screenshot({ path: `${OUT}/${basename(VIDEO)}.page.png`, fullPage: true });
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  if (overflow > 0) throw new Error(`ページが横に ${overflow}px はみ出しています`);
+  const viewer = page.locator(".viewer");
+  await viewer.scrollIntoViewIfNeeded();
+  for (const [sec, label] of [
+    [0.1, "still"],
+    [0.35, "turning"],
+  ]) {
+    await page.evaluate((s) => {
+      const v = document.querySelector(".viewer video");
+      v.pause();
+      v.currentTime = s;
+    }, sec);
+    await page.waitForTimeout(800);
+    await page.locator(".card", { hasText: "3. 動画で確かめる" }).screenshot({ path: `${OUT}/${basename(VIDEO)}.${label}.png` });
+  }
+  if (!TRUTH) return true;
+  const want = TRUTH.trim().split(/\s+/).join(" ");
+  return res.moves.replace(/\*/g, "") === want;
+}
+
 const browser = await chromium.launch({ executablePath: CHROME });
 let failed = false;
 try {
@@ -47,6 +101,11 @@ try {
   await page.goto(`http://localhost:${PORT}/aruco.html`);
   await page.waitForFunction(() => !document.body.textContent.includes("OpenCV.js を読み込み中"), null, { timeout: 120000 });
   await page.setInputFiles('input[type="file"]', VIDEO);
+  if (MODE === "cube") {
+    failed = !(await runCube(page));
+    throw "skip";
+  }
+  await page.click("text=テスト（シートの検出率）");
   await page.selectOption("select >> nth=0", SHEET);
   if (CONFIGS) {
     const want = new Set(CONFIGS.split(",").map(Number));
@@ -92,8 +151,10 @@ try {
   const hint = await page.locator(".aruco .hint", { hasText: "フレーム" }).first().textContent();
   console.log(hint);
 } catch (e) {
-  failed = true;
-  console.error(e);
+  if (e !== "skip") {
+    failed = true;
+    console.error(e);
+  }
 } finally {
   await browser.close();
   server.kill();

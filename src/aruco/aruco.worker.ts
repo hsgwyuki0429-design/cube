@@ -2,6 +2,7 @@
 // ライブではないので間引かない（stride を指定したときだけ）。映像はどこにも送らない。
 import cvModule from "@techstark/opencv-js";
 import { type CV, initOpenCv } from "../vision/quads";
+import { decodeCube, facesOverTime } from "./cube";
 import { ArucoBench } from "./detect";
 import { demuxFile, readSamples } from "./demux";
 import type { AnalyzeOptions, FromArucoWorker, ToArucoWorker } from "./protocol";
@@ -10,6 +11,8 @@ import type { FrameRecord } from "./stats";
 let cv: CV | null = null;
 let cancelled = false;
 let busy = false;
+// 直前の解析（キューブモードで面の組み立て・手順の推定をやり直すため）
+let last: { frames: FrameRecord[]; width: number; height: number } | null = null;
 
 const post = (msg: FromArucoWorker) => (self as unknown as Worker).postMessage(msg);
 
@@ -27,6 +30,14 @@ self.onmessage = async (event: MessageEvent<ToArucoWorker>) => {
       post({ type: "ready", ms: performance.now() - t0 });
     } else if (msg.type === "cancel") {
       cancelled = true;
+    } else if (msg.type === "cube") {
+      if (!last) throw new Error("先に動画を解析してください");
+      const cubeFrames = facesOverTime(
+        last.frames.map((f) => ({ t: f.t * msg.timeScale, markers: f.results[msg.config]?.markers ?? [] })),
+        { width: last.width, height: last.height },
+      );
+      const result = decodeCube(cubeFrames, msg.endSolved);
+      post({ type: "cube", faces: cubeFrames.map((f) => f.faces), result });
     } else if (msg.type === "analyze") {
       if (busy) throw new Error("解析中です");
       busy = true;
@@ -70,6 +81,8 @@ async function analyze(file: Blob, opt: AnalyzeOptions): Promise<void> {
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) throw new Error("2D canvas を使えません");
   const bench = new ArucoBench(cvm, opt.configs);
+  const all: FrameRecord[] = [];
+  last = { frames: all, width: aw, height: ah };
   const stride = Math.max(1, Math.floor(opt.stride));
   const pending: VideoFrame[] = [];
   let error: unknown = null;
@@ -110,7 +123,9 @@ async function analyze(file: Blob, opt: AnalyzeOptions): Promise<void> {
       else ctx.setTransform(scale, 0, 0, scale, 0, 0);
       ctx.drawImage(f, 0, 0, d.width, d.height);
       const img = ctx.getImageData(0, 0, aw, ah);
-      batch.push({ t: (f.timestamp - d.firstCts) / 1000, results: bench.detect(img) });
+      const rec = { t: (f.timestamp - d.firstCts) / 1000, results: bench.detect(img) };
+      batch.push(rec);
+      all.push(rec);
       analyzed++;
     } finally {
       f.close();

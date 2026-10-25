@@ -192,7 +192,7 @@ src/scan/        6面スキャン（取り込み・色割り当て・自動補�
 src/app/         アプリの状態（コントローラ・タイマー・設定・保存）
 src/ui/          画面（Preact）
 src/synthetic/   合成カメラ（three.js）とデモの台本
-src/aruco/       色付き ArUco ステッカーの検証ページ（aruco.html。240fps の録画を解析。docs/aruco-phase0.md）
+src/aruco/       色付き ArUco ステッカーの検証ページ（aruco.html。240fps の録画から手順の推定・検出率。docs/aruco-phase0.md）
 tests/           Vitest（tests/render.ts はテスト用のソフトウェアレンダラ、tests/speed.ts は高速回転のシミュレーション）
 scripts/e2e.mjs  ヘッドレス Chromium による E2E
 ```

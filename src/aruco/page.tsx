@@ -1,11 +1,17 @@
-// フェーズ0追加検証: 色付き ArUco ステッカーのテストモード。
-// スマホのスロー撮影（240fps）で撮った動画を読み込み、1 フレームずつ検出して、方式 × 色 × 大きさの検出率を出す。
+// フェーズ0追加検証: 色付き ArUco ステッカー。スマホのスロー撮影（240fps）で撮った動画を読み込み、1 フレームずつ検出する。
+//   キューブモード: ステッカーを貼ったキューブを回した動画から、見えている面を組み立てて手順を推定する
+//   テストモード: シートを写した動画で、方式 × 色 × 大きさの検出率を出す
 // 解析はすべて端末内（Worker）。動画はどこにも送らない。
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
+import type { CubeResult, VisibleFace } from "./cube";
+import { CubeResults } from "./cubePanel";
 import { DEFAULT_CONFIGS, type DetectorConfig, PARAM_KEYS, TUNED_PARAMS } from "./detect";
 import type { FromArucoWorker, VideoInfo } from "./protocol";
 import { type FrameRecord, SPEED_LABELS, type Summary, colorLabel, summarize, toCsv, toMarkdown } from "./stats";
 import { SHEETS } from "./stickers";
+import { Viewer } from "./viewer";
+
+type Mode = "cube" | "sheet";
 
 const PASS_RATE = 0.9;
 
@@ -39,6 +45,13 @@ export function ArucoPage() {
   const [error, setError] = useState<string | null>(null);
   const [runConfigs, setRunConfigs] = useState<DetectorConfig[]>([]);
   const [version, setVersion] = useState(0); // 解析が終わる（止める）たびに増やす
+  const [mode, setMode] = useState<Mode>("cube");
+  const [runMode, setRunMode] = useState<Mode>("cube");
+  const [cubeConfig, setCubeConfig] = useState(1); // max(RGB)。調整版より合成のキューブで多く読めた
+  const [endSolved, setEndSolved] = useState(false);
+  const [truth, setTruth] = useState("");
+  const [cube, setCube] = useState<{ faces: VisibleFace[][]; result: CubeResult } | null>(null);
+  const [cubeBusy, setCubeBusy] = useState(false);
 
   useEffect(() => {
     const w = new Worker(new URL("./aruco.worker.ts", import.meta.url), { type: "module" });
@@ -52,8 +65,12 @@ export function ArucoPage() {
       else if (m.type === "done") {
         setRunning(false);
         setVersion((v) => v + 1);
+      } else if (m.type === "cube") {
+        setCube({ faces: m.faces, result: m.result });
+        setCubeBusy(false);
       } else if (m.type === "error") {
         setRunning(false);
+        setCubeBusy(false);
         setError(m.message);
         setVersion((v) => v + 1);
       }
@@ -82,10 +99,13 @@ export function ArucoPage() {
 
   const start = () => {
     if (!file || !workerRef.current || !tuned.params) return;
-    const configs = DEFAULT_CONFIGS.filter((_, i) => enabled[i]).map((c) => (c.params === TUNED_PARAMS ? { ...c, params: tuned.params! } : c));
+    const chosen = mode === "cube" ? DEFAULT_CONFIGS.filter((_, i) => i === cubeConfig) : DEFAULT_CONFIGS.filter((_, i) => enabled[i]);
+    const configs = chosen.map((c) => (c.params === TUNED_PARAMS ? { ...c, params: tuned.params! } : c));
     if (!configs.length) return;
     framesRef.current = [];
     setRunConfigs(configs);
+    setRunMode(mode);
+    setCube(null);
     setInfo(null);
     setProgress(null);
     setError(null);
@@ -100,7 +120,7 @@ export function ArucoPage() {
   const timeScale = fileFps > 0 && realFps > 0 ? fileFps / realFps : 1;
 
   const summary = useMemo<Summary | null>(() => {
-    if (running || !info || !framesRef.current.length) return null;
+    if (runMode !== "sheet" || running || !info || !framesRef.current.length) return null;
     return summarize({
       frames: framesRef.current,
       configs: runConfigs.map((c) => c.name),
@@ -109,12 +129,19 @@ export function ArucoPage() {
       height: info.analyzedHeight,
       timeScale,
     });
-  }, [version, running, info, sheet, timeScale, runConfigs]);
+  }, [version, running, info, sheet, timeScale, runConfigs, runMode]);
+
+  // キューブモード: 解析が終わったら（終わりの状態・撮影 fps を変えたら）面を組み立てて手順を推定する
+  useEffect(() => {
+    if (runMode !== "cube" || running || !info || !framesRef.current.length || !workerRef.current) return;
+    setCubeBusy(true);
+    workerRef.current.postMessage({ type: "cube", config: 0, endSolved, timeScale });
+  }, [version, running, info, runMode, endSolved, timeScale]);
 
   // テスト（scripts/aruco-e2e.mjs）とデバッグ用
   useEffect(() => {
-    (window as unknown as { __aruco?: unknown }).__aruco = { frames: framesRef.current, summary, info };
-  }, [summary, info]);
+    (window as unknown as { __aruco?: unknown }).__aruco = { frames: framesRef.current, summary, info, cube };
+  }, [summary, info, cube]);
 
   const meta = () => ({
     動画: file?.name ?? "",
@@ -132,11 +159,18 @@ export function ArucoPage() {
 
   return (
     <div class="page aruco">
-      <h2>ArUco ステッカー検証（テストモード）</h2>
+      <h2>ArUco ステッカー検証</h2>
       <p class="muted">
-        スマホのスロー撮影（240fps）で撮った動画を読み込み、全フレームで色付き ArUco マーカーを検出して、方式 × 色 × 大きさごとの検出率を出します。
-        解析はこの端末の中だけで行い、動画はどこにも送りません。
+        スマホのスロー撮影（240fps）で撮った動画を読み込み、全フレームで色付き ArUco マーカーを検出します。解析はこの端末の中だけで行い、動画はどこにも送りません。
       </p>
+      <div class="seg">
+        <button class={mode === "cube" ? "on" : ""} onClick={() => setMode("cube")}>
+          キューブ（回した手順を推定）
+        </button>
+        <button class={mode === "sheet" ? "on" : ""} onClick={() => setMode("sheet")}>
+          テスト（シートの検出率）
+        </button>
+      </div>
       {ready === null && <div class="status-banner warn">OpenCV.js を読み込み中…</div>}
 
       <div class="card">
@@ -146,18 +180,32 @@ export function ArucoPage() {
             動画ファイル（MP4 / MOV）
             <input type="file" accept="video/*,.mov,.mp4" onChange={(e) => setFile((e.target as HTMLInputElement).files?.[0] ?? null)} />
           </label>
-          <label>
-            写したシート
-            <select value={sheetKey} onChange={(e) => setSheetKey((e.target as HTMLSelectElement).value)}>
-              {SHEETS.map((s) => (
-                <option value={s.key}>{s.label}</option>
-              ))}
-            </select>
-          </label>
-          <p class="hint">
-            テストページは黒い紙やキューブの上に切り抜いて置くと、実際のキューブと同じ条件になります。白い紙の上だと、赤・青は色の余白ごと 1 つの枠として検出されることがあります
-            （大きさの判定もずれます）。
-          </p>
+          {mode === "sheet" ? (
+            <>
+              <label>
+                写したシート
+                <select value={sheetKey} onChange={(e) => setSheetKey((e.target as HTMLSelectElement).value)}>
+                  {SHEETS.map((s) => (
+                    <option value={s.key}>{s.label}</option>
+                  ))}
+                </select>
+              </label>
+              <p class="hint">
+                テストページは黒い紙やキューブの上に切り抜いて置くと、実際のキューブと同じ条件になります。白い紙の上だと、赤・青は色の余白ごと 1 つの枠として検出されることがあります
+                （大きさの判定もずれます）。
+              </p>
+            </>
+          ) : (
+            <>
+              <p class="hint">
+                揃った状態から回し始めた動画にしてください（最初の状態を揃った状態として推定します）。白を上・緑を正面に持つと、色基準の表記が普段の表記と同じになります。
+              </p>
+              <label class="check">
+                <input type="checkbox" checked={endSolved} onChange={() => setEndSolved(!endSolved)} />
+                最後は揃った状態（T-perm を 2 回など。最後の状態からも逆向きにたどって、より正確になります）
+              </label>
+            </>
+          )}
           <label>
             実際の撮影 fps（空欄 = ファイルの値{fileFps ? `: ${fileFps.toFixed(1)}` : ""}）
             <input type="number" min="1" step="1" placeholder="例: 240" value={captureFps} onInput={(e) => setCaptureFps((e.target as HTMLInputElement).value)} />
@@ -183,13 +231,21 @@ export function ArucoPage() {
             </label>
           </div>
           <fieldset>
-            <legend>比べる方式</legend>
-            {DEFAULT_CONFIGS.map((c, i) => (
-              <label class="check">
-                <input type="checkbox" checked={enabled[i]} onChange={() => setEnabled(enabled.map((v, j) => (j === i ? !v : v)))} />
-                {c.name}
-              </label>
-            ))}
+            <legend>{mode === "cube" ? "検出の方式" : "比べる方式"}</legend>
+            {DEFAULT_CONFIGS.map((c, i) =>
+              mode === "cube" ? (
+                <label class="check">
+                  <input type="radio" name="cubeConfig" checked={cubeConfig === i} onChange={() => setCubeConfig(i)} />
+                  {c.name}
+                  {i === 1 ? "（おすすめ）" : ""}
+                </label>
+              ) : (
+                <label class="check">
+                  <input type="checkbox" checked={enabled[i]} onChange={() => setEnabled(enabled.map((v, j) => (j === i ? !v : v)))} />
+                  {c.name}
+                </label>
+              ),
+            )}
             <details>
               <summary>調整版（c）のパラメータ</summary>
               <textarea rows={8} value={tunedText} onInput={(e) => setTunedText((e.target as HTMLTextAreaElement).value)} spellcheck={false} />
@@ -198,7 +254,7 @@ export function ArucoPage() {
             </details>
           </fieldset>
           <div class="btn-row">
-            <button class="btn primary" disabled={!file || running || ready === null || !tuned.params || !enabled.some(Boolean)} onClick={start}>
+            <button class="btn primary" disabled={!file || running || ready === null || !tuned.params || (mode === "sheet" && !enabled.some(Boolean))} onClick={start}>
               解析する
             </button>
             <button class="btn" disabled={!running} onClick={() => workerRef.current?.postMessage({ type: "cancel" })}>
@@ -226,8 +282,13 @@ export function ArucoPage() {
         </div>
       </div>
 
+      {runMode === "cube" && cubeBusy && <div class="status-banner warn section">面を組み立てて手順を推定しています…</div>}
+      {runMode === "cube" && cube && <CubeResults result={cube.result} truthText={truth} onTruth={setTruth} />}
+      {runMode === "cube" && cube && fileUrl && info && (
+        <Viewer url={fileUrl} frames={framesRef.current} info={info} timeScale={timeScale} configNames={runConfigs.map((c) => c.name)} cube={cube} />
+      )}
       {summary && <Results summary={summary} sheet={sheet} configs={runConfigs} meta={meta} />}
-      {summary && fileUrl && info && <Viewer url={fileUrl} frames={framesRef.current} summary={summary} info={info} timeScale={timeScale} />}
+      {summary && fileUrl && info && <Viewer url={fileUrl} frames={framesRef.current} info={info} timeScale={timeScale} configNames={runConfigs.map((c) => c.name)} summary={summary} />}
     </div>
   );
 }
@@ -386,227 +447,6 @@ function Results({ summary, sheet, configs, meta }: { summary: Summary; sheet: (
             </table>
           </div>
         </details>
-      </div>
-    </div>
-  );
-}
-
-// 動画の上に、解析したフレームの検出結果を重ねる。動画の表示時刻にいちばん近い解析フレームを使う
-function Viewer({ url, frames, summary, info, timeScale }: { url: string; frames: FrameRecord[]; summary: Summary; info: VideoInfo; timeScale: number }) {
-  const videoRef = useRef<HTMLVideoElement>(null);
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const timelineRef = useRef<HTMLCanvasElement>(null);
-  const [config, setConfig] = useState(0);
-  const [index, setIndex] = useState(0);
-  const offsetRef = useRef<number | null>(null); // 動画の最初のフレームの mediaTime（秒）
-
-  const nearest = (ms: number) => {
-    let lo = 0;
-    let hi = frames.length - 1;
-    while (lo < hi) {
-      const mid = (lo + hi) >> 1;
-      if (frames[mid].t < ms) lo = mid + 1;
-      else hi = mid;
-    }
-    if (lo > 0 && Math.abs(frames[lo - 1].t - ms) <= Math.abs(frames[lo].t - ms)) lo--;
-    return lo;
-  };
-
-  useEffect(() => {
-    const v = videoRef.current;
-    if (!v) return;
-    offsetRef.current = null;
-    let handle = 0;
-    const onFrame = (_now: number, meta: { mediaTime: number }) => {
-      if (offsetRef.current === null) offsetRef.current = v.currentTime < 0.001 ? meta.mediaTime : 0;
-      setIndex(nearest((meta.mediaTime - offsetRef.current) * 1000));
-      handle = v.requestVideoFrameCallback(onFrame);
-    };
-    const rvfc = typeof v.requestVideoFrameCallback === "function";
-    if (rvfc) handle = v.requestVideoFrameCallback(onFrame);
-    // requestVideoFrameCallback がないブラウザは timeupdate で（粗い）
-    const onTime = () => {
-      if (!rvfc) setIndex(nearest(v.currentTime * 1000));
-    };
-    v.addEventListener("timeupdate", onTime);
-    return () => {
-      if (rvfc) v.cancelVideoFrameCallback(handle);
-      v.removeEventListener("timeupdate", onTime);
-    };
-  }, [url, frames]);
-
-  const seek = (i: number) => {
-    const v = videoRef.current;
-    if (!v || !frames.length) return;
-    const k = Math.max(0, Math.min(frames.length - 1, i));
-    v.pause();
-    // フレームの途中の時刻にして、隣のフレームに丸められないようにする
-    v.currentTime = (offsetRef.current ?? 0) + frames[k].t / 1000 + 0.25 / Math.max(1, info.fps);
-    setIndex(k);
-  };
-
-  const slots = summary.slots.filter((s) => s.config === config);
-  const firstSlot = summary.slots.findIndex((s) => s.config === config);
-
-  // 重ね描き
-  useEffect(() => {
-    const v = videoRef.current;
-    const c = canvasRef.current;
-    if (!v || !c) return;
-    const draw = () => {
-      const w = v.clientWidth;
-      const h = v.clientHeight;
-      const dpr = window.devicePixelRatio || 1;
-      c.width = Math.round(w * dpr);
-      c.height = Math.round(h * dpr);
-      c.style.width = `${w}px`;
-      c.style.height = `${h}px`;
-      const ctx = c.getContext("2d")!;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.clearRect(0, 0, w, h);
-      const f = frames[index];
-      if (!f) return;
-      const k = Math.min(w / info.analyzedWidth, h / info.analyzedHeight);
-      const ox = (w - info.analyzedWidth * k) / 2;
-      const oy = (h - info.analyzedHeight * k) / 2;
-      const markers = f.results[config]?.markers ?? [];
-      const assign = summary.slotOf[config]?.[index];
-      ctx.font = "600 12px system-ui, sans-serif";
-      markers.forEach((m, mi) => {
-        const slot = assign && assign[mi] >= 0 ? summary.slots[assign[mi]] : null;
-        const p = [0, 1, 2, 3].map((i) => [ox + m.corners[i * 2] * k, oy + m.corners[i * 2 + 1] * k]);
-        ctx.strokeStyle = slot ? "#33c27f" : "#ffb020";
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        p.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
-        ctx.closePath();
-        ctx.stroke();
-        // 上辺（マーカーの向き）
-        ctx.strokeStyle = "#4f8cff";
-        ctx.lineWidth = 4;
-        ctx.beginPath();
-        ctx.moveTo(p[0][0], p[0][1]);
-        ctx.lineTo(p[1][0], p[1][1]);
-        ctx.stroke();
-        const cx = p.reduce((a, q) => a + q[0], 0) / 4;
-        const cy = p.reduce((a, q) => a + q[1], 0) / 4;
-        const label = slot ? `${slot.name} ${slot.size}` : `#${m.id}?`;
-        const tw = ctx.measureText(label).width;
-        ctx.fillStyle = "rgba(0,0,0,0.65)";
-        ctx.fillRect(cx - tw / 2 - 3, cy - 8, tw + 6, 16);
-        ctx.fillStyle = "#fff";
-        ctx.fillText(label, cx - tw / 2, cy + 4);
-      });
-    };
-    draw();
-    const ro = new ResizeObserver(draw);
-    ro.observe(v);
-    return () => ro.disconnect();
-  }, [index, config, frames, summary, info]);
-
-  // タイムライン: 行 = マーカー、列 = フレーム（緑 = 読めた、赤 = 読めない、空 = 区間外）
-  useEffect(() => {
-    const c = timelineRef.current;
-    if (!c) return;
-    const rowH = slots.length > 20 ? 4 : 10;
-    const w = c.clientWidth || 600;
-    const dpr = window.devicePixelRatio || 1;
-    c.width = Math.round(w * dpr);
-    c.height = Math.round(slots.length * rowH * dpr);
-    c.style.height = `${slots.length * rowH}px`;
-    const ctx = c.getContext("2d")!;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, w, slots.length * rowH);
-    const n = frames.length;
-    for (let x = 0; x < w; x++) {
-      const a = Math.floor((x * n) / w);
-      const b = Math.max(a + 1, Math.floor(((x + 1) * n) / w));
-      slots.forEach((s, r) => {
-        let miss = 0;
-        let hit = 0;
-        for (let i = a; i < b && i < n; i++) {
-          if (s.track[i] === 1) miss++;
-          else if (s.track[i] === 2) hit++;
-        }
-        if (!miss && !hit) return;
-        ctx.fillStyle = miss ? "#ff5468" : "#33c27f";
-        ctx.fillRect(x, r * rowH, 1, rowH - 1);
-      });
-    }
-    ctx.fillStyle = "#4f8cff";
-    ctx.fillRect(Math.floor((index * w) / Math.max(1, n)), 0, 2, slots.length * rowH);
-  }, [index, config, frames, summary]);
-
-  const nextMiss = (dir: 1 | -1) => {
-    for (let i = index + dir; i >= 0 && i < frames.length; i += dir) {
-      if (slots.some((s) => s.track[i] === 1)) return seek(i);
-    }
-  };
-  const missedHere = slots.filter((s) => s.track[index] === 1);
-  const f = frames[index];
-
-  return (
-    <div class="card section">
-      <div class="card-head">
-        3. 動画で確かめる
-        <span class="spacer" />
-        <select value={config} onChange={(e) => setConfig(Number((e.target as HTMLSelectElement).value))}>
-          {summary.configs.map((c, i) => (
-            <option value={i}>{c.name}</option>
-          ))}
-        </select>
-      </div>
-      <div class="card-body">
-        <div class="viewer">
-          <video ref={videoRef} src={url} controls playsInline muted preload="auto" />
-          <canvas ref={canvasRef} />
-        </div>
-        <div class="btn-row section">
-          <button class="btn small" onClick={() => seek(index - 1)}>
-            ◀ 1 フレーム
-          </button>
-          <button class="btn small" onClick={() => seek(index + 1)}>
-            1 フレーム ▶
-          </button>
-          <button class="btn small" onClick={() => nextMiss(-1)}>
-            ◀ 前の見逃し
-          </button>
-          <button class="btn small" onClick={() => nextMiss(1)}>
-            次の見逃し ▶
-          </button>
-          {[0.25, 1].map((r) => (
-            <button
-              class="btn small"
-              onClick={() => {
-                const v = videoRef.current;
-                if (v) {
-                  v.playbackRate = r;
-                  void v.play();
-                }
-              }}
-            >
-              {r}× で再生
-            </button>
-          ))}
-        </div>
-        <p class="hint">
-          フレーム {index + 1} / {frames.length}・{f ? ((f.t * timeScale) / 1000).toFixed(3) : "—"} 秒（実時間）・検出 {f?.results[config]?.markers.length ?? 0} 個・
-          {f ? `${f.results[config]?.ms.toFixed(1)}ms` : ""}
-          {missedHere.length ? `・読めなかった: ${missedHere.map((s) => `${s.name} ${s.size}mm`).join("、")}` : ""}
-        </p>
-        <p class="hint">緑の枠 = シートのマーカー、橙 = シートにない ID（誤検出）、青い太線 = マーカーの上辺。</p>
-        <canvas
-          ref={timelineRef}
-          class="timeline"
-          onClick={(e) => {
-            const c = e.currentTarget as HTMLCanvasElement;
-            const r = c.getBoundingClientRect();
-            seek(Math.floor(((e.clientX - r.left) / r.width) * frames.length));
-          }}
-        />
-        <p class="hint">
-          タイムライン（{config + 1} 番目の方式、行 = マーカー {firstSlot >= 0 ? `${slots.length} 個` : ""}）: 緑 = 読めた、赤 = 読めなかった。クリックでその時刻へ。
-        </p>
       </div>
     </div>
   );

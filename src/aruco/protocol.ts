@@ -1,4 +1,5 @@
 // ArUco 検証ページ ⇄ 解析 Worker のメッセージ
+import type { CubeResult, VisibleFace } from "./cube";
 import type { DetectorConfig } from "./detect";
 import type { FrameRecord } from "./stats";
 
@@ -20,7 +21,14 @@ export interface VideoInfo {
   analyzedHeight: number;
 }
 
-export type ToArucoWorker = { type: "init" } | { type: "analyze"; file: Blob; options: AnalyzeOptions } | { type: "cancel" };
+// キューブモード: 直前に解析したフレームの検出結果（方式 config）から面を組み立てて手順を推定する
+export interface CubeRequest {
+  config: number;
+  endSolved: boolean;
+  timeScale: number;
+}
+
+export type ToArucoWorker = { type: "init" } | { type: "analyze"; file: Blob; options: AnalyzeOptions } | { type: "cancel" } | ({ type: "cube" } & CubeRequest);
 
 export type FromArucoWorker =
   | { type: "ready"; ms: number }
@@ -28,4 +36,5 @@ export type FromArucoWorker =
   | { type: "frames"; items: FrameRecord[] }
   | { type: "progress"; done: number; total: number; elapsedMs: number }
   | { type: "done"; frames: number; cancelled: boolean }
+  | { type: "cube"; faces: VisibleFace[][]; result: CubeResult }
   | { type: "error"; message: string };
