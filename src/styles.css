@@ -106,6 +106,17 @@ input {
   cursor: pointer;
   font-weight: 600;
 }
+@media (max-width: 480px) {
+  /* メニューが 5 つになったので、狭い画面では詰めて 1 行に収める */
+  .nav {
+    gap: 0;
+  }
+  .nav button {
+    padding: 7px 7px;
+    white-space: nowrap;
+    font-size: 14px;
+  }
+}
 .nav button[aria-current="page"] {
   background: var(--card-2);
   color: var(--text);

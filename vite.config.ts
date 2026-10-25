@@ -88,16 +88,19 @@ export default defineConfig(({ mode }) => ({
       workbox: {
         globPatterns: ["**/*.{js,css,html,svg,png}"],
         // 手の検出（約21MB）は任意機能なので、最初に使ったときにキャッシュする
-        // ArUco の検証ページ（OpenCV.js を自前の Worker に持つ）もアプリの利用者には要らないので入れない
-        globIgnores: ["mediapipe/**", "**/hands.worker-*.js", "**/aruco.worker-*.js", "aruco.html", "**/aruco-*.js", "**/aruco-*.css"],
-        // 本体の Service Worker は画面の移動を index.html で返す。検証ページへの移動は横取りしない
-        navigateFallbackDenylist: [/aruco\.html$/],
+        // ArUco の画面の解析 Worker（OpenCV.js をもう 1 つ持つ、約 15MB）も、最初に使ったときにキャッシュする
+        globIgnores: ["mediapipe/**", "**/hands.worker-*.js", "**/aruco.worker-*.js"],
         maximumFileSizeToCacheInBytes: 24 * 1024 * 1024,
         runtimeCaching: [
           {
             urlPattern: ({ url }) => url.pathname.includes("/mediapipe/") || /hands\.worker-/.test(url.pathname),
             handler: "CacheFirst",
             options: { cacheName: "mediapipe-local", expiration: { maxEntries: 8 } },
+          },
+          {
+            urlPattern: ({ url }) => /aruco\.worker-/.test(url.pathname),
+            handler: "CacheFirst",
+            options: { cacheName: "aruco-worker", expiration: { maxEntries: 2 } },
           },
           {
             urlPattern: /^https:\/\/storage\.googleapis\.com\/mediapipe-models\//,
@@ -111,7 +114,7 @@ export default defineConfig(({ mode }) => ({
   worker: { format: "es" },
   // cubing.js のソルバーは自前の Worker で動く。プリロード補助コードがメインのチャンクから
   // 読み込まれると Worker 内で document を参照して落ちるので、注入しない
-  // aruco.html は色付き ArUco ステッカーの検証ページ（src/aruco）
+  // aruco.html は本体の ArUco の画面へ移動するだけのページ（以前の検証ページの URL を残す）
   build: {
     target: "es2022",
     chunkSizeWarningLimit: 16000,

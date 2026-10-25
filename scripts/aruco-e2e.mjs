@@ -1,4 +1,4 @@
-// ArUco 検証ページ（aruco.html）の端から端までのテスト: ビルド済みのページをヘッドレス Chromium で開き、
+// 本体の ArUco の画面の端から端までのテスト: ビルド済みのアプリを aruco.html（本体の #aruco へ移動する）から開き、
 // 動画ファイルを読み込ませて解析し、結果の表と画面を e2e-output/aruco/ に書き出す。
 //
 //   npm run build && ARUCO_VIDEO=path/to/video.mp4 node scripts/aruco-e2e.mjs                  # テストモード（シート）
@@ -105,7 +105,7 @@ try {
     failed = !(await runCube(page));
     throw "skip";
   }
-  await page.click("text=テスト（シートの検出率）");
+  await page.click("text=シート（検出率）");
   await page.selectOption("select >> nth=0", SHEET);
   if (CONFIGS) {
     const want = new Set(CONFIGS.split(",").map(Number));

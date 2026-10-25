@@ -3,6 +3,7 @@
 //   テストモード: シートを写した動画で、方式 × 色 × 大きさの検出率を出す
 // 解析はすべて端末内（Worker）。動画はどこにも送らない。
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
+import "./aruco.css";
 import type { CubeResult, VisibleFace } from "./cube";
 import { CubeResults } from "./cubePanel";
 import { DEFAULT_CONFIGS, type DetectorConfig, PARAM_KEYS, TUNED_PARAMS } from "./detect";
@@ -165,10 +166,10 @@ export function ArucoPage() {
       </p>
       <div class="seg">
         <button class={mode === "cube" ? "on" : ""} onClick={() => setMode("cube")}>
-          キューブ（回した手順を推定）
+          キューブを回す（手順）
         </button>
         <button class={mode === "sheet" ? "on" : ""} onClick={() => setMode("sheet")}>
-          テスト（シートの検出率）
+          シート（検出率）
         </button>
       </div>
       {ready === null && <div class="status-banner warn">OpenCV.js を読み込み中…</div>}

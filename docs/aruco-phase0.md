@@ -4,7 +4,8 @@
 **スマホのスロー撮影（240fps）で撮った動画を、ライブではなく後から解析して**読み取れるかを確かめる。
 色判定に頼らずにキューブの状態と回転を推定できるかの見極めが目的。
 
-- ページ: `aruco.html`（コードは `src/aruco/`）。本体アプリとは別のページで、本体の PWA のキャッシュにも入れていない
+- 本体アプリの「ArUco」の画面（コードは `src/aruco/`、画面の入口は `src/ui/ArucoScreen.tsx`）。初めて開いたときに読み込む
+  （本体の起動は重くならない）。他の画面に移っても解析と結果は残る。以前の `aruco.html` は本体の ArUco の画面へ移動するだけのページ
 - 解析はすべて端末内（Worker）。動画はどこにも送らない
 - 2 つのモード
   - **キューブ**: ステッカーを貼ったキューブを回した動画から、見えている面を組み立てて手順を推定する（下の「キューブモード」）
@@ -12,10 +13,11 @@
 
 ## 開き方
 
-- **スマホだけで**: GitHub Pages の `https://hsgwyuki0429-design.github.io/cube/aruco.html`（本体アプリは `…/cube/`。
-  本体の「使い方」の画面からもリンクしている）。main に取り込むと公開される（下の「公開（GitHub Pages）」）
-- PC で開発するとき: `npm run dev` → `http://localhost:5173/aruco.html`。
-  スマホから PC のサーバーに: `npm run dev:lan` → `https://<PC の IP>:5173/aruco.html`
+- **スマホだけで**: 本体（`https://hsgwyuki0429-design.github.io/cube/`）の上のメニューの「ArUco」。
+  `…/cube/#aruco` か、以前の `…/cube/aruco.html` で直接開ける
+- PC で開発するとき: `npm run dev` → `http://localhost:5173/#aruco`。
+  スマホから PC のサーバーに: `npm run dev:lan` → `https://<PC の IP>:5173/#aruco`
+- ArUco の画面から開いたときは、カメラを自動で起動しない（裏で追跡が動くと解析が遅くなる）。カメラが動いていれば、止めるボタンを出す
 
 iPhone で写真アプリから動画を選ぶと、Safari が動画を変換（圧縮・スロー再生の動画に書き出し）することがある。
 「ファイル」アプリに保存してから「ブラウズ」で選ぶと元のまま読める。ファイルの fps が 30 前後に出たら、「実際の撮影 fps」に 240 を入れる。
@@ -120,9 +122,10 @@ iPhone で写真アプリから動画を選ぶと、Safari が動画を変換（
 ## 公開（GitHub Pages）
 
 既存の `.github/workflows/pages.yml` が main への push でビルドして GitHub Pages に公開する（本体アプリと同じ）。
-`aruco.html` もビルドの入口に入れてあるので、main に取り込めば `…/cube/aruco.html` で開ける。
-本体の Service Worker は画面の移動を index.html で返すので、`aruco.html` はその対象から外している（本体を開いたことがある
-端末でも検証ページが開く）。
+本体の Service Worker は画面の移動を index.html で返すので、最初は `aruco.html` を本体と別のページにして横取りの対象から
+外していた。それでも、それ以前に本体を開いた端末では古い Service Worker が本体を返し、検証ページが開けなかった。
+本体に組み込んだので、本体が URL（`aruco.html`・`#aruco`）を見て ArUco の画面を開く（古い Service Worker が返した場合も、
+新しい版に入れ替わった後の再読み込みで開く）。ArUco の解析 Worker（約 15MB）は事前のキャッシュに入れず、最初に使ったときにキャッシュする。
 
 ## 検証
 

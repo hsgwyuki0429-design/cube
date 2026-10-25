@@ -1,3 +1,4 @@
+import { useEffect } from "preact/hooks";
 import { controller, type Screen } from "../app/controller";
 import { settingsStore } from "../app/settings";
 import { useStore } from "../app/store";
@@ -5,6 +6,7 @@ import { CameraView } from "./CameraView";
 import { Cube3D } from "./Cube3D";
 import { FreePanel, StartCard } from "./FreePanel";
 import { MoveList } from "./MoveList";
+import { ArucoScreen } from "./ArucoScreen";
 import { HelpPage } from "./HelpPage";
 import { HistoryPage } from "./HistoryPage";
 import { ScanPanel } from "./ScanPanel";
@@ -163,10 +165,17 @@ function RecentMoves() {
 export function App() {
   const screen = useStore(controller.store, (s) => s.screen);
   const toast = useStore(controller.store, (s) => s.toast);
+  // ArUco の画面は URL（#aruco）にも出す: 再読み込みで同じ画面に戻り、他の画面に移れば外す
+  useEffect(() => {
+    const path = location.pathname.replace(/aruco\.html$/, "");
+    const want = screen === "aruco" ? `${path}#aruco` : path;
+    if (location.pathname + location.hash !== want) history.replaceState(null, "", want + location.search);
+  }, [screen]);
   const nav: [Screen, string][] = [
     ["main", "メイン"],
     ["history", "履歴"],
     ["settings", "設定"],
+    ["aruco", "ArUco"],
     ["help", "使い方"],
   ];
   return (
@@ -191,6 +200,7 @@ export function App() {
       {screen === "history" && <HistoryPage />}
       {screen === "settings" && <SettingsPage />}
       {screen === "help" && <HelpPage />}
+      <ArucoScreen active={screen === "aruco"} />
       {toast && <div class="toast">{toast}</div>}
     </>
   );
