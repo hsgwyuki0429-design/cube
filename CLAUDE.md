@@ -19,7 +19,7 @@
 **フェーズ0追加検証（色付き ArUco ステッカー）**: 色判定の代わりに、各ステッカーに色付き ArUco マーカーを貼る案を検証中。
 符号は 2 種類（`src/aruco/codes.ts`）: 推奨の自作 3×3 の 12 種類（ID = 面、センターは +6。明るい印刷色 `PRINT_COLORS`。
 印刷用 PDF は `docs/stickers/`、`node scripts/aruco-stickers.mjs` で作る）と、最初に印刷した DICT_4X4_100 の 54 種類（ID = facelet 番号）。
-12 種類は誤り訂正がないので、読んだ ID の色と写った色の照合（`colorMatches`）で誤読を捨てる前提。設定の「ステッカー」を ArUco にすると、普通のプレイ（追跡・スキャン・精密解析・タイマー）も
+12 種類は誤り訂正がないので、2 ビットで入れ替わりうる ID の組（`CONFUSABLE12`）の相手の色に写ったマーカーを捨てる（`colorConsistent`。色そのものの一致は求めない: 暖かい照明で薄い青・緑が灰色・黄緑に写った）。ライブは角を向けても正面を決める（`frontAlways`）。設定の「ステッカー」を ArUco にすると、普通のプレイ（追跡・スキャン・精密解析・タイマー）も
 ArUco で動く: `processFrame` の入口で分岐し（`PipelineConfig.stickers`、`src/vision/arucoFrame.ts`）、マーカーから組み立てた面の
 各セルを代表色（`src/aruco/palette.ts`）の Lab にして同じ `FrameResult` で返す。代表色が固定なのでスキャンなしで揃った状態から始められる。
 デモ・E2E は `?stickers=aruco12`・`E2E_STICKERS=aruco12`（54 種類は `aruco`）。本体の「ArUco」の画面（`src/aruco/`、入口は `src/ui/ArucoScreen.tsx`。初めて開いたときに

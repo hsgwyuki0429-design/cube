@@ -1,10 +1,11 @@
 // 認識 Worker: OpenCV.js（約13MB）の読み込み、1フレームの処理、追跡エンジンの実行。
 // メインスレッドは描画と UI だけを受け持つ。
 import cvModule from "@techstark/opencv-js";
+import { type Mat3, ORIENTATIONS, mul } from "../cube/model";
 import { TrackerEngine } from "../track/engine";
 import { StreamDecoder, decodeRecording } from "./decode";
 import { StillSkipper } from "./motion";
-import { estimatePose } from "./pose";
+import { estimatePose, rotationAngle } from "./pose";
 import { processTracked } from "./roi";
 import { Refiner } from "./refine";
 import type { Lab } from "./color";
@@ -20,6 +21,7 @@ let hands: Pt[][] = [];
 let refs: Lab[] | null = null;
 let engine: TrackerEngine | null = null;
 const memory: { last: PipelineMemory | null } = { last: null };
+let lastPose: { t: number; M: Mat3 } | null = null; // 直前に送った 3D の向き（キューブ固定 → カメラ）
 
 // ソルブ中から進める精密解析（解析用の Worker で使う）
 interface Stream {
@@ -196,7 +198,13 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
           const labels = engine.labelsOf(reading);
           looksSolved = engine.looksSolved(reading, labels);
           const p = estimatePose(result.faces, w, h);
-          if (p && p.err < Math.max(4, w / 100)) pose = { R: p.R, err: p.err, orient: engine.frameOrient(reading, labels) };
+          if (p && p.err < Math.max(4, w / 100)) {
+            // 直前の 3D の向き（キューブ固定 → カメラ）に近い姿勢を優先する（見え方で区別できないときに跳ねない）
+            const prev = lastPose && msg.t - lastPose.t < 1500 ? lastPose.M : null;
+            const orient = engine.frameOrient(reading, labels, prev ? (o) => (0.9 * rotationAngle([...mul(p.R as Mat3, ORIENTATIONS[o])], [...prev])) / Math.PI : undefined);
+            lastPose = { t: msg.t, M: mul(p.R as Mat3, ORIENTATIONS[orient]) };
+            pose = { R: p.R, err: p.err, orient };
+          }
         }
         post({ type: "frame", id: msg.id, t: msg.t, width: w, height: h, faces: result.faces, quads: result.quads, procMs: performance.now() - t0, track, looksSolved, pose });
         return;

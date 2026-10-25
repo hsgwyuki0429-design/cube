@@ -10,7 +10,7 @@ import { simplifyMoves } from "../track/merge";
 import type { DecodedMove, FaceObservation, Observation } from "../track/types";
 import { type Mat3, type Pt, applyH, fitHomography, invertH } from "../vision/homography";
 import { defaultFocal } from "../vision/pose";
-import { type Decoded, type StickerScheme, decode } from "./codes";
+import { CONFUSABLE12, type Decoded, type StickerScheme, decode } from "./codes";
 import type { Marker } from "./detect";
 import { type ColorKey, FACE_COLORS, classifyColor } from "./stickers";
 
@@ -143,7 +143,7 @@ export interface FacesResult {
 // 1 フレームのマーカーから、見えている面（カメラフレームの面に割り当て、セルの並びもカメラフレームの規約）を作る。
 // prevTilt: 直前のフレームのキューブの傾き。面が 1 つしか見えないときも、上面の向き（どちらが正面側か）を決められる
 // 写った色（マーカーの明るいセルの平均）が、読んだ ID の色と明らかに違えば誤読として捨てる。
-// カメラの色は照明で揺れるので、白と黄・赤と橙・黄と橙は区別しない（12 種類の符号は、距離 2 の組をこれ以外の色どうしにしてある）
+// カメラの色は照明で揺れるので、白と黄・赤と橙・黄と橙は区別しない
 const CLOSE: Record<ColorKey, ColorKey[]> = {
   white: ["white", "yellow"],
   red: ["red", "orange"],
@@ -152,8 +152,17 @@ const CLOSE: Record<ColorKey, ColorKey[]> = {
   orange: ["orange", "red", "yellow"],
   blue: ["blue"],
 };
-export function colorMatches(face: number, rgb: [number, number, number]): boolean {
-  return CLOSE[FACE_COLORS[face]].includes(classifyColor(rgb));
+// 54 種類: 写った色が ID の色に近いこと。
+// 12 種類: 誤り訂正がないので、2 ビットの読み違いで入れ替わりうる ID（CONFUSABLE12）の色に見えて、自分の色には見えないときだけ捨てる。
+// 色そのものが合うことは求めない: 印刷した薄い青・緑は暖かい照明の下で灰色・黄緑に写り（実物の動画で青の 92%・緑の 69% が
+// 「白」「黄」と判定された）、正しいマーカーを捨てて正面が見つからなくなっていた
+export function colorConsistent(scheme: StickerScheme, id: number, rgb: [number, number, number]): boolean {
+  const dec = decode(scheme, id);
+  if (!dec) return false;
+  const c = classifyColor(rgb);
+  if (CLOSE[FACE_COLORS[dec.face]].includes(c)) return true;
+  if (scheme === "aruco54") return false;
+  return !CONFUSABLE12[id].some((j) => FACE_COLORS[decode(scheme, j)!.face] === c);
 }
 
 interface Coded extends Marker {
@@ -166,13 +175,14 @@ export function reconstructFaces(
   prevTilt: number[] | null = null,
   scheme: StickerScheme = "aruco54",
   o: FaceOptions = DEFAULT_FACE,
+  frontAlways = false,
 ): FacesResult {
   // ステッカーの ID のみ・写った色が ID の色と合うもの。54 種類の符号で同じ ID が 2 つあれば大きい方
   const coded: Coded[] = [];
   const byId = new Map<number, Coded>();
   for (const m of markers) {
     const dec = decode(scheme, m.id);
-    if (!dec || !colorMatches(dec.face, m.rgb)) continue;
+    if (!dec || !colorConsistent(scheme, m.id, m.rgb)) continue;
     const c: Coded = { ...m, dec };
     if (dec.sticker < 0) {
       coded.push(c);
@@ -209,6 +219,29 @@ export function reconstructFaces(
     if (done.has(p.f) || taken.has(p.slot) || p.score < 0.3) continue;
     taken.set(p.slot, p.f);
     done.add(p.f);
+  }
+  // frontAlways（ライブ）: 正面に割り当たる面がない（角を向けて上・横だけが見えている）ときは、いちばんカメラを向いた面を正面にし、
+  // 他の面はそれに対して割り当て直す。普通のステッカーの認識と同じく正面のあるフレームにそろえると、キューブ全体を回している間も
+  // 観測と 3D の向きが途切れない（実物の動画で、正面のないフレームを捨てて 3D の動きが止まっては飛んでいた）
+  if (frontAlways && !taken.has(2)) {
+    const front = faces.reduce((b, f, fi) => (f.normal[2] > faces[b].normal[2] ? fi : b), 0);
+    const E0 = cubeTilt([{ a: SLOT_NORMALS[2], n: faces[front].normal }], null);
+    taken.clear();
+    taken.set(2, front);
+    const rest: { f: number; slot: number; score: number }[] = [];
+    faces.forEach((f, fi) => {
+      if (fi === front) return;
+      // E0⁻¹ n = E0ᵀ n: 正面の向きにそろえたときの法線
+      const a: V3 = [0, 1, 2].map((c) => E0[c] * f.normal[0] + E0[3 + c] * f.normal[1] + E0[6 + c] * f.normal[2]) as V3;
+      SLOT_NORMALS.forEach((n, slot) => slot !== 2 && rest.push({ f: fi, slot, score: dot3(n, a) }));
+    });
+    rest.sort((a, b) => b.score - a.score);
+    const used = new Set<number>([front]);
+    for (const p of rest) {
+      if (used.has(p.f) || taken.has(p.slot) || p.score < 0.5) continue;
+      taken.set(p.slot, p.f);
+      used.add(p.f);
+    }
   }
   // キューブの傾き: 割り当てた面の法線が、カメラフレームの面の法線を回したものになる回転。
   // 事前分布は直前の傾き（なければ傾きなし）。直前の傾きがいまの面の法線と合わない（持ち替えた・推定が狂っていた）ときは使わない

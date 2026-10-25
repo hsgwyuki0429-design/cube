@@ -24,7 +24,7 @@ export function processAruco(cv: CV, img: PixelSource, t: number, memory: object
   }
   const markers = bench.b.detect(img)[0].markers;
   const prev = tilts.get(memory);
-  const r = reconstructFaces(markers, img, prev && t - prev.t < TILT_MS ? prev.tilt : null, scheme);
+  const r = reconstructFaces(markers, img, prev && t - prev.t < TILT_MS ? prev.tilt : null, scheme, undefined, true);
   if (r.faces.length) tilts.set(memory, { t, tilt: r.tilt });
   const quads: Pt[][] = markers.map((m) => [0, 1, 2, 3].map((i) => [m.corners[i * 2], m.corners[i * 2 + 1]] as Pt));
   const faces: DetectedFace[] = r.faces.map((f) => {
@@ -41,7 +41,7 @@ export function processAruco(cv: CV, img: PixelSource, t: number, memory: object
       masked: new Array(9).fill(false),
     };
   });
-  // 普通のステッカーと同じく、正面（スロット 2）が見えないフレームは読まない（上・横の面だけを正面と取り違えない）
+  // 普通のステッカーと同じく正面（スロット 2）を先頭に。面があれば必ず正面がある（reconstructFaces の frontAlways）
   const front = faces.find((f) => f.slot === 2);
   if (!front) return { faces: [], quads };
   return { faces: [front, ...faces.filter((f) => f !== front)], quads };

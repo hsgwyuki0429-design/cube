@@ -137,12 +137,14 @@ export class TrackerEngine {
 
   // このフレームの見え方に最も合う姿勢（追跡の最良の状態と照合。中心の色でほぼ決まる）。
   // 3D 表示を毎フレームのキューブの向きに合わせるのに使う（観測を待たずに、持ち替えにすぐ追従する）
-  frameOrient(frame: FrameReading, labels = this.labelsOf(frame)): number {
+  // continuity: 姿勢 o を選んだときの、直前の 3D の向きからの飛びの罰（0〜1 未満）。見え方で区別できないとき
+  // （1 面だけ・センターが隠れて 1 色）に、90° ずつ違う向きのどれかへ跳ねないように直前の向きに近いものを選ぶ
+  frameOrient(frame: FrameReading, labels = this.labelsOf(frame), continuity?: (o: number) => number): number {
     const best = this.decoder.best();
     let bestO = best.orient;
     let bestCost = Infinity;
     for (let o = 0; o < 24; o++) {
-      let cost = o === best.orient ? -0.5 : 0;
+      let cost = continuity ? continuity(o) : o === best.orient ? -0.5 : 0;
       for (let i = 0; i < frame.faces.length; i++) {
         const base = (o * 6 + frame.faces[i].slot) * 9;
         for (let cell = 0; cell < 9; cell++) {

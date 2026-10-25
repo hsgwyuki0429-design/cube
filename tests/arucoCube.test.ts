@@ -127,6 +127,28 @@ describe("12 種類（3×3）のステッカー", () => {
     });
   }
 
+  it("角をカメラに向けたとき: 正面のない割り当てになり、ライブ用（frontAlways）ではいちばんカメラを向いた面を正面にする", () => {
+    const st = solvedStickers();
+    const markers = bench12.detect(renderArucoCube(cv, { ...SIZE, stickers: st, orient: 0, eye: [-3.2, 3, 3.4], noise: 2, scheme: "aruco12" }))[0].markers;
+    const plain = reconstructFaces(markers, SIZE, null, "aruco12").faces;
+    expect(plain.some((f) => f.slot === 2)).toBe(false);
+    const live = reconstructFaces(markers, SIZE, null, "aruco12", undefined, true).faces;
+    expect(live.length).toBe(3);
+    expect(live.some((f) => f.slot === 2)).toBe(true);
+    // 揃った状態なので面ごとに 1 色。3 面とも違う色で、向かい合う面（白と黄など）ではない
+    const colors = live.map((f) => {
+      const known = f.colors.filter((c) => c >= 0);
+      expect(new Set(known).size).toBe(1);
+      return known[0];
+    });
+    expect(new Set(colors).size).toBe(3);
+    for (const a of colors) for (const b of colors) expect(a !== b && a % 3 === b % 3).toBe(false);
+    // 割り当てた面も向かい合わない（上と下・左と右が同時に出ない）
+    const slots = live.map((f) => f.slot);
+    expect(slots.includes(0) && slots.includes(3)).toBe(false);
+    expect(slots.includes(1) && slots.includes(4)).toBe(false);
+  });
+
   it("回している動画から Sune を復元する", () => {
     const VIDEO_SIZE = { width: 800, height: 600 };
     const frames: { t: number; markers: Marker[] }[] = [];
