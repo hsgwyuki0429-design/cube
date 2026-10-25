@@ -2,6 +2,7 @@
 import { FACES, MOVE_NAMES, cameraFaceOf, moveFace, parseMoves } from "../cube/model";
 import { simplifyMoves } from "../track/merge";
 import type { DecodedMove } from "../track/types";
+import { Cube3D } from "../ui/Cube3D";
 import type { CubeResult, VisibleFace } from "./cube";
 import { stickerName } from "./stickers";
 
@@ -59,6 +60,10 @@ export function CubeResults({ result, truthText, onTruth }: { result: CubeResult
             </p>
             <div class="alg small">{moves.map((m) => <span class={m.inferred ? "inferred" : ""}>{heldName(m)}</span>)}</div>
             <p class="hint">持ち方基準（その手のとき、カメラから見た正面 = F・上 = U）</p>
+            <div class="cube-replay">
+              <Cube3D key={moves.map((m) => m.move).join(",")} epoch={0} setupMoves={[]} moves={[]} orient={null} controls setupAlg="" alg={moves.map((m) => MOVE_NAMES[m.move]).join(" ")} />
+            </div>
+            <p class="hint">推定した手順の再生（揃った状態から。色基準・白が上・緑が正面）。ドラッグで回して見られます</p>
           </>
         ) : (
           <div class="status-banner warn">手を見つけられませんでした（面が組み立てられたフレームが少ないか、回していない）。</div>

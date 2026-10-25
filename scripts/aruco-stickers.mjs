@@ -32,49 +32,47 @@ function sticker(id, x, y, s) {
   return out;
 }
 
-// 切り取り線（ステッカーの間の隙間の中央に細い灰色の線）
-function cutGuides(x0, y0, n, m, s, gap) {
+// 切る位置の目印: ステッカーどうしは隙間なく並べ、境目の延長に、ブロックの外側だけ短い線を引く
+// （ステッカーの上に線を引くと、切りずれたときに線が残る）
+function cutMarks(x0, y0, n, s) {
+  const w = n * s;
+  const L = 2.5;
+  const o = 0.8; // ブロックから離す
   let out = "";
-  const w = m * s + (m - 1) * gap;
-  const h = n * s + (n - 1) * gap;
   for (let i = 0; i <= n; i++) {
-    const y = i === 0 ? y0 - gap / 2 : y0 + i * (s + gap) - gap / 2;
-    out += `<line x1="${x0 - gap / 2 - 1.5}" y1="${y}" x2="${x0 + w + gap / 2 + 1.5}" y2="${y}"/>`;
+    const p = i * s;
+    out += `<line x1="${x0 - o - L}" y1="${y0 + p}" x2="${x0 - o}" y2="${y0 + p}"/><line x1="${x0 + w + o}" y1="${y0 + p}" x2="${x0 + w + o + L}" y2="${y0 + p}"/>`;
+    out += `<line x1="${x0 + p}" y1="${y0 - o - L}" x2="${x0 + p}" y2="${y0 - o}"/><line x1="${x0 + p}" y1="${y0 + w + o}" x2="${x0 + p}" y2="${y0 + w + o + L}"/>`;
   }
-  for (let j = 0; j <= m; j++) {
-    const x = j === 0 ? x0 - gap / 2 : x0 + j * (s + gap) - gap / 2;
-    out += `<line x1="${x}" y1="${y0 - gap / 2 - 1.5}" x2="${x}" y2="${y0 + h + gap / 2 + 1.5}"/>`;
-  }
-  return `<g stroke="#bbb" stroke-width="0.1">${out}</g>`;
+  return `<g stroke="#888" stroke-width="0.15">${out}</g>`;
 }
 
 const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
 const text = (x, y, str, size = 3.2, extra = "") => `<text x="${x}" y="${y}" font-size="${size}" ${extra}>${esc(str)}</text>`;
 
 // 1 面ぶん（3×3、真ん中がセンター）のブロック
-function faceBlock(face, x, y, s, gap) {
-  let out = text(x, y - gap / 2 - 1.8, `${FACES[face]} 面（${COLOR_NAMES[face]}）`, 3);
-  out += cutGuides(x, y, 3, 3, s, gap);
-  for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) out += sticker(face + (r === 1 && c === 1 ? 6 : 0), x + c * (s + gap), y + r * (s + gap), s);
+function faceBlock(face, x, y, s) {
+  let out = text(x, y - 4.2, `${FACES[face]} 面（${COLOR_NAMES[face]}）`, 3);
+  out += cutMarks(x, y, 3, s);
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) out += sticker(face + (r === 1 && c === 1 ? 6 : 0), x + c * s, y + r * s, s);
   return out;
 }
 
 // ステッカーのページ: 6 面 × sets セット
 function stickerPage(s, sets) {
-  const gap = 1.2;
-  const block = 3 * s + 2 * gap;
-  const colGap = 8;
+  const block = 3 * s;
+  const colGap = 10;
   const cols = 3;
   const W = 210;
   const x0 = (W - (cols * block + (cols - 1) * colGap)) / 2;
   let out = text(x0, 14, `CubeVision ArUco ステッカー（12 種類・3×3）  ${s}mm × ${sets * 54} 枚（${sets} セット）`, 4.2, 'font-weight="bold"');
   out += text(x0, 20, "真ん中がセンター用（印が他と違います）。センター以外の 8 枚はどこに貼っても、どの向きでもかまいません。", 2.9);
   out += text(x0, 24.5, "揃った状態のキューブに、その面のセンターの色と同じ色のステッカーを貼ります（例: 白のセンターの面に白の 9 枚）。", 2.9);
-  let y = 34;
+  let y = 37;
   for (let set = 0; set < sets; set++) {
     for (let row = 0; row < 2; row++) {
-      for (let col = 0; col < cols; col++) out += faceBlock(row * 3 + col, x0 + col * (block + colGap), y, s, gap);
-      y += block + 7;
+      for (let col = 0; col < cols; col++) out += faceBlock(row * 3 + col, x0 + col * (block + colGap), y, s);
+      y += block + 10;
     }
   }
   return out;
@@ -111,7 +109,7 @@ function testPage() {
     "印刷と貼り方",
     "・印刷は「実際のサイズ（100%）」で（「用紙に合わせる」にしない）。ステッカーの辺が 18mm / 15mm になっているか定規で確かめてください。",
     "・光沢のないステッカー用紙が向いています。光沢紙は照明が映り込むと、その間は読めません。",
-    "・ステッカーは切り取り線の内側（色の縁を残す）で切ります。色の縁が、黒い枠をキューブの黒い部分と見分ける余白になります。",
+    "・外側の目印を結んだ線（ステッカーの境目）で切ります。模様の外側の色の縁は切り落とさないでください（黒い枠を、キューブの黒い部分と見分けるのに必要）。",
     "・1 マスに収まる大きさに（56〜57mm のキューブは 1 マスが約 19mm。18mm でほぼいっぱい、15mm は余裕あり）。",
     "・揃った状態で、各面にセンターと同じ色の 9 枚を貼ります。真ん中のマスに「中」の印（センター用）、ほかの 8 枚は位置も向きも自由です。",
     "・アプリの 設定 → ステッカー を「ArUco マーカー（12 種類・3×3）」にします。揃った状態から始めればスキャンはいりません。",

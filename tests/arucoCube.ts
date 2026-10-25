@@ -54,6 +54,8 @@ export interface CubeRenderOptions {
   seed?: number;
   sticker?: number; // ステッカーの辺（キュービー = 1）
   scheme?: StickerScheme; // 符号の種類（既定は 54 種類）。12 種類は印刷する明るい色で描く
+  margin?: number; // ステッカーの辺に対する色の余白（既定 0.08）
+  tile?: number; // ステッカーレスのキューブ: 各マスを本体の色の板（辺 tile）にして、その上にステッカーを貼る
 }
 
 const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -87,6 +89,7 @@ interface Quad {
   b: Vec3; // 下へ
   n: Vec3;
   sticker?: Sticker;
+  tile?: number; // ステッカーレスのマスの板（面番号の色）
   light: number;
 }
 
@@ -152,6 +155,19 @@ function renderOnce(cv: CV, o: CubeRenderOptions, fraction: number): Float32Arra
         }
       }
   const half = (o.sticker ?? 0.94) / 2;
+  if (o.tile) {
+    // ステッカーレス: マスの色の板（ピースの間の溝は黒い本体が見える）
+    for (const s of o.stickers) {
+      const t = inTurn(s.pos);
+      const rightS = cross(s.up, s.normal);
+      const c = toWorld(addv(s.pos, scl(s.normal, 0.501)), t);
+      const nW = toWorld(s.normal, t);
+      if (dotv(nW, sub(o.eye, c)) <= 0) continue;
+      const aW = toWorld(scl(rightS, o.tile), t);
+      const bW = toWorld(scl(s.up, -o.tile), t);
+      quads.push({ p0: sub(sub(c, scl(aW, 0.5)), scl(bW, 0.5)), a: aW, b: bW, n: nW, tile: Math.floor(s.id / 9), light: lightOf(nW) });
+    }
+  }
   for (const s of o.stickers) {
     const t = inTurn(s.pos);
     const rightS = cross(s.up, s.normal);
@@ -181,7 +197,7 @@ function renderOnce(cv: CV, o: CubeRenderOptions, fraction: number): Float32Arra
     const scheme = o.scheme ?? "aruco54";
     const cells = markerSize(scheme) + 2;
     const bits = q.sticker ? (scheme === "aruco54" ? bitsOf(cv, q.sticker.id) : markerBits(scheme, idForFacelet(scheme, q.sticker.id)).map((b) => b * 255)) : null;
-    const color = q.sticker ? (scheme === "aruco12" ? hexRgb(PRINT_COLORS[Math.floor(q.sticker.id / 9)]) : PALETTE[Math.floor(q.sticker.id / 9)]) : [20, 20, 22];
+    const color = q.sticker ? (scheme === "aruco12" ? hexRgb(PRINT_COLORS[Math.floor(q.sticker.id / 9)]) : PALETTE[Math.floor(q.sticker.id / 9)]) : q.tile !== undefined ? PALETTE[q.tile] : [20, 20, 22];
     const black = [24, 24, 26];
     const pn = dotv(q.n, sub(q.p0, o.eye));
     // 視線 d = fwd + right·sx + upv·sy（sx, sy は画素から決まる）。内側のループはスカラーで
@@ -192,7 +208,7 @@ function renderOnce(cv: CV, o: CubeRenderOptions, fraction: number): Float32Arra
     const ex = o.eye[0] - q.p0[0];
     const ey = o.eye[1] - q.p0[1];
     const ez = o.eye[2] - q.p0[2];
-    const m = 0.08;
+    const m = o.margin ?? 0.08;
     for (let y = y0; y <= y1; y++) {
       for (let x = x0; x <= x1; x++) {
         for (let sy = 0; sy < SS; sy++) {
@@ -214,7 +230,7 @@ function renderOnce(cv: CV, o: CubeRenderOptions, fraction: number): Float32Arra
             const u = (hx * q.a[0] + hy * q.a[1] + hz * q.a[2]) / aa;
             const v = (hx * q.b[0] + hy * q.b[1] + hz * q.b[2]) / bb;
             if (u < 0 || v < 0 || u > 1 || v > 1) continue;
-            zsub[k] = t - (q.sticker ? 1e-4 : 0);
+            zsub[k] = t - (q.sticker ? 2e-4 : q.tile !== undefined ? 1e-4 : 0);
             let col = color;
             if (bits) {
               const mu = (u - m) / (1 - 2 * m);
