@@ -16,6 +16,7 @@ export interface VisibleFace {
   slot: number; // カメラフレームの面（0 上 / 1 右 / 2 正面 / 3 下 / 4 左）
   ids: number[]; // 9 セル（row*3+col、行 = 画像の下向き・列 = 右向き）のステッカー ID。-1 = 見えない
   outline: Pt[]; // 3×3 の外枠（画像座標、左上から時計回り）
+  H: Mat3; // 面の座標（x = 列・y = 行、0〜3）→ 画像。本体の認識の DetectedFace（rot = 0）と同じ
 }
 
 export interface FaceOptions {
@@ -161,10 +162,11 @@ export function reconstructFaces(markers: Marker[], size: { width: number; heigh
   if (!faces.length) return { faces: [], tilt: prevTilt };
 
   // 面の向き（法線）でカメラフレームの面に割り当てる。上面だけが見えているときに、それを正面と決めつけない。
-  // 直前の傾きが分かっていれば、傾けたキューブの面の法線と比べる。
+  // 直前の傾きは使わない（キューブを回して別の面を見せる間に傾きの推定が狂うと、それで正面を取り違え、
+  // 取り違えた傾きをまた引き継いで抜け出せなくなった）。
   // 2 つの面が同じ向きを取り合ったら（斜め 45° から見たとき）、より合う方から順に決める
   const pairs: { f: number; slot: number; score: number }[] = [];
-  faces.forEach((f, fi) => SLOT_NORMALS.forEach((n, slot) => pairs.push({ f: fi, slot, score: dot3(prevTilt ? rot3(prevTilt, n) : n, f.normal) })));
+  faces.forEach((f, fi) => SLOT_NORMALS.forEach((n, slot) => pairs.push({ f: fi, slot, score: dot3(n, f.normal) })));
   pairs.sort((a, b) => b.score - a.score);
   const taken = new Map<number, number>();
   const done = new Set<number>();
@@ -174,11 +176,10 @@ export function reconstructFaces(markers: Marker[], size: { width: number; heigh
     done.add(p.f);
   }
   // キューブの傾き: 割り当てた面の法線が、カメラフレームの面の法線を回したものになる回転。
-  // 事前分布は直前の傾き（なければ傾きなし）
-  const E = cubeTilt(
-    [...taken.entries()].map(([slot, fi]) => ({ a: SLOT_NORMALS[slot], n: faces[fi].normal })),
-    prevTilt,
-  );
+  // 事前分布は直前の傾き（なければ傾きなし）。直前の傾きがいまの面の法線と合わない（持ち替えた・推定が狂っていた）ときは使わない
+  const assigned = [...taken.entries()].map(([slot, fi]) => ({ a: SLOT_NORMALS[slot], n: faces[fi].normal }));
+  const prior = prevTilt && assigned.every((p) => dot3(rot3(prevTilt, p.a), p.n) > 0.8) ? prevTilt : null;
+  const E = cubeTilt(assigned, prior);
   const out: VisibleFace[] = [];
   for (const [slot, fi] of [...taken.entries()].sort((a, b) => a[0] - b[0])) {
     const v = layout(faces[fi], slot, E);
@@ -302,7 +303,18 @@ function layout(face: NonNullable<ReturnType<typeof toFace>>, slot: number, E: n
     const [i, j] = best.inv(r - dr, c - dc);
     return applyH(g.G, i * g.pitch, j * g.pitch);
   };
-  return { ids, outline: [corner(-0.5, -0.5), corner(-0.5, 2.5), corner(2.5, 2.5), corner(2.5, -0.5)] };
+  const outline: Pt[] = [corner(-0.5, -0.5), corner(-0.5, 2.5), corner(2.5, 2.5), corner(2.5, -0.5)];
+  const H = fitHomography(
+    [
+      [0, 0],
+      [3, 0],
+      [3, 3],
+      [0, 3],
+    ],
+    outline,
+  );
+  if (!H) return null;
+  return { ids, outline, H };
 }
 
 // ---- 観測と復号 ----

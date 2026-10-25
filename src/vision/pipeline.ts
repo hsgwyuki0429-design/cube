@@ -1,5 +1,6 @@
 // 1フレームの処理: ステッカー検出 → 面の格子 → カメラフレームへの配置 → 色サンプリング → 手のマスク。
 // Worker とテストの両方から使う（OpenCV のオブジェクトは呼び出し側が渡す）。
+import { processAruco } from "./arucoFrame";
 import { type Lab, nearestNamed } from "./color";
 import { type Mat3, type Pt, applyH, fitHomography, mulH } from "./homography";
 import { expandBlocks, largeFaceCandidates } from "./blocks";
@@ -15,6 +16,8 @@ import { defaultFocal, estimatePose, hingePose, projectSlot } from "./pose";
 
 export interface PipelineConfig {
   mode: "auto" | "guide";
+  // ステッカーの種類。aruco: 各ステッカーに色付き ArUco マーカー（ID から色が確定する。src/vision/arucoFrame.ts）
+  stickers?: "color" | "aruco";
   guideSize: number; // ガイド枠モード: 短辺に対する枠の大きさ
   region: number; // セル内のサンプリング範囲
   maxSpread: number; // セル内のばらつきがこれ以上なら読まない
@@ -342,6 +345,7 @@ export function processFrame(
   refs: Lab[] | null,
   hands: Pt[][] = [],
 ): FrameResult {
+  if (config.stickers === "aruco" && cv) return processAruco(cv, img, t, memory);
   let placed: PlacedFace[] = [];
   let quadsOut: Pt[][] = [];
   if (config.mode === "guide" || !cv) {

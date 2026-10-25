@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
 import { ArucoBench, DEFAULT_CONFIGS, type Marker } from "../src/aruco/detect";
 import { demuxFile, readSamples, rotationOf } from "../src/aruco/demux";
+import { markerBits } from "../src/aruco/dict4x4";
 import { type FrameRecord, summarize, toCsv, toMarkdown } from "../src/aruco/stats";
 import { SHEETS, classifyColor, stickerOf } from "../src/aruco/stickers";
 import { type CV, initOpenCv } from "../src/vision/quads";
@@ -42,6 +43,17 @@ function testPage(pxPerMm: number, ox = 0, oy = 0): RenderMarker[] {
 }
 
 describe("ステッカーの仕様", () => {
+  it("OpenCV なしで描くマーカーの表が DICT_4X4_100 と一致する", () => {
+    const d = cv.getPredefinedDictionary(cv.DICT_4X4_100);
+    for (let id = 0; id < 100; id++) {
+      const m = new cv.Mat();
+      cv.generateImageMarker(d, id, 6, m, 1);
+      expect(Array.from(markerBits(id))).toEqual(Array.from(m.data as Uint8Array).map((v) => (v > 127 ? 1 : 0)));
+      m.delete();
+    }
+    d.delete();
+  });
+
   it("ID = facelet 番号、ID÷9 が色", () => {
     expect(stickerOf(0)).toEqual({ face: 0, pos: 0, color: "white" });
     expect(stickerOf(22)).toEqual({ face: 2, pos: 4, color: "green" });

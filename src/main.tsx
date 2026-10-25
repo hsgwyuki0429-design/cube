@@ -1,5 +1,6 @@
 import { Component, type ComponentChildren, render } from "preact";
 import { controller } from "./app/controller";
+import { settingsStore } from "./app/settings";
 import { timerStore } from "./app/timer";
 import "./styles.css";
 import { App } from "./ui/App";
@@ -49,6 +50,8 @@ window.__cubevision = controller;
 window.__cubevisionTimer = timerStore;
 
 const params = new URLSearchParams(location.search);
+// テスト用: ?stickers=aruco で ArUco マーカーのキューブにする（デモの合成キューブもマーカー付きで描く）
+if (params.get("stickers") === "aruco" || params.get("stickers") === "color") settingsStore.set({ stickers: params.get("stickers") as "aruco" | "color" });
 if (params.has("demo")) {
   const e2e = params.get("demo") === "e2e";
   controller.startDemo({

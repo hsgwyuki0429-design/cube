@@ -12,6 +12,7 @@ export interface Settings {
   viewpoint: "user" | "camera"; // 持ち方基準の表記を、自分から見た向きにするか、カメラから見た向きにするか
   cube3dView: "camera" | "user" | "fixed"; // 3D: カメラの映像と同じ傾きで追従 / 自分から見た傾きで追従 / 固定
   detection: "auto" | "guide";
+  stickers: "color" | "aruco"; // ステッカーの種類（aruco: 各ステッカーに色付き ArUco マーカー。色を読まず ID で判定する）
   handMask: boolean;
   debug: boolean;
   inspection: boolean;
@@ -36,6 +37,7 @@ export const DEFAULT_SETTINGS: Settings = {
   viewpoint: "user",
   cube3dView: "camera",
   detection: "auto",
+  stickers: "color",
   handMask: true,
   debug: false,
   inspection: true,
