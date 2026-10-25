@@ -1,10 +1,11 @@
 // マーカーの辞書の比較（ステッカー用）: 今の DICT_4X4_100（ID 0〜53）・AprilTag 16h5 の 12 個・自作の 4×4（12 個、距離 6）・
 // 自作の 3×3（12 個）を、同じ大きさ・傾き・ぶれ・配色の合成画像で読ませて、正しく読めた・別の ID に読んだ・見逃しを数える。
 //   npx vitest run -c vitest.debug.config.ts tests/debug/markers.debug.test.ts
+//   SCHEMES="3×3"（名前で絞る）・PERID=1（ID ごとの検出率）・RESCUE=1（捨てた四角の読み直し）・PARAMS='{"adaptiveThreshWinSizeStep":5}'・DIAG2=1（取りこぼしに候補があったか）
 import { createRequire } from "node:module";
 import { it } from "vitest";
 import { ARUCO12_CODES, UNIQUE54_CODES } from "../../src/aruco/codes";
-import { maxChannel } from "../../src/aruco/detect";
+import { maxChannel, measureCells, rescueRejected } from "../../src/aruco/detect";
 import { initOpenCv } from "../../src/vision/quads";
 
 type CV = any;
@@ -241,6 +242,8 @@ it("辞書の比較", async () => {
   const detectors = schemes.map((sc) => {
     const p = new cv.aruco_DetectorParameters();
     if (sc.apriltagRefine) p.cornerRefinementMethod = 3;
+    // PARAMS='{"adaptiveThreshWinSizeStep":4}' などで全方式の検出パラメータを変える
+    if (process.env.PARAMS) for (const [k, v] of Object.entries(JSON.parse(process.env.PARAMS))) p[k] = v;
     // 今の辞書は ID 0〜53 以外も読めてしまうので、54 以上は誤読として数える
     return new cv.aruco_ArucoDetector(sc.dict, p, new cv.aruco_RefineParameters(10, 3, true));
   });
@@ -271,8 +274,20 @@ it("辞書の比較", async () => {
           detectors[si].detectMarkers(gray, corners, out, rej);
           const found = Array.from({ length: out.total() }, (_, i) => {
             const c = corners.get(i).data32F;
-            return { id: out.data32S[i], x: (c[0] + c[2] + c[4] + c[6]) / 4, y: (c[1] + c[3] + c[5] + c[7]) / 4 };
+            return { id: out.data32S[i], x: (c[0] + c[2] + c[4] + c[6]) / 4, y: (c[1] + c[3] + c[5] + c[7]) / 4, corners: Array.from(c as Float32Array), side: s };
           });
+          // RESCUE=1: OpenCV が捨てた四角をマスの中心で読み直す（3×3 の符号）。fit（明暗が符号どおりの割合）0.85 以上だけ
+          if (process.env.RESCUE && sc.n === 3) {
+            const rej2 = Array.from({ length: rej.size() }, (_, i) => Array.from(rej.get(i).data32F as Float32Array));
+            for (const r of rescueRejected(img, rej2, sc.codes, found)) {
+              const pts = [0, 1, 2, 3].map((i) => [r.corners[i * 2], r.corners[i * 2 + 1]] as [number, number]);
+              const bits = new Uint8Array(25);
+              for (let a = 0; a < 3; a++) for (let b2 = 0; b2 < 3; b2++) bits[(a + 1) * 5 + b2 + 1] = (sc.codes[r.id] >> (a * 3 + b2)) & 1;
+              if (measureCells(img, pts, bits, 5).fit < 0.85) continue;
+              found.push({ id: r.id, x: (r.corners[0] + r.corners[2] + r.corners[4] + r.corners[6]) / 4, y: (r.corners[1] + r.corners[3] + r.corners[5] + r.corners[7]) / 4, corners: r.corners, side: s });
+            }
+          }
+          const rejAll = Array.from({ length: rej.size() }, (_, i) => Array.from(rej.get(i).data32F as Float32Array));
           corners.delete();
           out.delete();
           rej.delete();
@@ -282,6 +297,11 @@ it("辞書の比較", async () => {
           let sameColor = 0; // 色では見抜けない誤読（同じ色の別の ID。今の辞書は 54 以上の ID も誤読に数える）
           for (const t of truth) {
             const fi = found.findIndex((f, i) => !used.has(i) && Math.hypot(f.x - t.x, f.y - t.y) < s * 0.4);
+            if (k > 0.5 && b <= 0.1) add(`${pal}|${sc.name}|id${t.id}`, { ok: fi >= 0 && found[fi].id === t.id ? 1 : 0, n: 1 });
+            if (process.env.DIAG2 && k > 0.5 && b <= 0.1 && fi < 0 && sc.n === 3) {
+              const near = rejAll.some((c) => Math.hypot((c[0] + c[2] + c[4] + c[6]) / 4 - t.x, (c[1] + c[3] + c[5] + c[7]) / 4 - t.y) < s * 0.3);
+              add(`${pal}|${sc.name}|miss${t.id}|${near ? "rej" : "none"}`, { n: 1 });
+            }
             if (fi < 0) continue;
             used.add(fi);
             const got = found[fi].id;
@@ -306,6 +326,8 @@ it("辞書の比較", async () => {
       const t = tally.get(`${pal}|${sc.name}|real`)!;
       const bys = sizes.map((v) => pct(tally.get(`${pal}|${sc.name}|real|s${v}`)!.ok, tally.get(`${pal}|${sc.name}|real|s${v}`)!.n)).join(" ");
       console.log(`R ${sc.name}: 正 ${pct(t.ok, t.n)} 誤読 ${pct(t.wrong, t.n)}（${t.wrong}、うち同じ色 ${t.sameColor}）| 大きさ ${sizes.join("/")}px: ${bys}`);
+      if (process.env.DIAG2) console.log(`R   取りこぼし（候補あり/なし）: ${sc.codes.map((_, id) => `${id}:${tally.get(`${pal}|${sc.name}|miss${id}|rej`)?.n ?? 0}/${tally.get(`${pal}|${sc.name}|miss${id}|none`)?.n ?? 0}`).join(" ")}`);
+      if (process.env.PERID) console.log(`R   ID ごと: ${sc.codes.map((_, id) => tally.get(`${pal}|${sc.name}|id${id}`)).map((x, id) => (x ? `${id}:${pct(x.ok, x.n)}` : "")).join(" ")}`);
     }
     console.log(`R == 配色: ${pal}（全条件）==`);
     for (const sc of schemes) {

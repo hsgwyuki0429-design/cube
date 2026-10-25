@@ -23,9 +23,16 @@ export interface FrameReading {
 export interface ObserverOptions {
   stableMs: number; // この時間だけ同じ読みが続いたら安定（フレーム間隔から枚数に換算、最低1枚）
   stableFrames?: number; // 指定すると枚数で固定
-  minKnown: number; // 1面あたり最低これだけ色が読めていること
+  minKnown: number; // 正面で最低これだけ色が読めていること
+  minSideKnown?: number; // 上・横の面を観測に入れる、読めた色の数（既定 3）
+  // 安定を見るフレームの間で、見えている面の組み合わせが揺れてもよい（どのフレームにもある面だけを使う）。
+  // ArUco は斜めの面のマーカーが読めたり読めなかったりするので、組み合わせの一致を求めると観測が出ない
+  mergeSlots?: boolean;
   singleFrameWeight: number; // 1フレームだけの観測の重み（1枚の誤読が1手分のコストを超えないように）
 }
+
+// ArUco ステッカー: 読めたマスの色は ID から確定するので、少ないマスでも観測に入れる（ライブと精密解析で同じ）
+export const ARUCO_OBSERVER: Partial<ObserverOptions> = { minKnown: 2, minSideKnown: 1, mergeSlots: true };
 
 export const DEFAULT_OBSERVER: ObserverOptions = {
   stableMs: 33,
@@ -105,8 +112,11 @@ export class FaceObserver {
     if (this.frames.length < stableFrames || !labeled.faces.length) return null;
 
     const sig = signature(labeled);
-    if (this.frames.some((f) => signature(f) !== sig)) return null;
-    for (const f of labeled.faces) {
+    // mergeSlots: どのフレームにもある面だけ（なければ従来どおり組み合わせの一致を求める）
+    const common = this.options.mergeSlots ? labeled.faces.filter((f) => this.frames.every((g) => g.faces.some((x) => x.slot === f.slot))) : labeled.faces;
+    if (!this.options.mergeSlots && this.frames.some((f) => signature(f) !== sig)) return null;
+    if (!common.length) return null;
+    for (const f of common) {
       const known = f.labels.reduce((n, l) => n + (l >= 0 ? 1 : 0), 0);
       if (known < minKnown && f.slot === 2) return null;
       for (const g of this.frames) {
@@ -117,7 +127,7 @@ export class FaceObserver {
 
     // 安定した: セルごとに読めたフレームの Lab を平均してコストを作る
     const faces: FaceObservation[] = [];
-    for (const f of labeled.faces) {
+    for (const f of common) {
       const cost = new Float32Array(54);
       const labels = new Int8Array(9).fill(-1);
       let known = 0;
@@ -138,7 +148,7 @@ export class FaceObserver {
         if (wmean < 1) for (let c = 0; c < 6; c++) cost[cell * 6 + c] *= wmean;
         if (labels[cell] >= 0) known++;
       }
-      if (known >= 3 || f.slot === 2) {
+      if (known >= (this.options.minSideKnown ?? 3) || f.slot === 2) {
         // 窓の位置をずらした読み（このフレームのもの）。どちらが正しいかはデコーダが決める
         const raw = frame.faces.find((x) => x.slot === f.slot);
         const alts = raw?.alts?.map((a) => {

@@ -20,6 +20,7 @@ export interface PipelineConfig {
   // ステッカーの種類。aruco12 / aruco: 各ステッカーに色付き ArUco マーカー（ID から色が確定する。src/vision/arucoFrame.ts）。
   // aruco12 は 3×3 の 12 種類、aruco は最初に印刷した 4×4 の 54 種類（src/aruco/codes.ts）
   stickers?: "color" | "aruco" | "aruco12" | "unique54";
+  arucoThorough?: boolean; // ArUco: 二値化の窓を細かく試す（精密解析。src/aruco/detect.ts の THOROUGH_PARAMS）
   guideSize: number; // ガイド枠モード: 短辺に対する枠の大きさ
   region: number; // セル内のサンプリング範囲
   maxSpread: number; // セル内のばらつきがこれ以上なら読まない
@@ -347,7 +348,7 @@ export function processFrame(
   refs: Lab[] | null,
   hands: Pt[][] = [],
 ): FrameResult {
-  if (config.stickers && config.stickers !== "color" && cv) return processAruco(cv, img, t, memory, stickerScheme(config.stickers));
+  if (config.stickers && config.stickers !== "color" && cv) return processAruco(cv, img, t, memory, stickerScheme(config.stickers), !!config.arucoThorough);
   let placed: PlacedFace[] = [];
   let quadsOut: Pt[][] = [];
   if (config.mode === "guide" || !cv) {

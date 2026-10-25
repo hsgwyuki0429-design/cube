@@ -20,6 +20,7 @@ export interface VisibleFace {
   ids: number[]; // 同じ並びのステッカー（揃った状態での facelet 番号）。54 種類の符号のときだけ。分からなければ -1
   outline: Pt[]; // 3×3 の外枠（画像座標、左上から時計回り）
   H: Mat3; // 面の座標（x = 列・y = 行、0〜3）→ 画像。本体の認識の DetectedFace（rot = 0）と同じ
+  partial?: boolean; // 1 列（1×3・1×2）か 1 枚だけの面（外枠は推定。3D の傾きの計算には使わない）
 }
 
 export interface FaceOptions {
@@ -191,6 +192,28 @@ export function frameColorFilter<T extends { rgb: [number, number, number]; face
   });
 }
 
+// 同じ色の仲間（自分を除いて 2 枚以上）の色味の中央値にごく近く、取り違えの相手の色の仲間よりも近いマーカー（12 種類）
+function supportedByFrame(ms: { m: Marker; face: number }[]): Set<Marker> {
+  const chroma = (rgb: [number, number, number]) => {
+    const k = Math.max(rgb[0], rgb[1], rgb[2], 1);
+    return [rgb[0] / k, rgb[1] / k, rgb[2] / k];
+  };
+  const xs = ms.map((x) => chroma(x.m.rgb));
+  const dist = (a: number[], b: number[]) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
+  const medianOf = (face: number, skip: number) => {
+    const g = xs.filter((_, j) => j !== skip && ms[j].face === face);
+    return g.length >= 2 ? [0, 1, 2].map((k) => median(g.map((v) => v[k]))) : null;
+  };
+  const out = new Set<Marker>();
+  ms.forEach((x, i) => {
+    const own = medianOf(x.face, i);
+    if (!own || dist(xs[i], own) > 0.12) return;
+    const partners = CONFUSABLE12[x.m.id].map((j) => medianOf(j % 6, i)).filter((v): v is number[] => !!v);
+    if (partners.every((p) => dist(xs[i], own) < dist(xs[i], p))) out.add(x.m);
+  });
+  return out;
+}
+
 interface Coded extends Marker {
   dec: Decoded;
 }
@@ -207,9 +230,12 @@ export function reconstructFaces(
   const coded: Coded[] = [];
   const byId = new Map<number, Coded>();
   const checked = scheme === "unique54" ? frameColorFilter(markers.filter((m) => decode(scheme, m.id)).map((m) => ({ ...m, face: decode(scheme, m.id)!.face }))) : markers;
+  // 12 種類: 1 枚ずつの判定で取り違えの相手の色に見えても、同じフレームの同じ色の仲間にごく近ければ使う
+  // （暖かい照明で薄い緑が「白」と判定され、白のセンターの読み違いとして捨てられていた）
+  const supported = scheme === "aruco12" ? supportedByFrame(markers.flatMap((m) => (decode(scheme, m.id) ? [{ m, face: decode(scheme, m.id)!.face }] : []))) : new Set<Marker>();
   for (const m of checked) {
     const dec = decode(scheme, m.id);
-    if (!dec || !colorConsistent(scheme, m.id, m.rgb)) continue;
+    if (!dec || (!colorConsistent(scheme, m.id, m.rgb) && !supported.has(m))) continue;
     const c: Coded = { ...m, dec };
     if (dec.sticker < 0) {
       coded.push(c);
@@ -227,10 +253,15 @@ export function reconstructFaces(
     const used = new Set(g ? [...g.cells.values()].map((c) => c.m) : [ref]);
     used.add(ref);
     pool = pool.filter((m) => !used.has(m));
-    if (!g || !g.pitch) continue;
+    if (!g) continue;
     const face = toFace(g, size);
     if (face) faces.push(face);
   }
+  // 1 列・1 枚の面（partial）は、3×3 の面（なければそれ同士）で決めたキューブの傾きに合うときだけ使う
+  const fullFaces = faces.filter((f) => !f.partial);
+  const partials = faces.filter((f) => f.partial);
+  if (fullFaces.length) faces.splice(0, faces.length, ...fullFaces);
+  else partials.length = 0;
   if (!faces.length) return { faces: [], tilt: prevTilt };
 
   // 面の向き（法線）でカメラフレームの面に割り当てる。上面だけが見えているときに、それを正面と決めつけない。
@@ -275,10 +306,28 @@ export function reconstructFaces(
   const assigned = [...taken.entries()].map(([slot, fi]) => ({ a: SLOT_NORMALS[slot], n: faces[fi].normal }));
   const prior = prevTilt && assigned.every((p) => dot3(rot3(prevTilt, p.a), p.n) > 0.8) ? prevTilt : null;
   const E = cubeTilt(assigned, prior);
+  // 1 列・1 枚の面: 傾きを戻した法線が、空いているカメラフレームの面の向きにほぼ一致するときだけ（約 25° 以内）。
+  // 回している途中の層の側面は、回し始めと回し終わりの近く以外は外れる。回し終わりの近くなら、回った先の面に割り当たる
+  for (const p of partials) {
+    const a = [0, 1, 2].map((c) => E[c] * p.normal[0] + E[3 + c] * p.normal[1] + E[6 + c] * p.normal[2]) as V3;
+    let best = -1;
+    let score = 0.9;
+    SLOT_NORMALS.forEach((n, slot) => {
+      if (!taken.has(slot) && dot3(n, a) > score) {
+        score = dot3(n, a);
+        best = slot;
+      }
+    });
+    if (best < 0) continue;
+    faces.push(p);
+    taken.set(best, faces.length - 1);
+  }
+  const pitch = median(faces.filter((f) => !f.partial && f.g.pitch).map((f) => f.g.pitch)) || DEFAULT_PITCH;
   const out: VisibleFace[] = [];
   for (const [slot, fi] of [...taken.entries()].sort((a, b) => a[0] - b[0])) {
-    const v = layout(faces[fi], slot, E);
-    if (v) out.push({ slot, ...v });
+    const f = faces[fi];
+    const v = layout(f.g.pitch ? f : { ...f, g: { ...f.g, pitch } }, slot, E);
+    if (v) out.push(f.partial ? { slot, ...v, partial: true } : { slot, ...v });
   }
   return { faces: out, tilt: E };
 }
@@ -355,9 +404,12 @@ function toFace(g: Group, size: { width: number; height: number }) {
   // 2 行 2 列以上に広がっている（一直線の 3 枚は回している途中の層の側面のことが多いので、ID だけでは面にしない）
   const center = cells.some((c) => (c.m as Coded).dec.center);
   const full = span(cells.map((c) => c.i)) === 2 && span(cells.map((c) => c.j)) === 2;
-  const identity = cells.some((c) => (c.m as Coded).dec.sticker >= 0) && new Set(cells.map((c) => c.i)).size >= 2 && new Set(cells.map((c) => c.j)).size >= 2;
-  if (!center && !full && !identity) return null;
-  return { g, ...planeFrame(g.G, size), count: cells.length };
+  const hasId = cells.some((c) => (c.m as Coded).dec.sticker >= 0);
+  const spread2d = new Set(cells.map((c) => c.i)).size >= 2 && new Set(cells.map((c) => c.j)).size >= 2;
+  if (g.pitch && (center || full || (hasId && spread2d))) return { g, ...planeFrame(g.G, size), count: cells.length, partial: false };
+  // 1 列（1×3・1×2）か 1 枚: ID と向きで位置が決まる符号、または 12 種類のセンター 1 枚（真ん中のマスの色 = その面の色）
+  if (hasId || (center && cells.length === 1)) return { g, ...planeFrame(g.G, size), count: cells.length, partial: true };
+  return null;
 }
 
 // 面のセルの並び（カメラフレームの規約: src/cube/model.ts の ROWDIR・COLDIR をカメラフレームに当てはめたもの）。
@@ -440,6 +492,9 @@ function layout(face: NonNullable<ReturnType<typeof toFace>>, slot: number, E: n
   if (!H) return null;
   return { colors, ids, outline, H };
 }
+
+// 1 枚だけの面の格子の間隔（マーカーの辺に対する比）: 同じフレームの 3×3 の面がなければ、18mm のステッカーを 19mm 間隔で貼ったとき
+const DEFAULT_PITCH = 1.3;
 
 // マーカーの ID（揃った状態の位置）と向き（基準の座標で 90° 単位）から、その面の真ん中のセル（基準の座標の i, j）
 function centerVote(c: { m: Marker; rot: number; i: number; j: number }): [number, number] {

@@ -6,6 +6,7 @@ import { stickerScheme } from "../src/aruco/codes";
 import { ARUCO_REFS } from "../src/aruco/palette";
 import { MOVE_NAMES, VIEW, type Vec3, parseMoves, solvedState } from "../src/cube/model";
 import { TrackerEngine } from "../src/track/engine";
+import { ARUCO_OBSERVER } from "../src/track/observer";
 import { simplifyMoves } from "../src/track/merge";
 import { DEFAULT_PIPELINE, processFrame } from "../src/vision/pipeline";
 import { type CV, initOpenCv } from "../src/vision/quads";
@@ -45,8 +46,9 @@ describe("30fps のカメラで回す（揃った状態から）", () => {
     const scheme = stickerScheme(stickers);
     const pipeline = { ...PIPELINE, stickers };
     const truth = parseMoves(alg);
-    const engine = new TrackerEngine(solvedState(), ARUCO_REFS);
-    const refiner = withRefiner ? new Refiner(cv, { state: Array.from(solvedState()), refs: ARUCO_REFS, from: 0, to: Infinity, startHint: 300, engine: {}, pipeline: { stickers } }) : null;
+    // アプリと同じ観測器の設定（controller.engineOptions）
+    const engine = new TrackerEngine(solvedState(), ARUCO_REFS, { observer: ARUCO_OBSERVER });
+    const refiner = withRefiner ? new Refiner(cv, { state: Array.from(solvedState()), refs: ARUCO_REFS, from: 0, to: Infinity, startHint: 300, engine: { observer: ARUCO_OBSERVER }, pipeline: { stickers } }) : null;
     const memory = { last: null };
     const period = 400; // 2.5 手/秒
     const turnMs = 170;

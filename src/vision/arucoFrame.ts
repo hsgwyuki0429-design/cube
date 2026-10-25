@@ -3,7 +3,7 @@
 // マーカーから面を組み立て（src/aruco/cube.ts）、各セルの色を代表色の Lab にして返す。追跡・スキャン・精密解析は
 // 普通のステッカーと同じ経路（FrameResult）で動く。
 import { reconstructFaces } from "../aruco/cube";
-import { ArucoBench, DEFAULT_CONFIGS } from "../aruco/detect";
+import { ArucoBench, DEFAULT_CONFIGS, THOROUGH_PARAMS } from "../aruco/detect";
 import type { StickerScheme } from "../aruco/codes";
 import { ARUCO_REFS } from "../aruco/palette";
 import type { Lab } from "./color";
@@ -12,15 +12,17 @@ import type { DetectedFace, FrameResult } from "./pipeline";
 import type { CV } from "./quads";
 import type { PixelSource } from "./sampler";
 
-let bench: { cv: CV; scheme: StickerScheme; b: ArucoBench } | null = null;
+let bench: { cv: CV; scheme: StickerScheme; thorough: boolean; b: ArucoBench } | null = null;
 // フレームの間で引き継ぐキューブの傾き（面が 1 つしか見えないときの向きの決定に使う）。記憶の入れ物ごと
 const tilts = new WeakMap<object, { t: number; tilt: number[] | null }>();
 const TILT_MS = 1000;
 
-export function processAruco(cv: CV, img: PixelSource, t: number, memory: object, scheme: StickerScheme = "aruco54"): FrameResult {
-  if (!bench || bench.cv !== cv || bench.scheme !== scheme) {
+// thorough: 精密解析（時間をかけてよい）。二値化の窓を細かく試す（THOROUGH_PARAMS）
+export function processAruco(cv: CV, img: PixelSource, t: number, memory: object, scheme: StickerScheme = "aruco54", thorough = false): FrameResult {
+  if (!bench || bench.cv !== cv || bench.scheme !== scheme || bench.thorough !== thorough) {
     bench?.b.delete();
-    bench = { cv, scheme, b: new ArucoBench(cv, [DEFAULT_CONFIGS[1]], scheme) }; // max(RGB)・既定のパラメータ
+    const config = thorough ? { ...DEFAULT_CONFIGS[1], params: THOROUGH_PARAMS } : DEFAULT_CONFIGS[1]; // max(RGB)
+    bench = { cv, scheme, thorough, b: new ArucoBench(cv, [config], scheme) };
   }
   const markers = bench.b.detect(img)[0].markers;
   const prev = tilts.get(memory);
@@ -39,6 +41,8 @@ export function processAruco(cv: CV, img: PixelSource, t: number, memory: object
       valid: known,
       weight: new Array(9).fill(1),
       masked: new Array(9).fill(false),
+      // 1 列・1 枚の面: 色は使うが、外枠は推定なので 3D の傾き（estimatePose）には使わない
+      held: !!f.partial,
     };
   });
   // 普通のステッカーと同じく正面（スロット 2）を先頭に。面があれば必ず正面がある（reconstructFaces の frontAlways）
