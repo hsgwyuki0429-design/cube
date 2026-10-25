@@ -89,6 +89,17 @@ async function runCube(page) {
     await page.waitForTimeout(800);
     await page.locator(".card", { hasText: "3. 動画で確かめる" }).screenshot({ path: `${OUT}/${basename(VIDEO)}.${label}.png` });
   }
+  // 3D キューブ（動画に合わせて動くもの・手順の再生）が出ていること。最後の手の後で、動画の 3D が全部の手を回し終えた状態
+  const n3d = await page.evaluate(() => [".cube-3d twisty-player", ".cube-replay twisty-player"].map((q) => document.querySelectorAll(q).length));
+  if (n3d.join() !== "1,1") throw new Error(`3D キューブがない: ${n3d}`);
+  await page.evaluate(() => {
+    const v = document.querySelector(".viewer video");
+    v.pause();
+    v.currentTime = v.duration - 0.01;
+  });
+  await page.waitForTimeout(2500);
+  await page.locator(".card", { hasText: "3. 動画で確かめる" }).screenshot({ path: `${OUT}/${basename(VIDEO)}.end.png` });
+  await page.locator(".card", { hasText: "2. 推定した手順" }).screenshot({ path: `${OUT}/${basename(VIDEO)}.replay.png` });
   if (!TRUTH) return true;
   const want = TRUTH.trim().split(/\s+/).join(" ");
   return res.moves.replace(/\*/g, "") === want;

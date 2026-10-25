@@ -1,7 +1,8 @@
 // 動画の上に、解析したフレームの検出結果を重ねる。動画の表示時刻にいちばん近い解析フレームを使う。
 // テストモード: マーカーごとの読めた・読めない。キューブモード: 組み立てた面と推定した手
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { MOVE_NAMES } from "../cube/model";
+import { Cube3D } from "../ui/Cube3D";
 import type { CubeResult, VisibleFace } from "./cube";
 import { FaceNet, SLOT_NAMES, heldName } from "./cubePanel";
 import type { VideoInfo } from "./protocol";
@@ -215,6 +216,11 @@ export function Viewer({ url, frames, info, timeScale, configNames, scheme, summ
     if (list[0]) seekReal(list[0].t0 ?? list[0].t);
   };
   const doneMoves = moves.filter((m) => m.t <= nowReal);
+  // 3D は回し始めた手から動かす（回し終わりまで待つと、動画より遅れて見える）
+  const started = moves.filter((m) => (m.t0 ?? m.t) <= nowReal);
+  const startedKey = started.map((m) => m.move).join(",");
+  const startedMoves = useMemo(() => started.map((m) => m.move), [startedKey]);
+  const heldOrient = (started[started.length - 1] ?? moves[0])?.orient ?? null;
   const turning = moves.find((m) => (m.t0 ?? m.t) <= nowReal && nowReal < m.t);
   const missedHere = slots.filter((s) => s.track[index] === 1);
   const f = frames[index];
@@ -290,7 +296,15 @@ export function Viewer({ url, frames, info, timeScale, configNames, scheme, summ
               ここまでの手（{doneMoves.length}）: {doneMoves.map((m) => MOVE_NAMES[m.move]).join(" ") || "—"}
               {turning ? `・回している: ${MOVE_NAMES[turning.move]}（持ち方基準 ${heldName(turning)}）` : ""}
             </p>
-            <FaceNet faces={faces} />
+            <div class="cube-row">
+              <FaceNet faces={faces} />
+              {moves.length > 0 && (
+                <div class="cube-3d">
+                  <Cube3D epoch={0} setupMoves={[]} moves={startedMoves} orient={heldOrient} />
+                  <div class="hint">推定した手順で動かしたキューブ（動画の時刻に合わせる・カメラから見た持ち方）</div>
+                </div>
+              )}
+            </div>
           </>
         )}
         <p class="hint">

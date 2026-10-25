@@ -216,3 +216,19 @@
   align-items: center;
   justify-content: center;
 }
+
+.aruco .cube-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 16px;
+}
+.aruco .cube-row .cube-3d {
+  width: 240px;
+  max-width: 100%;
+}
+.aruco .cube-replay {
+  width: 280px;
+  max-width: 100%;
+  margin: 8px 0;
+}
