@@ -15,7 +15,14 @@ import { type Settings, settingsStore } from "./settings";
 import { type Calibration, loadCalibration, loadSolves, personalSequences, saveCalibration } from "./storage";
 import { createStore } from "./store";
 
-export type Screen = "main" | "history" | "settings" | "help";
+export type Screen = "main" | "history" | "settings" | "help" | "aruco";
+
+// aruco.html（移動するだけのページ）や #aruco で開かれたら ArUco の画面から始める。古い Service Worker が
+// aruco.html への移動に本体の index.html を返したときも、URL を見て ArUco の画面を開く
+function initialScreen(): Screen {
+  if (typeof location === "undefined") return "main";
+  return /aruco\.html$/.test(location.pathname) || location.hash === "#aruco" ? "aruco" : "main";
+}
 export type Panel = "free" | "timer";
 
 export interface CubeSetup {
@@ -69,7 +76,7 @@ export function displayColors(refs: Lab[], names: string[], scheme: Settings["sc
 
 class Controller {
   readonly store = createStore<AppState>({
-    screen: "main",
+    screen: initialScreen(),
     panel: "free",
     camera: "off",
     cameraError: null,
@@ -133,11 +140,20 @@ class Controller {
         hands: this.hands.status,
       });
     }, 500);
-    // 以前カメラを許可していれば自動で開始
+    // 以前カメラを許可していれば自動で開始。ArUco の画面から始めたときは、メインを開くまで待つ（動画の解析が遅くなるので）
     navigator.permissions
       ?.query({ name: "camera" as PermissionName })
       .then((p) => {
-        if (p.state === "granted" && this.store.get().camera === "off" && !this.store.get().demo) this.startCamera();
+        if (p.state !== "granted") return;
+        const start = () => {
+          if (this.store.get().camera === "off" && !this.store.get().demo) this.startCamera();
+        };
+        if (this.store.get().screen === "main") return start();
+        const off = this.store.subscribe((st) => {
+          if (st.screen !== "main") return;
+          off();
+          start();
+        });
       })
       .catch(() => undefined);
   }
