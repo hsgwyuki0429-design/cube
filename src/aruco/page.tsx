@@ -36,6 +36,7 @@ export function ArucoPage() {
   const [file, setFile] = useState<File | null>(null);
   const [fileUrl, setFileUrl] = useState<string | null>(null);
   const [scheme, setScheme] = useState<StickerScheme>("unique54");
+  const [design, setDesign] = useState("standard");
   const [runScheme, setRunScheme] = useState<StickerScheme>("unique54");
   const [sheetKey, setSheetKey] = useState("t12");
   const [captureFps, setCaptureFps] = useState("");
@@ -116,7 +117,7 @@ export function ArucoPage() {
     setError(null);
     setRunning(true);
     setVersion((v) => v + 1);
-    workerRef.current.postMessage({ type: "analyze", file, options: { configs, maxSide, stride, scheme } });
+    workerRef.current.postMessage({ type: "analyze", file, options: { configs, maxSide, stride, scheme, design: scheme === "unique54" ? design : "standard" } });
   };
 
   const sheets = SHEETS.filter((s) => s.scheme === scheme);
@@ -190,6 +191,15 @@ export function ArucoPage() {
               ))}
             </select>
           </label>
+          {scheme === "unique54" && (
+            <label>
+              マーカーの配置
+              <select value={design} onChange={(e) => setDesign((e.target as HTMLSelectElement).value)}>
+                <option value="standard">1 個（いっぱいの大きさ）</option>
+                <option value="quad-half">4 個・幅 1/2</option>
+              </select>
+            </label>
+          )}
           <label>
             動画ファイル（MP4 / MOV）
             <input type="file" accept="video/*,.mov,.mp4" onChange={(e) => setFile((e.target as HTMLInputElement).files?.[0] ?? null)} />

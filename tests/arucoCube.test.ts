@@ -2,17 +2,23 @@
 // 回している動画（240fps 相当）から手順を復元する。
 import { createRequire } from "node:module";
 import { beforeAll, describe, expect, it } from "vitest";
-import { type CubeFrame, decodeCube, facesOverTime, reconstructFaces } from "../src/aruco/cube";
+import { type CubeFrame, decodeCube, facesOverTime, reconstructFaces, turnMarkers } from "../src/aruco/cube";
+import { designOf } from "../src/aruco/design";
+import { DEFAULT_TURN, recognizeTurn } from "../src/aruco/turn";
+import { cellCenter } from "../src/vision/layout";
 import { ArucoBench, DEFAULT_CONFIGS, type Marker } from "../src/aruco/detect";
 import { MOVE_NAMES, VIEW, type Vec3, parseMoves, rotateOrientation } from "../src/cube/model";
 import { type CV, initOpenCv } from "../src/vision/image";
 import { type Sticker, applyMoveStickers, renderArucoCube, solvedStickers, stickerAt } from "./arucoCube";
+import type { Finger } from "./render";
 
 let cv: CV;
 let bench: ArucoBench;
+let benchU1: ArucoBench; // 54 種類（マスごとに違う）・今の配置
 beforeAll(async () => {
   cv = await initOpenCv(createRequire(import.meta.url)("@techstark/opencv-js"));
   bench = new ArucoBench(cv, [DEFAULT_CONFIGS[1]]); // max(RGB)
+  benchU1 = new ArucoBench(cv, [DEFAULT_CONFIGS[1]], "unique54");
 }, 120000);
 
 const EYE: Vec3 = [2.4, 2.4, 5.5]; // 正面・上・右が見える（スタンドで少し上から、20cm 前後）
@@ -240,6 +246,60 @@ describe("マスごとに違う 54 種類（3×3）のステッカー", () => {
       if (i) expect(m.t0! - r.moves[i - 1].t).toBeGreaterThan(1.5 * F);
     });
   }, 120000);
+});
+
+describe("4 個・幅 1/2 の配置（同じ ID のマーカーを 2×2 に並べたステッカー）", () => {
+  const QUAD = designOf("quad-half");
+  let benchQ: ArucoBench;
+  beforeAll(() => {
+    benchQ = new ArucoBench(cv, [DEFAULT_CONFIGS[1]], "unique54", QUAD);
+  });
+  const markersOf = (st: Sticker[], orient: number, fingers?: Finger[], turn?: { move: number; fraction: number; spread?: number }) =>
+    benchQ.detect(renderArucoCube(cv, { ...SIZE, stickers: st, orient, eye: EYE, noise: 2, scheme: "unique54", design: QUAD, fingers, turn }))[0].markers;
+
+  for (const [alg, orient, label] of [
+    ["R U F' D2 L", 0, "崩した状態"],
+    ["F R' U", rotateOrientation(rotateOrientation(0, "x", 1), "y", 2), "別の面が上"],
+  ] as const) {
+    it(`${label}: どのマーカーがステッカーのどの位置のものかを並びと ID で決めて、正面・上・右のマスの ID と色を出す`, () => {
+      const st = stickersAfter(alg);
+      const faces = reconstructFaces(markersOf(st, orient), SIZE, null, "unique54", undefined, false, QUAD).faces;
+      const at = stickerAt(st);
+      expect(faces.map((f) => f.slot)).toEqual([0, 1, 2]);
+      for (const f of faces) {
+        const want = Array.from({ length: 9 }, (_, cell) => at[VIEW[(orient * 6 + f.slot) * 9 + cell]]);
+        expect(f.ids.map((id, cell) => (id < 0 ? -1 : want[cell]))).toEqual(f.ids);
+        expect(f.ids.filter((id) => id >= 0).length).toBeGreaterThanOrEqual(f.slot === 2 ? 9 : 6);
+      }
+    });
+  }
+
+  it("指で各ステッカーの一部が隠れても、見えているマーカーで読む（1 個の配置では読めないマスも読める）", () => {
+    const st = stickersAfter("R U F' D2 L");
+    const at = stickerAt(st);
+    // 正面の下の段の各マスの左半分を、指 1 本で横に隠す
+    const probe = reconstructFaces(markersOf(st, 0), SIZE, null, "unique54", undefined, false, QUAD).faces.find((f) => f.slot === 2)!;
+    const [x0, y0] = cellCenter({ H: probe.H, rot: 0 }, 6);
+    const [x2] = cellCenter({ H: probe.H, rot: 0 }, 8);
+    const pitch = (x2 - x0) / 2;
+    const finger: Finger = { a: [x0 - pitch * 1.4, y0], b: [x2 - pitch * 0.25, y0], width: pitch * 0.9 };
+    const front = (markers: Marker[], design = QUAD) => reconstructFaces(markers, SIZE, null, "unique54", undefined, false, design).faces.find((f) => f.slot === 2)!;
+    const quad = front(markersOf(st, 0, [finger]));
+    const std = front(benchU1.detect(renderArucoCube(cv, { ...SIZE, stickers: st, orient: 0, eye: EYE, noise: 2, scheme: "unique54", fingers: [finger] }))[0].markers, designOf("standard"));
+    const want = (cell: number) => at[VIEW[2 * 9 + cell]];
+    const read = (f: typeof quad) => [6, 7, 8].filter((cell) => f.ids[cell] === want(cell)).length;
+    expect(quad.ids.every((id, cell) => id < 0 || id === want(cell))).toBe(true);
+    expect(read(quad)).toBeGreaterThan(read(std));
+  });
+
+  it("回している途中の形も、4 個のどの位置かによらずマスに合わせる", () => {
+    const st = stickersAfter("R U F' D2 L");
+    const markers = markersOf(st, 0, undefined, { move: parseMoves("R")[0], fraction: 0.3 });
+    const faces = reconstructFaces(markers, SIZE, null, "unique54", undefined, true, QUAD).faces;
+    const tr = recognizeTurn(turnMarkers(markers, QUAD), faces, SIZE, null, { ...DEFAULT_TURN, design: QUAD });
+    expect(tr.turn?.slot).toBe(1);
+    expect(Math.abs((tr.turn!.angle * 180) / Math.PI + 27)).toBeLessThan(6);
+  });
 });
 
 describe("1 列（1×3）・1 枚（1×1）の面", () => {

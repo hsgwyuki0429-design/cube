@@ -64,7 +64,7 @@ describe("30fps のカメラで回す（揃った状態から）", () => {
       const fr = turning ? (t - s) / turnMs : 0;
       const img = renderArucoCube(cv, { ...SIZE, stickers: st, orient: 0, eye: [EYE[0] + 0.1 * Math.sin(t / 300), EYE[1], EYE[2]], turn: turning ? { move: truth[done], fraction: fr, spread: 0.15 } : undefined, noise: 2, seed: Math.round(t) + 1, scheme });
       const r = processFrame(cv, img, t, pipeline, memory);
-      engine.push({ t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, ids: f.ids })) });
+      engine.push({ t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, ids: f.ids })), turn: r.turn });
       refiner?.push(img, t);
     }
     return { engine, refiner, truth };
@@ -113,7 +113,7 @@ describe("正面だけが見えているとき（読んだステッカーの ID�
       const eye: Vec3 = t < 800 ? [0.01, 0.02, 7.5] : [0.01, 4.5, 6.2];
       const img = renderArucoCube(cv, { ...SIZE, stickers: st, orient: 0, eye, turn: turning ? { move, fraction: (t - 330) / 170, spread: 0.15 } : undefined, noise: 2, seed: Math.round(t) + 1, scheme });
       const r = processFrame(cv, img, t, pipeline, memory);
-      engine.push({ t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, ids: f.ids })) });
+      engine.push({ t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, ids: f.ids })), turn: r.turn });
     }
     return { engine, front: front! };
   }

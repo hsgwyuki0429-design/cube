@@ -6,6 +6,7 @@ import { analyzeState, type StateProblem } from "../cube/pattern";
 import type { EngineOptions, TrackUpdate } from "../track/engine";
 import { type CameraInfo, CameraSource, cameraErrorMessage, listCameras } from "../vision/camera";
 import { type Lab, NAMED_COLORS } from "../vision/color";
+import type { PipelineConfig } from "../vision/pipeline";
 import type { FrameMessage, StreamPartial } from "../vision/protocol";
 import type { RefineInput, RefineResult } from "../vision/refine";
 import { FrameRecorder } from "../vision/recorder";
@@ -170,8 +171,13 @@ class Controller {
       this.stickers = s.stickers;
     }
     this.vision.workWidth = s.workWidth;
-    this.vision.setConfig({ stickers: s.stickers });
+    this.vision.setConfig(this.pipelineConfig(s));
     this.vision.setTrackingOptions(this.engineOptions(s));
+  }
+
+  // 認識の設定（ステッカーの符号・マーカーの配置）。4 個の配置は 54 種類・マスごとに違う符号のときだけ
+  pipelineConfig(s: Settings = settingsStore.get()): Partial<PipelineConfig> {
+    return { stickers: s.stickers, arucoDesign: s.stickers === "unique54" ? s.stickerDesign : "standard" };
   }
 
   engineOptions(s: Settings = settingsStore.get()): Partial<EngineOptions> {
@@ -250,7 +256,8 @@ class Controller {
     const { SyntheticCube } = await import("../synthetic/syntheticCube");
     this.camera.stop();
     this.synthetic?.stop();
-    const syn = new SyntheticCube({ aruco: stickerScheme(settingsStore.get().stickers) });
+    const s = settingsStore.get();
+    const syn = new SyntheticCube({ aruco: stickerScheme(s.stickers), design: this.pipelineConfig(s).arucoDesign });
     this.synthetic = syn;
     syn.setView("front", 0);
     const info = await this.camera.attach(syn.stream());
@@ -415,7 +422,7 @@ class Controller {
       from: session.from,
       to: Infinity,
       engine: this.engineOptions(),
-      pipeline: { stickers: s.stickers },
+      pipeline: this.pipelineConfig(s),
       ...(opts.timed ? {} : { keepPatchesMs: 3000 }),
     };
     const id = await this.refiner.startStream((p) => this.onAnalysisPartial(session, p));
@@ -495,7 +502,7 @@ class Controller {
     onInfo?: (info: VideoFileInfo, analyzedFrames: number) => void,
   ): { result: Promise<RefineResult>; cancel: () => void } {
     const s = settingsStore.get();
-    const input: RefineInput = { state: Array.from(opts.state), refs: ARUCO_REFS, from: 0, to: Infinity, engine: this.engineOptions(), pipeline: { stickers: s.stickers } };
+    const input: RefineInput = { state: Array.from(opts.state), refs: ARUCO_REFS, from: 0, to: Infinity, engine: this.engineOptions(), pipeline: this.pipelineConfig(s) };
     return this.videoRefiner.runVideo(file, input, opts.target, { maxSide: s.workWidth, captureFps: opts.captureFps, maxFps: opts.maxFps ?? VIDEO_MAX_FPS }, progress, onInfo);
   }
 

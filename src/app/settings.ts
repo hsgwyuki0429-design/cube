@@ -12,6 +12,9 @@ export interface Settings {
   // ステッカーの符号の種類（各ステッカーに色付きの ArUco マーカー。色を読まず ID で判定する。src/aruco/codes.ts）:
   // unique54 は 3×3 の 54 種類（マスごとに違う）、aruco12 は 3×3 の 12 種類、aruco は最初に印刷した 4×4 の 54 種類
   stickers: "aruco" | "aruco12" | "unique54";
+  // ステッカーの中のマーカーの配置（src/aruco/design.ts）: standard = 色の縁の内側いっぱいに 1 個、quad-half = 幅 1/2 を 2×2 に 4 個
+  // （指で一部が隠れても、どれかが丸ごと見える。54 種類・マスごとに違う符号のとき）
+  stickerDesign: "standard" | "quad-half";
   debug: boolean;
   inspection: boolean;
   sound: boolean;
@@ -33,6 +36,7 @@ export const DEFAULT_SETTINGS: Settings = {
   viewpoint: "user",
   cube3dView: "camera",
   stickers: "unique54",
+  stickerDesign: "standard",
   debug: false,
   inspection: true,
   sound: true,

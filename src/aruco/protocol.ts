@@ -9,6 +9,7 @@ export interface AnalyzeOptions {
   maxSide: number; // 解析する画像の長辺（0 = 原寸）
   stride: number; // n フレームに 1 枚だけ解析する（1 = 全部）
   scheme: StickerScheme; // ステッカーの符号の種類
+  design?: string; // ステッカーの中のマーカーの配置（src/aruco/design.ts の key。既定 standard）
 }
 
 export interface VideoInfo {

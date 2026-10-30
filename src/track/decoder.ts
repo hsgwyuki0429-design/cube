@@ -33,6 +33,9 @@ export interface DecoderOptions {
   deepenAbove: number;
   // 手順の知識（prior.ts）の効き具合。直前の数手に続く手が知っている手順の並びでなければ、その手のコストを上乗せする（0 で使わない）
   priorWeight: number;
+  // 回転途中の形で見えた層の回転（Observation.turns）と合わない手の並びのコスト: 回した量が合わない / その軸の手がない
+  turnCost: number;
+  turnAxisCost: number;
 }
 
 export const DEFAULT_DECODER: DecoderOptions = {
@@ -46,6 +49,8 @@ export const DEFAULT_DECODER: DecoderOptions = {
   recoveryDepth: 4,
   deepenAbove: 0.75,
   priorWeight: 1,
+  turnCost: 0.6,
+  turnAxisCost: 0.4,
 };
 
 interface MoveNode {
@@ -113,6 +118,45 @@ function sequenceTree(depth: number): SeqTree {
   t = { move: Int8Array.from(move), parent: Int32Array.from(parent), levelStart };
   treeCache.set(depth, t);
   return t;
+}
+
+// 手順の木の各節点までの、軸（x・y・z = 0・1・2）ごとの層の回転: 軸の正の側の層を負の側に対して、軸の正の向きのまわりに
+// 右手で 90° 単位（0〜3）と、その軸の手があるか。正の側の面の手（時計回り = 法線のまわりに -90°）も負の側の面の手（法線は軸の
+// 負の向き）も、正の側の層から見た回転は「-(回した量)」になる
+interface TreeTurns {
+  net: Int8Array; // node * 3 + axis
+  has: Uint8Array;
+}
+const turnCache = new Map<SeqTree, TreeTurns>();
+const AXIS_OF_FACE = [1, 0, 2, 1, 0, 2]; // U R F D L B の法線の軸
+function treeTurns(tree: SeqTree): TreeTurns {
+  let t = turnCache.get(tree);
+  if (t) return t;
+  const n = tree.move.length;
+  const net = new Int8Array(n * 3);
+  const has = new Uint8Array(n * 3);
+  for (let node = 1; node < n; node++) {
+    const p = tree.parent[node];
+    for (let a = 0; a < 3; a++) {
+      net[node * 3 + a] = net[p * 3 + a];
+      has[node * 3 + a] = has[p * 3 + a];
+    }
+    const m = tree.move[node];
+    const a = AXIS_OF_FACE[moveFace(m)];
+    const k = (m % 3) + 1; // 1 = 時計回り・2 = 半回転・3 = 反時計回り
+    net[node * 3 + a] = (net[node * 3 + a] + 4 - k) % 4;
+    has[node * 3 + a] = 1;
+  }
+  t = { net, has };
+  turnCache.set(tree, t);
+  return t;
+}
+
+// 見えた回転（90° 単位）と手の並びの回転が合うか。半回転は途中で 90° の形を通る（立方体の形に見えて、そこで見えている回転が
+// 途切れることがある）ので、90° が見えたら同じ向きの 90° か半回転なら合うとする（向きの違う 90° は合わない）
+export function turnConsistent(seen: number, net: number): boolean {
+  if (seen === 1 || seen === 3) return net === seen || net === 2;
+  return net === seen;
 }
 
 function seqOf(tree: SeqTree, node: number): number[] {
@@ -308,6 +352,28 @@ export class MoveDecoder {
       }
     };
     const top = new TopK(beamWidth);
+    // 回転途中の形で見えた層の回転: 仮説の姿勢でキューブの軸に直し、合わない手の並びにコストを足す
+    const turns = obs.turns?.length ? obs.turns : null;
+    const tt = turns ? treeTurns(tree) : null;
+    const turnPenalty = (orient: number): ((node: number) => number) | null => {
+      if (!turns || !tt) return null;
+      // キューブの軸ごとに: 回した量の合計（null = 量の分からないものがある）
+      const want = new Map<number, number | null>();
+      for (const h of turns) {
+        const a = AXIS_OF_FACE[cubeFaceAt(orient, h.slot)];
+        const prev = want.get(a);
+        want.set(a, h.quarters === null || prev === null ? null : ((prev ?? 0) + h.quarters) % 4);
+      }
+      const { turnCost, turnAxisCost } = this.options;
+      return (node: number) => {
+        let c = 0;
+        for (const [a, q] of want) {
+          if (q === null) c += tt.has[node * 3 + a] ? 0 : turnAxisCost;
+          else if (!turnConsistent(q, tt.net[node * 3 + a])) c += turnCost;
+        }
+        return c;
+      };
+    };
 
     interface Cand {
       cost: number;
@@ -325,6 +391,7 @@ export class MoveDecoder {
     const evalLevel = (h: Hypothesis, hi: number, d: number) => {
       const os = orients.includes(h.orient) ? orients : [...orients, h.orient];
       const prevLen = h.tail?.len ?? 0;
+      const penalty = turnPenalty(h.orient);
       fillLevel(h, d);
       const from = tree.levelStart[d];
       const to = tree.levelStart[d + 1];
@@ -337,8 +404,9 @@ export class MoveDecoder {
           for (let i = 0; i < 54; i++) dst[i] = src[p[i]];
         }
         let hash: [number, number] | null = null;
+        const turnExtra = penalty ? penalty(node) : 0;
         for (const o of os) {
-          const base = h.cost + pathCost[node] + (o === h.orient ? 0 : rotationCost);
+          const base = h.cost + pathCost[node] + turnExtra + (o === h.orient ? 0 : rotationCost);
           if (base >= top.threshold) continue;
           const obsCost = evalCost(dst, getCompiled(o));
           evaluated++;

@@ -66,7 +66,7 @@ it("ID なし追跡の効果（30fps・指）", async () => {
           fingers,
         });
         const r = processFrame(cv, img, t, pipeline, memory);
-        engine.push({ t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, ids: f.ids })) });
+        engine.push({ t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, ids: f.ids })), turn: r.turn });
         if (turning) continue;
         const at = stickerAt(st);
         for (const f of r.faces) {

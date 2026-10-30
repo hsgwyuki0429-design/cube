@@ -5,6 +5,7 @@
 import { type Pt, applyH, fitHomography } from "../vision/homography";
 import { type CV, maxRgb } from "../vision/image";
 import { type StickerScheme, codesOf, makeDictionary, markerBits, markerSize } from "./codes";
+import { STANDARD_DESIGN, type StickerDesign } from "./design";
 
 export type Preprocess = "gray" | "max";
 
@@ -140,6 +141,7 @@ export class ArucoBench {
     private cv: CV,
     readonly configs: DetectorConfig[],
     readonly scheme: StickerScheme = "aruco54",
+    readonly design: StickerDesign = STANDARD_DESIGN, // ステッカーの中のマーカーの配置（今の配置のときだけ、縁ごと拾った四角の内側を読み直す）
   ) {
     this.dict = makeDictionary(cv, scheme);
     this.cells = markerSize(scheme) + 2;
@@ -223,7 +225,7 @@ export class ArucoBench {
           let m: Marker | null = this.describe(img, id, c);
           // 符号の空きが少ない辞書（unique54）は、ずれた四角（ステッカーの外側の色の縁ごと拾った候補）も別の符号として読めてしまい、
           // OpenCV は入れ子の外側が読めると内側の本物を試さない。マスの中心の明暗が符号どおりでなければ、色の縁の幅だけ内側を読み直す
-          if (this.scheme === "unique54" && m.fit < MIN_FIT) m = this.rescueInner(img, c);
+          if (this.scheme === "unique54" && m.fit < MIN_FIT) m = this.design === STANDARD_DESIGN ? this.rescueInner(img, c) : null;
           if (m) markers.push(m);
         }
         // 3×3 の符号: OpenCV が符号に合わないとして捨てた四角を、マスの中心付近だけで読み直す（rescueRejected）

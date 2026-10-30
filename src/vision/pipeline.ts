@@ -5,6 +5,7 @@ import { processAruco } from "./arucoFrame";
 import type { Lab } from "./color";
 import type { Mat3, Pt } from "./homography";
 import type { CV, PixelSource } from "./image";
+import type { TurnSnapshot } from "../track/types";
 
 export interface PipelineConfig {
   // ステッカーの符号の種類（src/aruco/codes.ts）。unique54: 3×3 の 54 種類（マスごとに違う）、aruco12: 3×3 の 12 種類、
@@ -22,6 +23,10 @@ export interface PipelineConfig {
   arucoIdTrack?: boolean;
   // 直前のフレームのマーカーの周りだけを切り出して検出する（精密解析。src/vision/arucoFrame.ts）
   arucoRegion?: boolean;
+  // ステッカーの中のマーカーの配置（src/aruco/design.ts の key。standard = 今の 1 個、quad-half = 4 個・幅 1/2）
+  arucoDesign?: string;
+  // 回転途中の形状認識で回している層と角度を求め、追跡の手がかりにする（既定 true。src/aruco/turn.ts）
+  arucoTurn?: boolean;
 }
 
 export const DEFAULT_PIPELINE: PipelineConfig = { stickers: "unique54" };
@@ -43,6 +48,7 @@ export interface DetectedFace {
 export interface FrameResult {
   faces: DetectedFace[];
   quads: Pt[][]; // 検出したマーカーの四隅（デバッグ表示用）
+  turn?: TurnSnapshot; // 回転途中の形で見えた層の回転（前のフレームからのつながり）
 }
 
 // memory: フレームの間で引き継ぐもの（キューブの傾き・ID なし追跡・直前のマーカーの範囲）の入れ物。同じ映像には同じものを渡す
@@ -53,5 +59,7 @@ export function processFrame(cv: CV, img: PixelSource, t: number, config: Pipeli
     colorFill: config.arucoColorFill,
     idTrack: config.arucoIdTrack,
     region: config.arucoRegion,
+    design: config.arucoDesign,
+    turn: config.arucoTurn,
   });
 }

@@ -54,7 +54,9 @@ export function reversedObservations(obs: Observation[], lastT: number): Observa
     // 観測 k の見え方が続いていた終わり = 次の観測の tPrevEnd。逆向きでは、その時刻が「見え始め」になる
     const t = next ? -next.tPrevEnd : -lastT;
     const tPrevEnd = next ? -next.t : -lastT;
-    out.push({ ...obs[k], t, tPrevEnd: Math.min(tPrevEnd, t) });
+    // 層の回転の手がかりは、次の観測（逆向きでは、この観測に着くまでの手）のものを逆向きに
+    const turns = next?.turns?.map((h) => ({ slot: h.slot, quarters: h.quarters === null ? null : (4 - h.quarters) % 4 }));
+    out.push({ ...obs[k], t, tPrevEnd: Math.min(tPrevEnd, t), turns });
   }
   return out;
 }

@@ -230,7 +230,7 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
         bitmap.close();
         const img = ctx!.getImageData(0, 0, w, h);
         const result = cv ? processFrame(cv, img, msg.t, focus?.length ? { ...config, focus } : config, memory) : { faces: [], quads: [] };
-        const reading = { t: msg.t, faces: result.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, ids: f.ids })) };
+        const reading = { t: msg.t, faces: result.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, ids: f.ids })), turn: result.turn };
         const track = engine?.push(reading) ?? undefined;
         if (track) focus = focusCells(track.cells, track.orient);
         let looksSolved: boolean | undefined;

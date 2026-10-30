@@ -4,9 +4,13 @@
 // 普通のステッカーと同じ経路（FrameResult）で動く。
 import { fillByColor, frameRefs, skinFraction } from "../aruco/colorFill";
 import { IdTracker } from "../aruco/idTrack";
-import { reconstructFaces, trustedColors } from "../aruco/cube";
+import { type VisibleFace, reconstructFaces, trustedColors, turnMarkers } from "../aruco/cube";
+import { DEFAULT_TURN, type TurnTrack, recognizeTurn, unwrapTurn } from "../aruco/turn";
+import type { TurnSnapshot } from "../track/types";
+import type { Pose } from "./pose";
 import { ArucoBench, DEFAULT_CONFIGS, type Marker, THOROUGH_PARAMS } from "../aruco/detect";
 import type { StickerScheme } from "../aruco/codes";
+import { STANDARD_DESIGN, type StickerDesign, designOf } from "../aruco/design";
 import { ARUCO_REFS } from "../aruco/palette";
 import { rereadFaces } from "../aruco/reread";
 import type { Lab } from "./color";
@@ -15,14 +19,18 @@ import type { DetectedFace, FrameResult } from "./pipeline";
 import type { CV } from "./image";
 import type { PixelSource } from "./image";
 
-let bench: { cv: CV; scheme: StickerScheme; thorough: boolean; b: ArucoBench } | null = null;
+let bench: { cv: CV; scheme: StickerScheme; thorough: boolean; design: StickerDesign; b: ArucoBench } | null = null;
 // 再認識（切り出したマス）用。二値化の窓を細かく試す
-let rereader: { cv: CV; scheme: StickerScheme; b: ArucoBench } | null = null;
+let rereader: { cv: CV; scheme: StickerScheme; design: StickerDesign; b: ArucoBench } | null = null;
 // フレームの間で引き継ぐキューブの傾き（面が 1 つしか見えないときの向きの決定に使う）。記憶の入れ物ごと
 const tilts = new WeakMap<object, { t: number; tilt: number[] | null }>();
 // ID なし追跡（読めなくなったマスに直前のステッカーを引き継ぐ）。記憶の入れ物ごと
 const trackers = new WeakMap<object, IdTracker>();
 const TILT_MS = 1000;
+// 回転途中の形状認識（記憶の入れ物ごと）: 直前の本体の姿勢と、回している層のつながり（回し始めからの角度）
+const turnStates = new WeakMap<object, { pose: Pose | null; poseT: number; track: TurnTrack | null; snap: TurnSnapshot | null }>();
+const POSE_MS = 500;
+const TURN_GAP_MS = 80; // 回している層がこれより長く見えなければ、つながりを切る
 // 直前のフレームのマーカーの範囲（切り出して検出するため。記憶の入れ物ごと）
 const boxes = new WeakMap<object, { t: number; x0: number; y0: number; x1: number; y1: number; side: number }>();
 const REGION_MS = 200; // これより前のフレームの範囲は使わない
@@ -65,7 +73,9 @@ function detectMarkers(b: ArucoBench, img: PixelSource, t: number, memory: objec
 // opts.reread: 読めなかったマスを読み直す数（省略時はライブ 4・精密解析は全部）、opts.focus: 先に読み直すマス（slot * 9 + cell）、
 // opts.colorFill: それでも読めなかったマスを色で補う（既定 true。src/aruco/colorFill.ts）、
 // opts.idTrack: ID が読めなかったマスに直前のフレームのステッカーを引き継ぐ（既定 true。src/aruco/idTrack.ts）、
-// opts.region: 直前のフレームのマーカーの周りだけで検出する（精密解析。既定 false）
+// opts.region: 直前のフレームのマーカーの周りだけで検出する（精密解析。既定 false）、
+// opts.design: ステッカーの中のマーカーの配置（src/aruco/design.ts の key。既定は今の配置 standard）、
+// opts.turn: 回転途中の形状認識で、回している層と回し始めからの角度を出す（既定 true。src/aruco/turn.ts）
 export function processAruco(
   cv: CV,
   img: PixelSource,
@@ -73,22 +83,23 @@ export function processAruco(
   memory: object,
   scheme: StickerScheme = "aruco54",
   thorough = false,
-  opts: { reread?: number; focus?: number[]; colorFill?: boolean; idTrack?: boolean; region?: boolean } = {},
+  opts: { reread?: number; focus?: number[]; colorFill?: boolean; idTrack?: boolean; region?: boolean; design?: string; turn?: boolean } = {},
 ): FrameResult {
-  if (!bench || bench.cv !== cv || bench.scheme !== scheme || bench.thorough !== thorough) {
+  const design = designOf(opts.design ?? STANDARD_DESIGN.key);
+  if (!bench || bench.cv !== cv || bench.scheme !== scheme || bench.thorough !== thorough || bench.design !== design) {
     bench?.b.delete();
     const config = thorough ? { ...DEFAULT_CONFIGS[1], params: THOROUGH_PARAMS } : DEFAULT_CONFIGS[1]; // max(RGB)
-    bench = { cv, scheme, thorough, b: new ArucoBench(cv, [config], scheme) };
+    bench = { cv, scheme, thorough, design, b: new ArucoBench(cv, [config], scheme, design) };
   }
   const markers = detectMarkers(bench.b, img, t, memory, !!opts.region);
   const prev = tilts.get(memory);
-  const r = reconstructFaces(markers, img, prev && t - prev.t < TILT_MS ? prev.tilt : null, scheme, undefined, true);
+  const r = reconstructFaces(markers, img, prev && t - prev.t < TILT_MS ? prev.tilt : null, scheme, undefined, true, design);
   if (r.faces.length) tilts.set(memory, { t, tilt: r.tilt });
   const budget = opts.reread ?? (thorough ? 27 : 4);
   if (budget > 0 && r.faces.length) {
-    if (!rereader || rereader.cv !== cv || rereader.scheme !== scheme) {
+    if (!rereader || rereader.cv !== cv || rereader.scheme !== scheme || rereader.design !== design) {
       rereader?.b.delete();
-      rereader = { cv, scheme, b: new ArucoBench(cv, [{ ...DEFAULT_CONFIGS[1], params: THOROUGH_PARAMS }], scheme) };
+      rereader = { cv, scheme, design, b: new ArucoBench(cv, [{ ...DEFAULT_CONFIGS[1], params: THOROUGH_PARAMS }], scheme, design) };
     }
     rereadFaces(rereader.b, img, r.faces, scheme, budget, new Set(opts.focus ?? []));
   }
@@ -101,6 +112,7 @@ export function processAruco(
     const bySlot = new Map(r.faces.map((f) => [f.slot, f]));
     tracker.update(t, r.faces, null, (slot, cell) => skinFraction(img, bySlot.get(slot)!.H, cell) > 0.15);
   }
+  const turn = opts.turn === false ? undefined : turnSnapshot(markers, r.faces, img, t, memory, design);
   const quads: Pt[][] = markers.map((m) => [0, 1, 2, 3].map((i) => [m.corners[i * 2], m.corners[i * 2 + 1]] as Pt));
   const faces: DetectedFace[] = r.faces.map((f) => {
     const known = f.colors.map((c) => c >= 0);
@@ -122,6 +134,28 @@ export function processAruco(
   });
   // 普通のステッカーと同じく正面（スロット 2）を先頭に。面があれば必ず正面がある（reconstructFaces の frontAlways）
   const front = faces.find((f) => f.slot === 2);
-  if (!front) return { faces: [], quads };
-  return { faces: [front, ...faces.filter((f) => f !== front)], quads };
+  if (!front) return { faces: [], quads, turn };
+  return { faces: [front, ...faces.filter((f) => f !== front)], quads, turn };
+}
+
+// 回転途中の形状認識: 回している層と角度を求め、前のフレームとつなぐ（同じ層が回り続けていれば、回し始めからの角度を足していく）。
+// 回している層が見えたフレームだけ、そのつながりを返す
+function turnSnapshot(markers: Marker[], faces: VisibleFace[], img: PixelSource, t: number, memory: object, design: StickerDesign): TurnSnapshot | undefined {
+  const st = turnStates.get(memory) ?? { pose: null, poseT: -Infinity, track: null, snap: null };
+  turnStates.set(memory, st);
+  if (!faces.length) return undefined;
+  const tr = recognizeTurn(turnMarkers(markers, design), faces, img, st.pose && t - st.poseT < POSE_MS && t > st.poseT ? st.pose : null, { ...DEFAULT_TURN, design });
+  if (tr.pose) {
+    st.pose = tr.pose;
+    st.poseT = t;
+  }
+  const prev = st.track;
+  st.track = unwrapTurn(st.track, tr.turn, t, TURN_GAP_MS);
+  if (!tr.turn || !st.track) return undefined;
+  // unwrapTurn と同じ条件で、新しいつながりか
+  const cont = !!prev && !!st.snap && prev.slot === tr.turn.slot && t - prev.lastT <= TURN_GAP_MS;
+  st.snap = cont
+    ? { ...st.snap!, total: st.track.total, frames: st.snap!.frames + 1, maxStep: Math.max(st.snap!.maxStep, Math.abs(st.track.total - prev!.total)) }
+    : { slot: st.track.slot, start: t, first: tr.turn.angle, total: st.track.total, frames: 1, maxStep: 0 };
+  return st.snap;
 }

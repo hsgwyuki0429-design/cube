@@ -3,6 +3,7 @@
 import cvModule from "@techstark/opencv-js";
 import { type CV, initOpenCv } from "../vision/image";
 import { decodeCube, facesOverTime } from "./cube";
+import { type StickerDesign, designOf } from "./design";
 import { ArucoBench } from "./detect";
 import { demuxFile, readSamples } from "./demux";
 import type { AnalyzeOptions, FromArucoWorker, ToArucoWorker } from "./protocol";
@@ -12,7 +13,7 @@ let cv: CV | null = null;
 let cancelled = false;
 let busy = false;
 // 直前の解析（キューブモードで面の組み立て・手順の推定をやり直すため）
-let last: { frames: FrameRecord[]; width: number; height: number; scheme: AnalyzeOptions["scheme"] } | null = null;
+let last: { frames: FrameRecord[]; width: number; height: number; scheme: AnalyzeOptions["scheme"]; design: StickerDesign } | null = null;
 
 const post = (msg: FromArucoWorker) => (self as unknown as Worker).postMessage(msg);
 
@@ -36,6 +37,7 @@ self.onmessage = async (event: MessageEvent<ToArucoWorker>) => {
         last.frames.map((f) => ({ t: f.t * msg.timeScale, markers: f.results[msg.config]?.markers ?? [] })),
         { width: last.width, height: last.height },
         last.scheme,
+        last.design,
       );
       const result = decodeCube(cubeFrames, msg.endSolved);
       post({ type: "cube", faces: cubeFrames.map((f) => f.faces), turns: cubeFrames.map((f) => f.turn ?? null), result });
@@ -81,9 +83,10 @@ async function analyze(file: Blob, opt: AnalyzeOptions): Promise<void> {
   const canvas = new OffscreenCanvas(aw, ah);
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) throw new Error("2D canvas を使えません");
-  const bench = new ArucoBench(cvm, opt.configs, opt.scheme);
+  const design = designOf(opt.design ?? "standard");
+  const bench = new ArucoBench(cvm, opt.configs, opt.scheme, design);
   const all: FrameRecord[] = [];
-  last = { frames: all, width: aw, height: ah, scheme: opt.scheme };
+  last = { frames: all, width: aw, height: ah, scheme: opt.scheme, design };
   const stride = Math.max(1, Math.floor(opt.stride));
   const pending: VideoFrame[] = [];
   let error: unknown = null;
