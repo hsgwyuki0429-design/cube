@@ -1,13 +1,17 @@
 // 動画の上に、解析したフレームの検出結果を重ねる。動画の表示時刻にいちばん近い解析フレームを使う。
 // テストモード: マーカーごとの読めた・読めない。キューブモード: 組み立てた面と推定した手
-import { useEffect, useRef, useState } from "preact/hooks";
-import { MOVE_NAMES } from "../cube/model";
+import { useEffect, useMemo, useRef, useState } from "preact/hooks";
+import { MOVE_NAMES, VIEW, applyMoves, solvedState } from "../cube/model";
+import { stickerIdAt } from "../cube/stickers";
+import { lastMoved } from "../track/engine";
+import { RingLegend, RingView } from "../ui/RingView";
+import { PRINT_COLORS } from "./palette";
 import { TimedCube3D } from "./timedCube";
 import type { CubeResult, VisibleFace } from "./cube";
 import { FaceNet, SLOT_NAMES, heldName } from "./cubePanel";
 import type { VideoInfo } from "./protocol";
 import type { FrameRecord, Summary } from "./stats";
-import { type StickerScheme, decode } from "./codes";
+import { type StickerScheme, decode, hasIdentity } from "./codes";
 import { markerLabel } from "./stickers";
 
 export interface ViewerProps {
@@ -223,6 +227,31 @@ export function Viewer({ url, frames, info, timeScale, configNames, scheme, summ
   };
   const doneMoves = moves.filter((m) => m.t <= nowReal);
   const turning = moves.find((m) => (m.t0 ?? m.t) <= nowReal && nowReal < m.t);
+  // 円環図: いまの時刻までの手を回した状態。54 種類は、ステッカーごとに組み立てた面で読めた時刻から「見えた / 推定」を出す
+  const seenTimes = useMemo(() => {
+    if (!cube || !hasIdentity(scheme)) return null;
+    const out: number[][] = Array.from({ length: 54 }, () => []);
+    cube.faces.forEach((fs, i) => {
+      for (const f of fs) for (const id of f.ids) if (id >= 0) out[id].push((frames[i]?.t ?? 0) * timeScale);
+    });
+    return out;
+  }, [cube, frames, scheme, timeScale]);
+  const ring = useMemo(() => {
+    if (!cube) return null;
+    const state = applyMoves(solvedState(), doneMoves.map((m) => m.move));
+    const orient = (turning ?? doneMoves[doneMoves.length - 1] ?? moves[0])?.orient ?? 0;
+    const highlight = new Set(faces.flatMap((f) => f.colors.flatMap((c, cell) => (c >= 0 ? [VIEW[(orient * 6 + f.slot) * 9 + cell]] : []))));
+    if (!seenTimes) return { state, highlight, cells: null };
+    const moved = lastMoved(state, doneMoves);
+    const ids = Array.from({ length: 54 }, (_, f) => stickerIdAt(state, f));
+    const lastSeen = (id: number) => {
+      const ts = seenTimes[id];
+      let best = -1;
+      for (const t of ts) if (t <= nowReal + 1) best = t;
+      return best;
+    };
+    return { state, highlight, cells: { certainty: new Array(54).fill(1), seenAt: ids.map((id) => (id >= 0 ? lastSeen(id) : -1)), movedAt: ids.map((id) => (id >= 0 ? moved[id] : -1)) } };
+  }, [cube, doneMoves.length, turning, faces, seenTimes, nowReal]);
   const missedHere = slots.filter((s) => s.track[index] === 1);
   const f = frames[index];
 
@@ -303,6 +332,13 @@ export function Viewer({ url, frames, info, timeScale, configNames, scheme, summ
                 <div class="cube-3d">
                   <TimedCube3D moves={moves} time={realMs} held />
                   <div class="hint">推定した手順で動かしたキューブ（動画の時刻に合わせ、回し始め〜回し終わりの速さで回す・カメラから見た持ち方）</div>
+                </div>
+              )}
+              {ring && (
+                <div class="cube-3d">
+                  <RingView state={ring.state} colors={PRINT_COLORS} cells={ring.cells} lastMove={doneMoves.length ? doneMoves[doneMoves.length - 1].move : null} showIds={hasIdentity(scheme)} highlight={ring.highlight} size={240} />
+                  <RingLegend />
+                  <div class="hint">円環図（U を中心に上から見下ろした図、正面 = 下）。太い枠 = このフレームで読めたマス</div>
                 </div>
               )}
             </div>

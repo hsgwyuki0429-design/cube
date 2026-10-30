@@ -33,6 +33,8 @@ ArUco で動く: `processFrame` の入口で分岐し（`PipelineConfig.stickers
 決まらない面は作らない。組み立てた面の読めなかったマスは切り出して読み直す（再認識、`src/aruco/reread.ts`。追跡が未確定・推定と
 みるマス = `focusCells` から先に、ライブ 4 マス・精密解析は全部）。追跡はマスごとの確からしさ（`TrackerEngine.cellBelief`: 有力な仮説の
 一致・最後に見た時刻・最後に動かした時刻）を `TrackUpdate.cells` で出す。
+マスごとの確からしさは円環図（`src/ui/RingView.tsx`・幾何は `src/ui/ring.ts`。U を中心に上から見下ろした極投影の同心円、
+1・8・12・12・12・8・1 マス）で、フリーの画面と ArUco の「動画で確かめる」に出す。
 ステッカーの中のマーカーの配置（大きさ・4 個・暗いマスの色）の候補は `src/aruco/design.ts`。指で隠れたときの比較は
 `tests/debug/stickerDesign.debug.test.ts`（4 個・幅 1/2 が指に強く、今の大きさがぶれに強い。どれを使うかはユーザーが実物で決める。
 本体の認識はまだ今の配置だけ）。候補の印刷用 PDF は `docs/stickers/cubevision_unique54_designs.pdf`。キューブモードの 3D は実際の速さと間で動く（`turnTimes`・`src/aruco/timeline.ts`）。本体の「ArUco」の画面（`src/aruco/`、入口は `src/ui/ArucoScreen.tsx`。初めて開いたときに
