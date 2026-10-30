@@ -5,7 +5,7 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import "./aruco.css";
 import { SCHEMES, SCHEME_LABEL, type StickerScheme } from "./codes";
-import type { CubeResult, VisibleFace } from "./cube";
+import type { CubeFrame, CubeResult, VisibleFace } from "./cube";
 import { CubeResults } from "./cubePanel";
 import { DEFAULT_CONFIGS, type DetectorConfig, PARAM_KEYS, TUNED_PARAMS } from "./detect";
 import type { FromArucoWorker, VideoInfo } from "./protocol";
@@ -54,7 +54,7 @@ export function ArucoPage() {
   const [cubeConfig, setCubeConfig] = useState(1); // max(RGB)。調整版より合成のキューブで多く読めた
   const [endSolved, setEndSolved] = useState(false);
   const [truth, setTruth] = useState("");
-  const [cube, setCube] = useState<{ faces: VisibleFace[][]; result: CubeResult } | null>(null);
+  const [cube, setCube] = useState<{ faces: VisibleFace[][]; turns: CubeFrame["turn"][]; result: CubeResult } | null>(null);
   const [cubeBusy, setCubeBusy] = useState(false);
 
   useEffect(() => {
@@ -70,7 +70,7 @@ export function ArucoPage() {
         setRunning(false);
         setVersion((v) => v + 1);
       } else if (m.type === "cube") {
-        setCube({ faces: m.faces, result: m.result });
+        setCube({ faces: m.faces, turns: m.turns, result: m.result });
         setCubeBusy(false);
       } else if (m.type === "error") {
         setRunning(false);

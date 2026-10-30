@@ -38,7 +38,7 @@ self.onmessage = async (event: MessageEvent<ToArucoWorker>) => {
         last.scheme,
       );
       const result = decodeCube(cubeFrames, msg.endSolved);
-      post({ type: "cube", faces: cubeFrames.map((f) => f.faces), result });
+      post({ type: "cube", faces: cubeFrames.map((f) => f.faces), turns: cubeFrames.map((f) => f.turn ?? null), result });
     } else if (msg.type === "analyze") {
       if (busy) throw new Error("解析中です");
       busy = true;
