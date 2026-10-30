@@ -7,7 +7,7 @@ import { lastMoved } from "../track/engine";
 import { RingLegend, RingView } from "../ui/RingView";
 import { PRINT_COLORS } from "./palette";
 import { TimedCube3D } from "./timedCube";
-import type { CubeResult, VisibleFace } from "./cube";
+import type { CubeFrame, CubeResult, VisibleFace } from "./cube";
 import { FaceNet, SLOT_NAMES, heldName } from "./cubePanel";
 import type { VideoInfo } from "./protocol";
 import type { FrameRecord, Summary } from "./stats";
@@ -22,8 +22,11 @@ export interface ViewerProps {
   configNames: string[];
   scheme: StickerScheme;
   summary?: Summary;
-  cube?: { faces: VisibleFace[][]; result: CubeResult };
+  cube?: { faces: VisibleFace[][]; turns?: CubeFrame["turn"][]; result: CubeResult };
 }
+
+// 回している層の外側の面（カメラフレーム）。軸の正の向きのまわりの角度で出す
+const TURN_SLOT = ["上", "右", "正面", "下", "左", "背面"];
 
 export function Viewer({ url, frames, info, timeScale, configNames, scheme, summary, cube }: ViewerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -132,11 +135,13 @@ export function Viewer({ url, frames, info, timeScale, configNames, scheme, summ
       }
       const markers = f.results[config]?.markers ?? [];
       const assign = summary?.slotOf[config]?.[index];
+      // 回している途中の層のマーカー（回転途中の形状認識）は橙
+      const turning = new Set(cube?.turns?.[index]?.ids ?? []);
       markers.forEach((m, mi) => {
         const slot = summary && assign && assign[mi] >= 0 ? summary.slots[assign[mi]] : null;
         const known = summary ? !!slot : !!decode(scheme, m.id);
         const p = [0, 1, 2, 3].map((i) => P(m.corners[i * 2], m.corners[i * 2 + 1]));
-        ctx.strokeStyle = known ? "#33c27f" : "#ffb020";
+        ctx.strokeStyle = turning.has(m.id) ? "#ff6a00" : known ? "#33c27f" : "#ffb020";
         ctx.lineWidth = 2;
         ctx.beginPath();
         p.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
@@ -325,6 +330,7 @@ export function Viewer({ url, frames, info, timeScale, configNames, scheme, summ
             <p class="hint">
               ここまでの手（{doneMoves.length}）: {doneMoves.map((m) => MOVE_NAMES[m.move]).join(" ") || "—"}
               {turning ? `・回している: ${MOVE_NAMES[turning.move]}（持ち方基準 ${heldName(turning)}）` : ""}
+              {cube.turns?.[index] ? `・このフレームの形: ${TURN_SLOT[cube.turns[index]!.slot]}の層が ${Math.round((cube.turns[index]!.total * 180) / Math.PI)}°（橙の枠）` : ""}
             </p>
             <div class="cube-row">
               <FaceNet faces={faces} />

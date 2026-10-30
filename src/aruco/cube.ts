@@ -4,14 +4,15 @@
 // ID = 揃った状態での facelet 番号なので、ID÷9 がそのステッカーの色（センターの面）。色を読む代わりに確かな色が分かる。
 // 面の組み立て: マーカー 1 枚の 4 隅からその面の平面の射影変換が分かる。同じ面のマーカーはその座標で
 // 「ほぼ同じ大きさの、軸にそろった正方形」が格子の間隔で並ぶ。直交する面や回している途中の層はそうならないので外れる。
-import { NORMAL, ROWDIR, VIEW, applyMove, faceletGeometry, moveFace, solvedState } from "../cube/model";
+import { NORMAL, ROWDIR, VIEW, applyMove, cubeFaceAt, faceletGeometry, moveAmount, moveFace, solvedState } from "../cube/model";
 import { DEFAULT_OFFLINE, decodeOffline } from "../track/offline";
 import { simplifyMoves } from "../track/merge";
 import type { DecodedMove, FaceObservation, Observation } from "../track/types";
 import { type Mat3, type Pt, applyH, fitHomography, invertH } from "../vision/homography";
-import { defaultFocal } from "../vision/pose";
+import { type Pose, defaultFocal } from "../vision/pose";
 import { CONFUSABLE12, type Decoded, type StickerScheme, centerOffset, decode } from "./codes";
 import type { Marker } from "./detect";
+import { type TurnTrack, recognizeTurn, turnSense, unwrapTurn } from "./turn";
 import { type ColorKey, FACE_COLORS, classifyColor } from "./stickers";
 
 export interface VisibleFace {
@@ -537,6 +538,9 @@ function centerVote(c: { m: Marker; rot: number; i: number; j: number }): [numbe
 export interface CubeFrame {
   t: number; // 実時間（ms）
   faces: VisibleFace[];
+  // 回している途中の層（回転途中の形状認識: src/aruco/turn.ts）。slot はカメラフレームの面、angle は軸のまわりの θ（-π/4〜π/4）、
+  // total はフレームをつないだ回し始めからの角度、ids は回している層に合ったマーカー
+  turn?: { slot: number; angle: number; total: number; ids: number[] } | null;
 }
 
 const MISMATCH = 1.5; // 1 枚の矛盾のコスト（色の観測と同じ。src/track/colorModel.ts）
@@ -702,19 +706,61 @@ export function turnTimes(frames: CubeFrame[], moves: DecodedMove[]): DecodedMov
   });
 }
 
-// フレームごとのマーカーから面を組み立てる（傾きを次のフレームへ引き継ぐ）
+// フレームごとのマーカーから面を組み立てる（傾きを次のフレームへ引き継ぐ）。回している途中の層も求める（本体の姿勢と角度を引き継ぐ）
 export function facesOverTime(frames: { t: number; markers: Marker[] }[], size: { width: number; height: number }, scheme: StickerScheme = "aruco54"): CubeFrame[] {
   let tilt: number[] | null = null;
+  let pose: Pose | null = null;
+  let track: TurnTrack | null = null;
   return frames.map((f) => {
     const r = reconstructFaces(f.markers, size, tilt, scheme);
     tilt = r.tilt;
-    return { t: f.t, faces: r.faces };
+    const tr = recognizeTurn(f.markers, r.faces, size, pose);
+    if (tr.pose) pose = tr.pose;
+    track = unwrapTurn(track, tr.turn, f.t);
+    const turn = tr.turn && track ? { slot: tr.turn.slot, angle: tr.turn.angle, total: track.total, ids: tr.placed.filter((p) => p.layer).map((p) => p.id) } : null;
+    return { t: f.t, faces: r.faces, turn };
   });
+}
+
+export interface TurnCheck {
+  moves: number; // 推定した手（まとめる前）
+  seen: number; // 回している途中の形が見えた手
+  face: number; // そのうち、回している層が推定した手の面と合った
+  direction: number; // さらに、回した向き（時計回り・反時計回り）・量（90°・180°）も合った
+  unsure: number; // 面は合ったが、見えた角度が途中までで、半回転かどうか分からない（半回転の手で 100° 未満しか見えなかった）
+}
+
+// 推定した手を、回している途中の形（どの層をどちら向きに回したか）と照らす。手 m の回し始め〜回し終わり（turnTimes）のフレームで
+// いちばん多く見えた層を、その手のときの持ち方（m.orient）でキューブ固定の面に直し、最後に見えた角度の向きと比べる
+// （240fps では手と手の間が数フレームしかないので、前後に広げない）
+export function checkTurns(frames: CubeFrame[], moves: DecodedMove[]): TurnCheck {
+  const out: TurnCheck = { moves: moves.length, seen: 0, face: 0, direction: 0, unsure: 0 };
+  for (const m of moves) {
+    const t0 = (m.t0 ?? m.t) - 1;
+    const t1 = m.t + 1;
+    const turning = frames.filter((f) => f.t >= t0 && f.t <= t1 && f.turn).map((f) => f.turn!);
+    if (!turning.length) continue;
+    out.seen++;
+    const count = new Map<number, number>();
+    for (const x of turning) count.set(x.slot, (count.get(x.slot) ?? 0) + 1);
+    const slot = [...count.entries()].sort((a, b) => b[1] - a[1])[0][0];
+    if (cubeFaceAt(m.orient, slot) !== moveFace(m.move)) continue;
+    out.face++;
+    // 回し始めからの角度がいちばん大きく見えたところ（回し終わりの近くは本体に紛れて見えないことがある）
+    const span = turning.filter((x) => x.slot === slot).reduce((a, b) => (Math.abs(b.total) > Math.abs(a.total) ? b : a));
+    const deg = (Math.abs(span.total) * 180) / Math.PI;
+    if (moveAmount(m.move) === 2) {
+      if (deg > 100) out.direction++;
+      else out.unsure++;
+    } else if (deg < 120 && (turnSense(slot, span.total) > 0 ? 1 : 3) === moveAmount(m.move)) out.direction++;
+  }
+  return out;
 }
 
 export interface CubeResult {
   moves: DecodedMove[]; // まとめた後（simplifyMoves）
   raw: DecodedMove[];
+  turns: TurnCheck; // 回している途中の形との照合
   method: string;
   reachedEnd: boolean;
   observations: number;
@@ -733,6 +779,7 @@ export function decodeCube(frames: CubeFrame[], endSolved: boolean, stableFrames
   return {
     moves: simplifyMoves(raw),
     raw,
+    turns: checkTurns(frames, simplifyMoves(raw)),
     method: r.method,
     reachedEnd: r.reachedEnd,
     observations: obs.length,

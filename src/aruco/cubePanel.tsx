@@ -99,6 +99,14 @@ export function CubeResults({ result, truthText, onTruth }: { result: CubeResult
                 <td>{result.observations}</td>
               </tr>
               <tr>
+                <td>回している途中の形との照合</td>
+                <td>
+                  {result.turns
+                    ? `形が見えた手 ${result.turns.seen} / ${result.turns.moves}・層が合った ${result.turns.face}・向きと量も合った ${result.turns.direction}${result.turns.unsure ? `（半回転か分からない ${result.turns.unsure}）` : ""}`
+                    : "—"}
+                </td>
+              </tr>
+              <tr>
                 <td>つなぎ方</td>
                 <td>
                   {result.method}

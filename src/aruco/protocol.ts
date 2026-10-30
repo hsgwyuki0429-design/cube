@@ -1,6 +1,6 @@
 // ArUco 検証ページ ⇄ 解析 Worker のメッセージ
 import type { StickerScheme } from "./codes";
-import type { CubeResult, VisibleFace } from "./cube";
+import type { CubeFrame, CubeResult, VisibleFace } from "./cube";
 import type { DetectorConfig } from "./detect";
 import type { FrameRecord } from "./stats";
 
@@ -38,5 +38,5 @@ export type FromArucoWorker =
   | { type: "frames"; items: FrameRecord[] }
   | { type: "progress"; done: number; total: number; elapsedMs: number }
   | { type: "done"; frames: number; cancelled: boolean }
-  | { type: "cube"; faces: VisibleFace[][]; result: CubeResult }
+  | { type: "cube"; faces: VisibleFace[][]; turns: CubeFrame["turn"][]; result: CubeResult }
   | { type: "error"; message: string };
