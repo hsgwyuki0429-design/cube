@@ -64,6 +64,25 @@ export function cellColor(img: ImageLike, H: Mat3, cell: number, o: ColorFillOpt
   return [0, 1, 2].map((k) => median(top.map((p) => p.rgb[k]))) as [number, number, number];
 }
 
+// マスの中で肌らしい点の割合（内側 8〜92% を 7×7 点）。指がかかっているか
+export function skinFraction(img: ImageLike, H: Mat3, cell: number): number {
+  const r = Math.floor(cell / 3);
+  const c = cell % 3;
+  let n = 0;
+  let skin = 0;
+  for (let i = 0; i < 7; i++)
+    for (let j = 0; j < 7; j++) {
+      const [x, y] = applyH(H, c + 0.08 + (0.84 * (j + 0.5)) / 7, r + 0.08 + (0.84 * (i + 0.5)) / 7);
+      const xi = Math.round(x);
+      const yi = Math.round(y);
+      if (xi < 0 || yi < 0 || xi >= img.width || yi >= img.height) continue;
+      const k = (yi * img.width + xi) * 4;
+      n++;
+      if (skinLike(rgbToLab(img.data[k], img.data[k + 1], img.data[k + 2]))) skin++;
+    }
+  return n ? skin / n : 0;
+}
+
 // rgb をフレームの基準の色に分ける。十分近く、2 番目と差があるときだけ（なければ -1）
 export function classifyByFrame(rgb: [number, number, number], refs: (Chroma | null)[], o: ColorFillOptions = DEFAULT_COLOR_FILL): number {
   if (skinLike(rgbToLab(...rgb))) return -1;
