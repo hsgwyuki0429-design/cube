@@ -3,8 +3,9 @@
 import { FACE_TURN, NORMAL, ORIENTATIONS, ROWDIR, type Vec3, apply, faceletAt, faceletGeometry, moveAmount, moveFace } from "../src/cube/model";
 import type { CV } from "../src/vision/quads";
 import { type StickerScheme, idForFacelet, markerBits, markerSize } from "../src/aruco/codes";
+import { type StickerDesign, hexRgb, inkRgb } from "../src/aruco/design";
 import { PRINT_COLORS } from "../src/aruco/palette";
-import { PALETTE, axisAngle, mulMat } from "./render";
+import { type Finger, PALETTE, axisAngle, mulMat, paintFingers } from "./render";
 
 export interface Sticker {
   id: number; // 揃った状態での facelet 番号
@@ -55,7 +56,10 @@ export interface CubeRenderOptions {
   sticker?: number; // ステッカーの辺（キュービー = 1）
   scheme?: StickerScheme; // 符号の種類（既定は 54 種類）。12 種類は印刷する明るい色で描く
   margin?: number; // ステッカーの辺に対する色の余白（既定 0.08）
+  design?: StickerDesign; // ステッカーの中のマーカーの配置（大きさ・個数・暗いマスの色。src/aruco/design.ts）。margin より優先
   tile?: number; // ステッカーレスのキューブ: 各マスを本体の色の板（辺 tile）にして、その上にステッカーを貼る
+  fingers?: Finger[]; // 指（画像座標のカプセル。キューブの上に描く）
+  shake?: number; // 露光中のキューブ全体の回転（ラジアン、画面の縦軸まわり）。手ぶれ・持ち替えのぶれ
 }
 
 const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -67,7 +71,6 @@ const norm = (a: Vec3): Vec3 => scl(a, 1 / Math.hypot(...a));
 const matv = (m: readonly number[], v: Vec3): Vec3 => [m[0] * v[0] + m[1] * v[1] + m[2] * v[2], m[3] * v[0] + m[4] * v[1] + m[5] * v[2], m[6] * v[0] + m[7] * v[1] + m[8] * v[2]];
 
 const bitsCache = new Map<number, Uint8Array>();
-const hexRgb = (h: string): [number, number, number] => [1, 3, 5].map((i) => Number.parseInt(h.slice(i, i + 2), 16)) as [number, number, number];
 
 function bitsOf(cv: CV, id: number): Uint8Array {
   let b = bitsCache.get(id);
@@ -96,13 +99,15 @@ interface Quad {
 export function renderArucoCube(cv: CV, o: CubeRenderOptions): { data: Uint8ClampedArray; width: number; height: number } {
   const { width: w, height: h } = o;
   const spread = o.turn?.spread ?? 0;
-  const subs = o.turn && spread > 0 ? 3 : 1;
+  const subs = (o.turn && spread > 0) || o.shake ? (o.shake ? 5 : 3) : 1;
   const acc = new Float32Array(w * h * 3);
   for (let s = 0; s < subs; s++) {
-    const fraction = o.turn ? o.turn.fraction + (subs > 1 ? (s / (subs - 1) - 0.5) * spread : 0) : 0;
-    const img = renderOnce(cv, o, fraction);
+    const k = subs > 1 ? s / (subs - 1) - 0.5 : 0;
+    const fraction = o.turn ? o.turn.fraction + k * spread : 0;
+    const img = renderOnce(cv, o, fraction, (o.shake ?? 0) * k);
     for (let i = 0; i < acc.length; i++) acc[i] += img[i] / subs;
   }
+  if (o.fingers?.length) paintFingers(acc, w, h, o.fingers, 3);
   let seed = o.seed ?? 1;
   const rand = () => {
     seed = (seed * 1664525 + 1013904223) >>> 0;
@@ -117,7 +122,7 @@ export function renderArucoCube(cv: CV, o: CubeRenderOptions): { data: Uint8Clam
   return { data, width: w, height: h };
 }
 
-function renderOnce(cv: CV, o: CubeRenderOptions, fraction: number): Float32Array {
+function renderOnce(cv: CV, o: CubeRenderOptions, fraction: number, shake = 0): Float32Array {
   const { width: w, height: h } = o;
   const bg = o.background ?? [70, 66, 62];
   const out = new Float32Array(w * h * 3);
@@ -127,7 +132,7 @@ function renderOnce(cv: CV, o: CubeRenderOptions, fraction: number): Float32Arra
   const right = norm(cross(fwd, [0, 1, 0]));
   const upv = cross(right, fwd);
   const f = o.focal ?? Math.max(w, h) * 0.8; // スマホの標準カメラ（画角 65° 前後）
-  const world = ORIENTATIONS[o.orient];
+  const world = shake ? mulMat(axisAngle([0, 1, 0], shake), ORIENTATIONS[o.orient]) : ORIENTATIONS[o.orient];
   const turnFace = o.turn ? moveFace(o.turn.move) : -1;
   const turnRot = o.turn ? axisAngle(NORMAL[turnFace], (-Math.PI / 2) * moveAmount(o.turn.move) * fraction) : null;
   const inTurn = (p: Vec3) => turnFace >= 0 && dotv(p, NORMAL[turnFace]) === 1;
@@ -197,8 +202,10 @@ function renderOnce(cv: CV, o: CubeRenderOptions, fraction: number): Float32Arra
     const scheme = o.scheme ?? "aruco54";
     const cells = markerSize(scheme) + 2;
     const bits = q.sticker ? (scheme === "aruco54" ? bitsOf(cv, q.sticker.id) : markerBits(scheme, idForFacelet(scheme, q.sticker.id)).map((b) => b * 255)) : null;
-    const color = q.sticker ? (scheme !== "aruco54" ? hexRgb(PRINT_COLORS[Math.floor(q.sticker.id / 9)]) : PALETTE[Math.floor(q.sticker.id / 9)]) : q.tile !== undefined ? PALETTE[q.tile] : [20, 20, 22];
-    const black = [24, 24, 26];
+    const face = q.sticker ? Math.floor(q.sticker.id / 9) : 0;
+    const color = q.sticker ? (scheme !== "aruco54" ? hexRgb(PRINT_COLORS[face]) : PALETTE[face]) : q.tile !== undefined ? PALETTE[q.tile] : [20, 20, 22];
+    // 暗いマス: 黒、または同じ色の濃い色（design.ink）
+    const black = o.design?.ink === "shade" ? (scheme !== "aruco54" ? inkRgb(o.design, face) : PALETTE[face].map((v) => v * 0.35)) : [24, 24, 26];
     const pn = dotv(q.n, sub(q.p0, o.eye));
     // 視線 d = fwd + right·sx + upv·sy（sx, sy は画素から決まる）。内側のループはスカラーで
     const [nx, ny, nz] = q.n;
@@ -208,7 +215,9 @@ function renderOnce(cv: CV, o: CubeRenderOptions, fraction: number): Float32Arra
     const ex = o.eye[0] - q.p0[0];
     const ey = o.eye[1] - q.p0[1];
     const ez = o.eye[2] - q.p0[2];
-    const m = o.margin ?? 0.08;
+    // マーカーの左上（ステッカーの座標 0〜1）と辺。既定は色の余白 margin の内側いっぱいに 1 個
+    const side = o.design?.side ?? 1 - 2 * (o.margin ?? 0.08);
+    const at = (o.design?.at ?? [[0.5, 0.5]]).map(([cx, cy]) => [cx - side / 2, cy - side / 2]);
     for (let y = y0; y <= y1; y++) {
       for (let x = x0; x <= x1; x++) {
         for (let sy = 0; sy < SS; sy++) {
@@ -233,9 +242,14 @@ function renderOnce(cv: CV, o: CubeRenderOptions, fraction: number): Float32Arra
             zsub[k] = t - (q.sticker ? 2e-4 : q.tile !== undefined ? 1e-4 : 0);
             let col = color;
             if (bits) {
-              const mu = (u - m) / (1 - 2 * m);
-              const mv = (v - m) / (1 - 2 * m);
-              if (mu >= 0 && mv >= 0 && mu < 1 && mv < 1 && bits[Math.floor(mv * cells) * cells + Math.floor(mu * cells)] < 128) col = black;
+              for (const [x0m, y0m] of at) {
+                const mu = (u - x0m) / side;
+                const mv = (v - y0m) / side;
+                if (mu >= 0 && mv >= 0 && mu < 1 && mv < 1) {
+                  if (bits[Math.floor(mv * cells) * cells + Math.floor(mu * cells)] < 128) col = black;
+                  break;
+                }
+              }
             }
             sub2[k * 3] = col[0] * q.light;
             sub2[k * 3 + 1] = col[1] * q.light;

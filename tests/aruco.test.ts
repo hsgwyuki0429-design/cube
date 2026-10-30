@@ -9,6 +9,7 @@ import { ArucoBench, DEFAULT_CONFIGS, type Marker } from "../src/aruco/detect";
 import { demuxFile, readSamples, rotationOf } from "../src/aruco/demux";
 import { ARUCO12_CODES, CONFUSABLE12, UNIQUE54_CODES, byteList, centerOffset, distance3, code4x4, decode, makeDictionary, markerBits as schemeBits } from "../src/aruco/codes";
 import { colorConsistent, frameColorFilter } from "../src/aruco/cube";
+import { DESIGNS, SHADE, STANDARD_DESIGN, designLook } from "../src/aruco/design";
 import { moveAt, moveSpans, playerTimestamp } from "../src/aruco/timeline";
 import { markerBits } from "../src/aruco/dict4x4";
 import { PRINT_COLORS } from "../src/aruco/palette";
@@ -342,6 +343,28 @@ describe("12 種類（3×3）の符号", () => {
     expect(sheet.CODES).toEqual(ARUCO12_CODES);
     expect(sheet.CODES_U54).toEqual(UNIQUE54_CODES);
     expect(sheet.COLORS).toEqual(PRINT_COLORS);
+    expect(sheet.DESIGNS).toEqual(DESIGNS);
+    expect(sheet.SHADE).toBe(SHADE);
+  });
+
+  it("マーカーの配置: 今のステッカーは色の縁 8% の内側いっぱいで、小さくするほど印刷色の面積が増える", () => {
+    expect(STANDARD_DESIGN.side).toBeCloseTo(1 - 2 * 0.08);
+    // マーカーはステッカーからはみ出さず、4 個のものは重ならない
+    for (const d of DESIGNS) {
+      for (const [x, y] of d.at) {
+        expect(x - d.side / 2).toBeGreaterThan(0.03);
+        expect(x + d.side / 2).toBeLessThan(0.97);
+        expect(y - d.side / 2).toBeGreaterThan(0.03);
+      }
+      if (d.at.length === 4) expect(d.at[1][0] - d.at[0][0]).toBeGreaterThan(d.side + 0.05);
+    }
+    const area = (k: string) => designLook(DESIGNS.find((d) => d.key === k)!).colorArea;
+    expect(area("standard")).toBeCloseTo(0.42, 1);
+    expect(area("half")).toBeGreaterThan(0.8);
+    expect(area("third")).toBeGreaterThan(area("half"));
+    expect(area("quad-half")).toBeLessThan(area("half"));
+    // 濃い同色は印刷色の面積は同じで、離れて見た色が印刷色に近い
+    expect(designLook(DESIGNS.find((d) => d.key === "standard-shade")!).meanDeltaE).toBeLessThan(designLook(STANDARD_DESIGN).meanDeltaE);
   });
 });
 

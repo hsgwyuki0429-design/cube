@@ -1,9 +1,10 @@
 // ArUco ステッカーの A4 印刷用 PDF を作る（docs/stickers/）。
-//   node scripts/aruco-stickers.mjs            # 2 つとも
-//   node scripts/aruco-stickers.mjs unique54 [出力先]  /  aruco12 [出力先]
+//   node scripts/aruco-stickers.mjs            # 3 つとも
+//   node scripts/aruco-stickers.mjs unique54 [出力先]  /  aruco12 [出力先]  /  designs [出力先]
 // 符号と色は src/aruco/codes.ts・src/aruco/palette.ts と同じ（tests/aruco.test.ts でこのスクリプトの値と照合する）。
 // unique54（マスごとに違う 54 種類）: 1 ページ目 18mm・2 ページ目 15mm（どちらも 2 セット）、3 ページ目は貼り方。向きも決まっている
 // aruco12（12 種類）: 1 ページ目 18mm・2 ページ目 15mm（どちらも 2 セット = 108 枚）、3 ページ目は黒地のテストページ（12 種類 × 12/15/18mm）。
+// designs（マーカーの配置の候補。src/aruco/design.ts）: 1 ページ目は全案の見本（U 面の 9 枚ずつ）、2 ページ目から 1 案 1 ページ（unique54 の 54 枚・18mm）。
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { chromium } from "playwright-core";
@@ -23,6 +24,25 @@ const COLOR_NAMES = ["白", "赤", "緑", "黄", "橙", "青"];
 const DARK = "#1a1a1a";
 const MARGIN = 0.08; // ステッカーの辺に対する色の余白（アプリの合成画像と同じ）
 
+// マーカーの配置の候補（src/aruco/design.ts の DESIGNS と同じ。tests/aruco.test.ts で照合）
+const CENTER = [[0.5, 0.5]];
+const QUAD = [
+  [0.25, 0.25],
+  [0.75, 0.25],
+  [0.25, 0.75],
+  [0.75, 0.75],
+];
+const BASE = [
+  { key: "standard", label: "現状（1 個・幅 1）", side: 0.84, at: CENTER },
+  { key: "half", label: "1 個・幅 1/2", side: 0.42, at: CENTER },
+  { key: "third", label: "1 個・幅 1/3", side: 0.28, at: CENTER },
+  { key: "quad-half", label: "4 個・幅 1/2", side: 0.4, at: QUAD },
+  { key: "quad-third", label: "4 個・幅 1/3", side: 0.28, at: QUAD },
+];
+export const DESIGNS = [...BASE.map((d) => ({ ...d, ink: "black" })), ...BASE.map((d) => ({ ...d, key: `${d.key}-shade`, label: `${d.label}・濃い同色`, ink: "shade" }))];
+export const SHADE = 0.35;
+const shadeOf = (hex) => `#${[1, 3, 5].map((i) => Math.round(Number.parseInt(hex.slice(i, i + 2), 16) * SHADE).toString(16).padStart(2, "0")).join("")}`;
+
 // 1 枚のステッカー（12 種類の ID、左上 x,y、辺 s mm）
 const sticker = (id, x, y, s) => drawSticker(CODES[id], COLORS[id % 6], x, y, s);
 
@@ -41,6 +61,28 @@ function drawSticker(code, color, x, y, s) {
     }
   }
   out += `<path d="${d}" fill="${DARK}"/>`;
+  return out;
+}
+
+// 配置 design のステッカー（マーカーを design.at に辺 design.side で。暗いマスは黒か同じ色の濃い色）
+function drawDesignSticker(code, color, design, x, y, s) {
+  const k = 5;
+  let out = `<rect x="${x}" y="${y}" width="${s}" height="${s}" fill="${color}"/>`;
+  let d = "";
+  const ds = design.side * s;
+  const c = ds / k;
+  for (const [cx, cy] of design.at) {
+    const x0 = x + cx * s - ds / 2;
+    const y0 = y + cy * s - ds / 2;
+    for (let r = 0; r < k; r++) {
+      for (let col = 0; col < k; col++) {
+        const inner = r >= 1 && r <= 3 && col >= 1 && col <= 3;
+        const light = inner && (code >> ((r - 1) * 3 + col - 1)) & 1;
+        if (!light) d += `M${(x0 + col * c).toFixed(3)} ${(y0 + r * c).toFixed(3)}h${c.toFixed(3)}v${c.toFixed(3)}h${(-c).toFixed(3)}z`;
+      }
+    }
+  }
+  out += `<path d="${d}" fill="${design.ink === "shade" ? shadeOf(color) : DARK}"/>`;
   return out;
 }
 
@@ -198,12 +240,56 @@ function uniqueGuide() {
   return out;
 }
 
+// ---- マーカーの配置の候補（unique54） ----
+function designBlock(design, face, x, y, s, title) {
+  let out = text(x, y - 4.2, title, 3);
+  out += cutMarks(x, y, 3, s);
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) out += drawDesignSticker(CODES_U54[face * 9 + r * 3 + c], COLORS[face], design, x + c * s, y + r * s, s);
+  return out;
+}
+
+// 1 ページ目: 全案の見本（1 案 1 行、6 色を 1 枚ずつ、18mm）
+function designsOverview() {
+  const s = 18;
+  let out = text(15, 14, "ステッカーの中のマーカーの配置の候補（54 種類・3×3・マスごとに違う）  18mm", 4.2, 'font-weight="bold"');
+  out += text(15, 20, "2 ページ目から 1 案 1 ページ（54 枚）。試す案のページだけ印刷します。貼り方は cubevision_unique54_stickers.pdf の 3 ページ目と同じです。", 2.9);
+  DESIGNS.forEach((d, i) => {
+    const y = 30 + i * 25;
+    out += text(15, y + s / 2 + 1, `${i + 1}. ${d.label}`, 3);
+    for (let f = 0; f < 6; f++) out += drawDesignSticker(CODES_U54[f * 9 + ((f * 2 + 1) % 9)], COLORS[f], d, 72 + f * (s + 1.5), y, s);
+  });
+  return out;
+}
+
+function designPage(design) {
+  const s = 18;
+  const block = 3 * s;
+  const colGap = 10;
+  const x0 = (210 - (3 * block + 2 * colGap)) / 2;
+  let out = text(x0, 14, `CubeVision ArUco ステッカー（54 種類）  配置: ${design.label}  18mm × 1 セット`, 4.2, 'font-weight="bold"');
+  out += text(x0, 20, "貼る場所と向きは cubevision_unique54_stickers.pdf と同じ（ブロックの上辺を「↑」の面の側に向けて、並びのまま貼る）。", 2.9);
+  let y = 37;
+  for (let row = 0; row < 2; row++) {
+    for (let col = 0; col < 3; col++) {
+      const f = row * 3 + col;
+      out += designBlock(design, f, x0 + col * (block + colGap), y, s, `${FACES[f]} 面（${COLOR_NAMES[f]}）  ↑ ${COLOR_NAMES[UP_SIDE[f]]}の面の側`);
+    }
+    y += block + 14;
+  }
+  return out;
+}
+
 function page(content) {
   return `<section><svg xmlns="http://www.w3.org/2000/svg" width="210mm" height="297mm" viewBox="0 0 210 297">${content}</svg></section>`;
 }
 
 export function html(scheme = "aruco12") {
-  const pages = scheme === "unique54" ? [uniquePage(18, 2), uniquePage(15, 2), uniqueGuide()] : [stickerPage(18, 2), stickerPage(15, 2), testPage()];
+  const pages =
+    scheme === "designs"
+      ? [designsOverview(), ...DESIGNS.map(designPage)]
+      : scheme === "unique54"
+        ? [uniquePage(18, 2), uniquePage(15, 2), uniqueGuide()]
+        : [stickerPage(18, 2), stickerPage(15, 2), testPage()];
   return `<!doctype html><html lang="ja"><head><meta charset="utf-8"><style>
 @page { size: A4; margin: 0 }
 html, body { margin: 0 }
@@ -213,10 +299,14 @@ svg { display: block; font-family: "Noto Sans CJK JP", "Noto Sans JP", "Hiragino
 </style></head><body>${pages.map(page).join("")}</body></html>`;
 }
 
-export const OUT = { aruco12: "docs/stickers/cubevision_aruco12_stickers.pdf", unique54: "docs/stickers/cubevision_unique54_stickers.pdf" };
+export const OUT = {
+  aruco12: "docs/stickers/cubevision_aruco12_stickers.pdf",
+  unique54: "docs/stickers/cubevision_unique54_stickers.pdf",
+  designs: "docs/stickers/cubevision_unique54_designs.pdf",
+};
 
 if (import.meta.url === `file://${process.argv[1]}`) {
-  const schemes = process.argv[2] ? [process.argv[2]] : ["unique54", "aruco12"];
+  const schemes = process.argv[2] ? [process.argv[2]] : ["unique54", "aruco12", "designs"];
   const CHROME = process.env.CHROME_PATH ?? (existsSync("/opt/pw-browsers/chromium") ? "/opt/pw-browsers/chromium" : undefined);
   const browser = await chromium.launch({ executablePath: CHROME });
   for (const scheme of schemes) {
