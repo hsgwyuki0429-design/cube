@@ -2,9 +2,9 @@
 //   node scripts/aruco-stickers.mjs            # 3 つとも
 //   node scripts/aruco-stickers.mjs unique54 [出力先]  /  aruco12 [出力先]  /  designs [出力先]
 // 符号と色は src/aruco/codes.ts・src/aruco/palette.ts と同じ（tests/aruco.test.ts でこのスクリプトの値と照合する）。
-// unique54（マスごとに違う 54 種類）: 1 ページ目 18mm・2 ページ目 15mm（どちらも 2 セット）、3 ページ目は貼り方。向きも決まっている
+// unique54（マスごとに違う 54 種類）: 1 ページ目 16mm・2 ページ目 15mm（どちらも 2 セット）、3 ページ目は貼り方。向きも決まっている
 // aruco12（12 種類）: 1 ページ目 18mm・2 ページ目 15mm（どちらも 2 セット = 108 枚）、3 ページ目は黒地のテストページ（12 種類 × 12/15/18mm）。
-// designs（マーカーの配置の候補。src/aruco/design.ts）: 1 ページ目は全案の見本（U 面の 9 枚ずつ）、2 ページ目から 1 案 1 ページ（unique54 の 54 枚・18mm）。
+// designs（マーカーの配置の候補。src/aruco/design.ts）: 1 ページ目は全案の見本（U 面の 9 枚ずつ）、2 ページ目から 1 案 1 ページ（unique54 の 54 枚・16mm）。
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { chromium } from "playwright-core";
@@ -23,6 +23,8 @@ const FACES = ["U", "R", "F", "D", "L", "B"];
 const COLOR_NAMES = ["白", "赤", "緑", "黄", "橙", "青"];
 const DARK = "#1a1a1a";
 const MARGIN = 0.08; // ステッカーの辺に対する色の余白（アプリの合成画像と同じ）
+// 54 種類（unique54）と配置の候補のステッカーの辺（mm）。19mm のマスに 16mm（周りに 1.5mm ずつ余裕）
+export const STICKER_MM = 16;
 
 // マーカーの配置の候補（src/aruco/design.ts の DESIGNS と同じ。tests/aruco.test.ts で照合）
 const CENTER = [[0.5, 0.5]];
@@ -220,7 +222,7 @@ function uniqueGuide() {
     ["印刷は「実際のサイズ（100%）」で（「用紙に合わせる」にしない）。光沢のないステッカー用紙が向いています。", 3, false],
     ["外側の目印を結んだ線（ステッカーの境目）で切ります。模様の外側の色の縁は切り落とさないでください", 3, false],
     ["（黒い枠を、キューブの黒い部分と見分けるのに必要）。", 3, false],
-    ["1 マスに収まる大きさに（56〜57mm のキューブは 1 マスが約 19mm。18mm でほぼいっぱい、15mm は余裕あり）。", 3, false],
+    ["1 マスに収まる大きさに（56〜57mm のキューブは 1 マスが約 19mm。16mm で周りに 1.5mm ずつ余裕、15mm はもう少し余裕）。", 3, false],
   ];
   let out = "";
   lines.forEach(([t, size, bold], i) => (out += text(15, 20 + i * 6, t, size, bold ? 'font-weight="bold"' : "")));
@@ -248,10 +250,10 @@ function designBlock(design, face, x, y, s, title) {
   return out;
 }
 
-// 1 ページ目: 全案の見本（1 案 1 行、6 色を 1 枚ずつ、18mm）
+// 1 ページ目: 全案の見本（1 案 1 行、6 色を 1 枚ずつ、16mm）
 function designsOverview() {
-  const s = 18;
-  let out = text(15, 14, "ステッカーの中のマーカーの配置の候補（54 種類・3×3・マスごとに違う）  18mm", 4.2, 'font-weight="bold"');
+  const s = STICKER_MM;
+  let out = text(15, 14, `ステッカーの中のマーカーの配置の候補（54 種類・3×3・マスごとに違う）  ${STICKER_MM}mm`, 4.2, 'font-weight="bold"');
   out += text(15, 20, "2 ページ目から 1 案 1 ページ（54 枚）。試す案のページだけ印刷します。貼り方は cubevision_unique54_stickers.pdf の 3 ページ目と同じです。", 2.9);
   DESIGNS.forEach((d, i) => {
     const y = 30 + i * 25;
@@ -262,11 +264,11 @@ function designsOverview() {
 }
 
 function designPage(design) {
-  const s = 18;
+  const s = STICKER_MM;
   const block = 3 * s;
   const colGap = 10;
   const x0 = (210 - (3 * block + 2 * colGap)) / 2;
-  let out = text(x0, 14, `CubeVision ArUco ステッカー（54 種類）  配置: ${design.label}  18mm × 1 セット`, 4.2, 'font-weight="bold"');
+  let out = text(x0, 14, `CubeVision ArUco ステッカー（54 種類）  配置: ${design.label}  ${s}mm × 1 セット`, 4.2, 'font-weight="bold"');
   out += text(x0, 20, "貼る場所と向きは cubevision_unique54_stickers.pdf と同じ（ブロックの上辺を「↑」の面の側に向けて、並びのまま貼る）。", 2.9);
   let y = 37;
   for (let row = 0; row < 2; row++) {
@@ -288,7 +290,7 @@ export function html(scheme = "aruco12") {
     scheme === "designs"
       ? [designsOverview(), ...DESIGNS.map(designPage)]
       : scheme === "unique54"
-        ? [uniquePage(18, 2), uniquePage(15, 2), uniqueGuide()]
+        ? [uniquePage(STICKER_MM, 2), uniquePage(15, 2), uniqueGuide()]
         : [stickerPage(18, 2), stickerPage(15, 2), testPage()];
   return `<!doctype html><html lang="ja"><head><meta charset="utf-8"><style>
 @page { size: A4; margin: 0 }

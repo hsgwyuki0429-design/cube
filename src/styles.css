@@ -623,6 +623,7 @@ input {
   display: inline-block;
   width: 12px;
   height: 12px;
+  border-radius: 50%;
   vertical-align: -2px;
   border: 1px solid #333;
   background: #ddd;

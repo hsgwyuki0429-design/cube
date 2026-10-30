@@ -1,53 +1,49 @@
-// 円環図（極投影の同心円。src/ui/ring.ts）: 54 マスが重ならずに並び、U・D の手がリングの回転になること
+// 円環図（src/ui/ring.ts）: 層ごとに側面の 12 枚が 1 本の曲線（球面上の円を写したもの）の上に並び、各ステッカーは 2 本の交わるところにある。
+// 面を回すと、その層の曲線に沿ってステッカーが 3 つずつ進む
 import { describe, expect, it } from "vitest";
-import { MOVE_DEST, parseMoves } from "../src/cube/model";
-import { RING_CELLS, cellPath, moveArrows } from "../src/ui/ring";
+import { parseMoves } from "../src/cube/model";
+import { RING_CIRCLES, RING_POINTS, moveArrows, ringAngle, ringArc, ringDirection, turnCircle } from "../src/ui/ring";
 
-const deg = (a: number) => Math.round((a * 180) / Math.PI) % 360;
+const near = (a: [number, number], b: [number, number]) => Math.hypot(a[0] - b[0], a[1] - b[1]) < 1e-6;
 
 describe("円環図", () => {
-  it("内側から 1・8・12・12・12・8・1 マスで、同じリングのマスは重ならない", () => {
-    const count = [0, 0, 0, 0, 0, 0, 0];
-    for (const c of RING_CELLS) count[c.ring]++;
-    expect(count).toEqual([1, 8, 12, 12, 12, 8, 1]);
-    for (let r = 1; r <= 5; r++) {
-      const angles = RING_CELLS.filter((c) => c.ring === r).map((c) => deg(c.angle));
-      expect(new Set(angles).size).toBe(angles.length);
-    }
-    // 正面（F）の真ん中の列は下（角度 0）、R は右（90°）
-    expect(deg(RING_CELLS[19].angle)).toBe(0); // F の上段の真ん中
-    expect(RING_CELLS[19].ring).toBe(2);
-    expect(deg(RING_CELLS[7].angle)).toBe(0); // U の手前の辺（UF）
-    expect(deg(RING_CELLS[13].angle)).toBe(90); // R のセンター
-    expect(RING_CELLS[13].ring).toBe(3);
-  });
-
-  it("U は U の周りと上段を 90° 回す（上から見て時計回り = 角度が減る）。D は下段と D の周りを逆向きに", () => {
-    for (const [name, rings, turn] of [
-      ["U", [1, 2], -90],
-      ["D", [4, 5], 90],
-    ] as const) {
-      const m = parseMoves(name)[0];
-      for (const { from, to } of moveArrows(m)) {
-        const a = RING_CELLS[from];
-        const b = RING_CELLS[to];
-        expect(rings).toContain(a.ring);
-        expect(b.ring).toBe(a.ring);
-        expect((((deg(b.angle) - deg(a.angle) - turn) % 360) + 360) % 360).toBe(0);
+  it("9 本の層の曲線に 12 枚ずつ。センター以外は 2 本、センターは 2 本（間の層）の上にあり、点は曲線の上にある", () => {
+    expect(RING_CIRCLES.length).toBe(9);
+    for (const rc of RING_CIRCLES) {
+      expect(rc.facelets.length).toBe(12);
+      for (const f of rc.facelets) {
+        const a = ringAngle(rc, f);
+        expect(near(ringArc(rc, a, a + 0.001, 1)[0], RING_POINTS[f])).toBe(true);
       }
     }
+    for (let f = 0; f < 54; f++) expect(RING_CIRCLES.filter((rc) => rc.facelets.includes(f)).length).toBe(2);
+    // 点は重ならず、半径 1 以内
+    for (let i = 0; i < 54; i++) {
+      expect(Math.hypot(...RING_POINTS[i])).toBeLessThanOrEqual(1 + 1e-9);
+      for (let j = i + 1; j < 54; j++) expect(Math.hypot(RING_POINTS[i][0] - RING_POINTS[j][0], RING_POINTS[i][1] - RING_POINTS[j][1])).toBeGreaterThan(0.02);
+    }
   });
 
-  it("R は側面の 3 段と U・D のリングをまたぐ", () => {
-    const arrows = moveArrows(parseMoves("R")[0]);
-    expect(arrows.length).toBe(20);
-    expect(arrows.every(({ from, to }) => MOVE_DEST[parseMoves("R")[0]][from] === to)).toBe(true);
-    expect(new Set(arrows.map((a) => RING_CELLS[a.from].ring))).toEqual(new Set([1, 2, 3, 4, 5]));
+  it("U・R・F の角から見た向き: U が上、F が左下、R が右下", () => {
+    const [u, r, f] = [4, 13, 22].map((i) => RING_POINTS[i]);
+    expect(u[1]).toBeLessThan(r[1]);
+    expect(u[1]).toBeLessThan(f[1]);
+    expect(f[0]).toBeLessThan(r[0]);
   });
 
-  it("外形の path を作れる（センターは円・円環）", () => {
-    expect(cellPath(RING_CELLS[4], 100)).toMatch(/^M .* A .* Z$/);
-    expect(cellPath(RING_CELLS[31], 100).split("M").length).toBe(3); // D センター: 外と内の 2 つの円
-    expect(cellPath(RING_CELLS[0], 100)).toContain("L");
-  });
+  for (const name of ["U", "R'", "F", "D2", "L", "B'"]) {
+    it(`${name}: 側面のステッカーは回した層の曲線の上を、決めた向きに 90°（半回転は 180°）進む`, () => {
+      const m = parseMoves(name)[0];
+      const rc = turnCircle(Math.floor(m / 3));
+      const side = moveArrows(m).filter(({ from, to }) => Math.floor(from / 9) !== Math.floor(to / 9));
+      expect(side.length).toBe(12);
+      const quarter = name.endsWith("2") ? 2 : 1;
+      for (const { from, to } of side) {
+        expect(rc.facelets).toContain(from);
+        expect(rc.facelets).toContain(to);
+        const d = (((ringAngle(rc, to) - ringAngle(rc, from)) * ringDirection(m)) / (Math.PI / 2) + 8) % 4;
+        expect(Math.abs(d - quarter)).toBeLessThan(1e-6);
+      }
+    });
+  }
 });
