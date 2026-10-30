@@ -8,7 +8,7 @@ import { type DecoderOptions, MoveDecoder } from "./decoder";
 import { movePrior } from "./prior";
 import { FaceObserver, type FrameReading, type ObserverOptions } from "./observer";
 import { DEFAULT_TIMING, type LoggedFrame, type MoveTiming, moveTiming } from "./timing";
-import type { DecodedMove, Observation, TrackStatus } from "./types";
+import type { DecodedMove, Observation, TrackStatus, TurnHint, TurnSnapshot } from "./types";
 
 export interface EngineOptions {
   decoder: Partial<DecoderOptions>;
@@ -97,6 +97,21 @@ const LAYER: number[][] = NORMAL.map((n) =>
   }),
 );
 
+// 回転途中の形のつながり → 手の手がかり。軸の正の側の層を負の側に対して回した角度（slot が負の側の面なら符号を逆に）。
+// 45° に届かない（回しかけて戻した・回転の一部しか見えていない）なら使わない。量（90° 単位）は、回し始めの近くから見えていて
+// フレームの間の角度の変化が小さい（90° ごとのつなぎ方を誤らない）ときだけ。そうでなければどの軸かだけ
+const TURN_GAP_MS = 120; // これだけ見えなければ回転のつながりは終わり
+export function turnHint(s: TurnSnapshot): TurnHint | null {
+  if (s.frames < 2) return null;
+  const phi = s.slot < 3 ? s.total : -s.total;
+  if (Math.abs(phi) < Math.PI / 4) return null;
+  const reliable = s.frames >= 3 && s.maxStep < (30 * Math.PI) / 180 && Math.abs(s.first) < (25 * Math.PI) / 180;
+  const q = Math.round(phi / (Math.PI / 2));
+  // 回し終わりが 90° の倍数から大きくずれている（まだ回している途中で見えなくなった）なら量は使わない
+  const settled = Math.abs(phi - (q * Math.PI) / 2) < (25 * Math.PI) / 180;
+  return { slot: s.slot, quarters: reliable && settled ? ((q % 4) + 4) % 4 : null };
+}
+
 export class TrackerEngine {
   readonly colors: ColorModel;
   readonly observer: FaceObserver;
@@ -130,6 +145,8 @@ export class TrackerEngine {
   reset(state: CubeState, orients?: number[]): void {
     this.decoder.reset(state, orients);
     this.observer.reset();
+    this.turnCur = null;
+    this.turnHints = [];
     this.lastSeen.fill(-1);
   }
 
@@ -152,13 +169,34 @@ export class TrackerEngine {
   push(frame: FrameReading): TrackUpdate | null {
     this.frames.push({ t: frame.t, faces: frame.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, spread: f.spread, masked: f.masked })) });
     while (this.frames.length && frame.t - this.frames[0].t > this.logMs) this.frames.shift();
+    this.collectTurn(frame);
     const obs = this.observer.push(frame);
     if (!obs) return null;
+    // 前の観測からの間に回転途中の形で見えた層の回転を、この観測に付ける（見え方が落ち着いた = 回し終わった）
+    this.finishTurn();
+    if (this.turnHints.length) obs.turns = this.turnHints;
+    this.turnHints = [];
     if (this.keepObservations) {
       this.observationLog.push(obs);
       if (this.observationLog.length > this.maxObservations) this.observationLog.splice(0, this.observationLog.length - this.maxObservations);
     }
     return this.observe(obs, frame);
+  }
+
+  // 回転途中の形で見えている層の回転（フレームごとのつながり）をためる。つながりが変わった・途切れたら 1 つの回転としてまとめる
+  private turnCur: (TurnSnapshot & { lastT: number }) | null = null;
+  private turnHints: TurnHint[] = [];
+  private collectTurn(frame: FrameReading): void {
+    const s = frame.turn;
+    if (s) {
+      if (this.turnCur && (this.turnCur.slot !== s.slot || this.turnCur.start !== s.start)) this.finishTurn();
+      this.turnCur = { ...s, lastT: frame.t };
+    } else if (this.turnCur && frame.t - this.turnCur.lastT > TURN_GAP_MS) this.finishTurn();
+  }
+  private finishTurn(): void {
+    const h = this.turnCur && turnHint(this.turnCur);
+    if (h) this.turnHints.push(h);
+    this.turnCur = null;
   }
 
   observe(obs: Observation, frame?: FrameReading): TrackUpdate {

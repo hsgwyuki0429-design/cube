@@ -4,8 +4,6 @@ import { analyzeState, describeProblem, mostLikelyState, type StateProblem } fro
 import { type Lab, NAMED_COLORS, colorDistance, meanLab, medianLab } from "../vision/color";
 import { assignBalanced, hungarian } from "./assign";
 
-export type Scheme = "standard" | "other";
-
 // 標準配色（白上・緑前）。面 → 色名
 export const STANDARD_SCHEME: Record<number, string> = { [U]: "W", [R]: "R", [F]: "G", [D]: "Y", [L]: "O", [B]: "B" };
 const NAME_LABEL: Record<string, string> = Object.fromEntries(NAMED_COLORS.map((c) => [c.id, c.name]));
@@ -16,23 +14,14 @@ export interface ScanStep {
   instruction: string;
 }
 
-export function scanSteps(scheme: Scheme): ScanStep[] {
-  if (scheme === "standard") {
-    const s = (face: number, top: number, extra = ""): ScanStep => ({
-      face,
-      title: `${NAME_LABEL[STANDARD_SCHEME[face]]}の面`,
-      instruction: `${NAME_LABEL[STANDARD_SCHEME[face]]}のセンターの面をカメラに向け、${NAME_LABEL[STANDARD_SCHEME[top]]}のセンターを上にしてください。${extra}`,
-    });
-    return [s(F, U), s(R, U), s(B, U), s(L, U), s(U, B), s(D, F)];
-  }
-  return [
-    { face: F, title: "正面", instruction: "好きな面をカメラに向けてください（この面を「正面」にします）。上になっている面を覚えておいてください。" },
-    { face: R, title: "右面", instruction: "上の面はそのまま、キューブを上から見て時計回りに90°回してください（あなたから見て左側の面がカメラを向きます）。" },
-    { face: B, title: "背面", instruction: "同じ向きにもう90°回してください。" },
-    { face: L, title: "左面", instruction: "同じ向きにもう90°回してください。" },
-    { face: U, title: "上面", instruction: "正面をカメラに戻してから、上の面がカメラを向くようにキューブをカメラ側へ倒してください。" },
-    { face: D, title: "下面", instruction: "正面をカメラに戻してから、下の面がカメラを向くようにキューブを手前へ起こしてください。" },
-  ];
+// ArUco マーカーのステッカーは標準配色（白上・緑前）で印刷している
+export function scanSteps(): ScanStep[] {
+  const s = (face: number, top: number, extra = ""): ScanStep => ({
+    face,
+    title: `${NAME_LABEL[STANDARD_SCHEME[face]]}の面`,
+    instruction: `${NAME_LABEL[STANDARD_SCHEME[face]]}のセンターの面をカメラに向け、${NAME_LABEL[STANDARD_SCHEME[top]]}のセンターを上にしてください。${extra}`,
+  });
+  return [s(F, U), s(R, U), s(B, U), s(L, U), s(U, B), s(D, F)];
 }
 
 // ---- 1面の取り込み ----
@@ -175,7 +164,7 @@ export function rotateCells(cells: number[], k: number): number[] {
   return out;
 }
 
-export function assembleScan(scanned: ScannedFace[], scheme: Scheme): ScanResult {
+export function assembleScan(scanned: ScannedFace[]): ScanResult {
   // 1) 色の割り当て（センターを初期値に、9枚ずつの制約つきで反復）
   const byFace = new Map(scanned.map((s) => [s.face, s]));
   const all: Lab[] = [];
@@ -208,15 +197,11 @@ export function assembleScan(scanned: ScannedFace[], scheme: Scheme): ScanResult
   const nameIdx = hungarian(refs.map((r) => NAMED_COLORS.map((n) => colorDistance(r, n.lab))));
   const names = nameIdx.map((i) => NAMED_COLORS[i].id as string);
 
-  // 3) 標準配色なら、色名から面の位置を決め直す（スキャンの順番を間違えても直る）
+  // 3) 色名から面の位置を決め直す（標準配色。スキャンの順番を間違えても直る）
   let placement = Array.from({ length: 6 }, (_, f) => f); // 面 f に置くスキャン結果
-  if (scheme === "standard") {
-    const target = [U, R, F, D, L, B].map((f) => STANDARD_SCHEME[f]);
-    const pos = names.map((n) => target.indexOf(n));
-    if (new Set(pos).size === 6 && pos.every((p) => p >= 0)) {
-      placement = Array.from({ length: 6 }, (_, f) => pos.indexOf(f));
-    }
-  }
+  const target = [U, R, F, D, L, B].map((f) => STANDARD_SCHEME[f]);
+  const pos = names.map((n) => target.indexOf(n));
+  if (new Set(pos).size === 6 && pos.every((p) => p >= 0)) placement = Array.from({ length: 6 }, (_, f) => pos.indexOf(f));
 
   const refsByFace = Array.from({ length: 6 }, (_, f) => refs[placement[f]]);
   const namesByFace = Array.from({ length: 6 }, (_, f) => names[placement[f]]);

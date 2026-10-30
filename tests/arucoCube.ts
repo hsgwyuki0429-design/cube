@@ -1,7 +1,7 @@
 // ArUco ステッカーを貼ったキューブの合成画像（テスト用）。ステッカーは駒と一緒に動くので、色だけでなく
 // どのステッカーがどの向きで貼られているか（ID と上向き）を 3D で追う。画素ごとに視線と面の交点を求めて描く。
 import { FACE_TURN, NORMAL, ORIENTATIONS, ROWDIR, type Vec3, apply, faceletAt, faceletGeometry, moveAmount, moveFace } from "../src/cube/model";
-import type { CV } from "../src/vision/quads";
+import type { CV } from "../src/vision/image";
 import { type StickerScheme, idForFacelet, markerBits, markerSize } from "../src/aruco/codes";
 import { type StickerDesign, hexRgb, inkRgb } from "../src/aruco/design";
 import { PRINT_COLORS } from "../src/aruco/palette";
@@ -134,7 +134,9 @@ function renderOnce(cv: CV, o: CubeRenderOptions, fraction: number, shake = 0): 
   const f = o.focal ?? Math.max(w, h) * 0.8; // スマホの標準カメラ（画角 65° 前後）
   const world = shake ? mulMat(axisAngle([0, 1, 0], shake), ORIENTATIONS[o.orient]) : ORIENTATIONS[o.orient];
   const turnFace = o.turn ? moveFace(o.turn.move) : -1;
-  const turnRot = o.turn ? axisAngle(NORMAL[turnFace], (-Math.PI / 2) * moveAmount(o.turn.move) * fraction) : null;
+  // 時計回り 90°・半回転は時計回り 180°・反時計回り（'）は反時計回り 90°（実際の手の回し方）
+  const quarters = o.turn ? [1, 2, -1][moveAmount(o.turn.move) - 1] : 0;
+  const turnRot = o.turn ? axisAngle(NORMAL[turnFace], (-Math.PI / 2) * quarters * fraction) : null;
   const inTurn = (p: Vec3) => turnFace >= 0 && dotv(p, NORMAL[turnFace]) === 1;
   const toWorld = (v: Vec3, turning: boolean): Vec3 => matv(world, turning && turnRot ? matv(turnRot, v) : v);
   const lightOf = (n: Vec3) => 0.72 + 0.28 * Math.max(0, dotv(n, norm([0.3, 0.8, 0.5])));

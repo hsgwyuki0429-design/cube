@@ -15,7 +15,7 @@ import { markerBits } from "../src/aruco/dict4x4";
 import { PRINT_COLORS } from "../src/aruco/palette";
 import { type FrameRecord, summarize, toCsv, toMarkdown } from "../src/aruco/stats";
 import { SHEETS, classifyColor, stickerOf } from "../src/aruco/stickers";
-import { type CV, initOpenCv } from "../src/vision/quads";
+import { type CV, initOpenCv } from "../src/vision/image";
 import { type RenderMarker, renderStickers } from "./arucoRender";
 
 let cv: CV;

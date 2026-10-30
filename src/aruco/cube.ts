@@ -12,7 +12,8 @@ import { type Mat3, type Pt, applyH, fitHomography, invertH } from "../vision/ho
 import { type Pose, defaultFocal } from "../vision/pose";
 import { CONFUSABLE12, type Decoded, type StickerScheme, centerOffset, decode } from "./codes";
 import type { Marker } from "./detect";
-import { type TurnTrack, recognizeTurn, turnSense, unwrapTurn } from "./turn";
+import { STANDARD_DESIGN, type StickerDesign } from "./design";
+import { DEFAULT_TURN, type TurnTrack, recognizeTurn, turnSense, unwrapTurn } from "./turn";
 import { type ColorKey, FACE_COLORS, classifyColor } from "./stickers";
 
 export interface VisibleFace {
@@ -82,6 +83,7 @@ interface Group {
   cells: Map<string, { m: Marker; rot: number; i: number; j: number; res: number }>;
   G: Mat3; // 基準の座標（マーカーの辺 = 1、基準のマーカーの中心が原点）→ 画像
   pitch: number;
+  accepted: { m: Marker; key: string; res: number }[]; // 格子の点に合ったマーカーすべて（同じマスに何枚あっても）
 }
 
 function gatherGroup(ref: Marker, pool: Marker[], o: FaceOptions): Group | null {
@@ -89,6 +91,7 @@ function gatherGroup(ref: Marker, pool: Marker[], o: FaceOptions): Group | null 
   if (!G) return null;
   let pitch = 0;
   let cells = new Map<string, { m: Marker; rot: number; i: number; j: number; res: number }>();
+  let accepted: Group["accepted"] = [];
   for (let pass = 0; pass < 2; pass++) {
     const Gi = invertH(G);
     const cands = pool.map((n) => (n === ref ? { m: n, rot: 0, du: 0, dv: 0 } : inFrame(Gi, n, o))).filter((c): c is Member => !!c && Math.hypot(c.du, c.dv) < 4.5);
@@ -102,9 +105,13 @@ function gatherGroup(ref: Marker, pool: Marker[], o: FaceOptions): Group | null 
         if (Math.min(a, b) < 0.3 && d >= o.pitchRange[0] && d <= o.pitchRange[1]) near.push(d);
       }
       pitch = near.length ? median(near) : 0;
-      if (!pitch) return { cells: new Map([["0,0", { m: ref, rot: 0, i: 0, j: 0, res: 0 }]]), G, pitch: 0 };
+      if (!pitch) {
+        const accepted = cands.filter((c) => Math.hypot(c.du, c.dv) < o.posTol * 1.3).map((c) => ({ m: c.m, key: "0,0", res: Math.hypot(c.du, c.dv) }));
+        return { cells: new Map([["0,0", { m: ref, rot: 0, i: 0, j: 0, res: 0 }]]), G, pitch: 0, accepted };
+      }
     }
     cells = new Map();
+    accepted = [];
     for (const c of cands) {
       const i = Math.round(c.du / pitch);
       const j = Math.round(c.dv / pitch);
@@ -112,6 +119,7 @@ function gatherGroup(ref: Marker, pool: Marker[], o: FaceOptions): Group | null 
       const res = Math.hypot(c.du - i * pitch, c.dv - j * pitch) / pitch;
       if (res > o.posTol) continue;
       const key = `${i},${j}`;
+      accepted.push({ m: c.m, key, res });
       const prev = cells.get(key);
       if (!prev || res < prev.res) cells.set(key, { m: c.m, rot: c.rot, i, j, res });
     }
@@ -120,6 +128,7 @@ function gatherGroup(ref: Marker, pool: Marker[], o: FaceOptions): Group | null 
     const js = [...cells.values()].map((c) => c.j);
     if (Math.max(...is) - Math.min(...is) > 2 || Math.max(...js) - Math.min(...js) > 2) {
       for (const [k, c] of cells) if (Math.abs(c.i) + Math.abs(c.j) > 2) cells.delete(k);
+      accepted = accepted.filter((a) => cells.has(a.key));
     }
     // 見つかったマーカーの角すべてで射影変換を当て直す（遠くのマーカーの位置が正確になる）
     const src: Pt[] = [];
@@ -135,7 +144,7 @@ function gatherGroup(ref: Marker, pool: Marker[], o: FaceOptions): Group | null 
     const refit = fitHomography(src, dst);
     if (refit) G = refit;
   }
-  return { cells, G, pitch };
+  return { cells, G, pitch, accepted };
 }
 
 export interface FacesResult {
@@ -228,8 +237,101 @@ export function trustedColors(markers: Marker[], scheme: StickerScheme): { rgb: 
 
 interface Coded extends Marker {
   dec: Decoded;
+  src?: Marker; // ステッカーの中のマーカーの配置が今のもの（1 個・辺 0.84）でないとき: 仮想のマーカーの元のマーカー
 }
 
+// 今の配置（色の縁 8% の内側いっぱいに 1 個）のマーカーの、ステッカーの座標での 4 隅（左上から時計回り）
+const STANDARD_SQUARE: Pt[] = [
+  [STANDARD_DESIGN.at[0][0] - STANDARD_DESIGN.side / 2, STANDARD_DESIGN.at[0][1] - STANDARD_DESIGN.side / 2],
+  [STANDARD_DESIGN.at[0][0] + STANDARD_DESIGN.side / 2, STANDARD_DESIGN.at[0][1] - STANDARD_DESIGN.side / 2],
+  [STANDARD_DESIGN.at[0][0] + STANDARD_DESIGN.side / 2, STANDARD_DESIGN.at[0][1] + STANDARD_DESIGN.side / 2],
+  [STANDARD_DESIGN.at[0][0] - STANDARD_DESIGN.side / 2, STANDARD_DESIGN.at[0][1] + STANDARD_DESIGN.side / 2],
+];
+
+// マーカーを、今の配置ならステッカーのどこにあったか（仮想のマーカー）に直す。面の組み立ては今の配置の大きさ・格子の間隔で考える。
+// 1 枚に複数のマーカーがある配置（4 個。同じステッカーのマーカーは同じ ID・同じ向き・同じ大きさで 2×2 に並ぶ）は、
+// 同じステッカーのマーカー（54 種類は同じ ID）をまとめ、並びから各マーカーがステッカーのどの位置のものかを決めて、全部の角から
+// ステッカーの仮想のマーカーを 1 つ作る。決まらない（1 枚だけ・縦か横に並んだ 2 枚だけ）ときは、ありうる位置ごとの仮説を返す。
+// 同じ ID でも向きや並びが合わないマーカー（読み違い）は別に扱う。src: 同じステッカーの仮説で共有する印、weight: まとめたマーカーの数
+interface StickerHyp extends Coded {
+  src: Marker;
+  weight: number;
+  resolved: boolean; // 位置が 1 つに決まった
+}
+function virtualMarkers(coded: Coded[], design: StickerDesign, o: FaceOptions): StickerHyp[] {
+  if (design === STANDARD_DESIGN) return coded.map((m) => ({ ...m, src: m, weight: 1, resolved: true }));
+  const cols = [...new Set(design.at.map((p) => p[0]))].sort((a, b) => a - b);
+  const rows = [...new Set(design.at.map((p) => p[1]))].sort((a, b) => a - b);
+  const sx = cols.length > 1 ? (cols[1] - cols[0]) / design.side : 1; // 並びの間隔（マーカーの辺 = 1）
+  const sy = rows.length > 1 ? (rows[1] - rows[0]) / design.side : 1;
+  const out: StickerHyp[] = [];
+  const groups = new Map<number, Coded[]>();
+  coded.forEach((m, k) => {
+    const key = m.dec.sticker >= 0 ? m.dec.sticker : -1 - k; // ステッカーの決まらない符号（12 種類）は 1 枚ずつ
+    groups.set(key, [...(groups.get(key) ?? []), m]);
+  });
+  for (const ms of groups.values()) {
+    let left = [...ms].sort((a, b) => b.fit - a.fit || b.side - a.side);
+    while (left.length) {
+      const m0 = left[0];
+      const H0 = fitHomography(UNIT, cornersOf(m0));
+      if (!H0) {
+        left = left.slice(1);
+        continue;
+      }
+      const Hi = invertH(H0);
+      // m0 の座標で、同じ向き・2×2 の並びの位置にあるもの
+      const members: { m: Coded; kx: number; ky: number }[] = [{ m: m0, kx: 0, ky: 0 }];
+      for (const n of left.slice(1)) {
+        const c = inFrame(Hi, n, o);
+        if (!c || c.rot !== 0) continue;
+        const kx = Math.round(c.du / sx);
+        const ky = Math.round(c.dv / sy);
+        if (Math.abs(kx) > cols.length - 1 || Math.abs(ky) > rows.length - 1) continue;
+        if (Math.hypot(c.du - kx * sx, c.dv - ky * sy) > 0.35) continue;
+        if (members.some((x) => x.kx === kx && x.ky === ky)) continue;
+        members.push({ m: n, kx, ky });
+      }
+      left = left.filter((m) => !members.some((x) => x.m === m));
+      const src = m0 as Marker;
+      const hyps: StickerHyp[] = [];
+      // m0 の位置（列 i0・行 j0）の候補: どのマーカーの位置も並びの中に収まるもの
+      for (let i0 = 0; i0 < cols.length; i0++)
+        for (let j0 = 0; j0 < rows.length; j0++) {
+          const pos = members.map((x) => [i0 + x.kx, j0 + x.ky]);
+          if (pos.some(([i, j]) => i < 0 || j < 0 || i >= cols.length || j >= rows.length)) continue;
+          if (!pos.every(([i, j]) => design.at.some((p) => p[0] === cols[i] && p[1] === rows[j]))) continue;
+          // 全部のマーカーの角（ステッカーの座標）から、ステッカーの平面の射影変換
+          const from: Pt[] = [];
+          const to: Pt[] = [];
+          members.forEach((x, k) => {
+            const [qx, qy] = [cols[pos[k][0]], rows[pos[k][1]]];
+            const sq: Pt[] = [
+              [qx - design.side / 2, qy - design.side / 2],
+              [qx + design.side / 2, qy - design.side / 2],
+              [qx + design.side / 2, qy + design.side / 2],
+              [qx - design.side / 2, qy + design.side / 2],
+            ];
+            sq.forEach((p, c) => {
+              from.push(p);
+              to.push([x.m.corners[c * 2], x.m.corners[c * 2 + 1]]);
+            });
+          });
+          const Hs = fitHomography(from, to);
+          if (!Hs) continue;
+          const corners = STANDARD_SQUARE.flatMap(([x, y]) => applyH(Hs, x, y));
+          const side = (members.reduce((sum, x) => sum + x.m.side, 0) / members.length) * (STANDARD_DESIGN.side / design.side);
+          hyps.push({ ...m0, corners, side, fit: Math.max(...members.map((x) => x.m.fit)), src, weight: members.length, resolved: false });
+        }
+      for (const h of hyps) h.resolved = hyps.length === 1;
+      out.push(...hyps);
+    }
+  }
+  return out;
+}
+
+// design: ステッカーの中のマーカーの配置（src/aruco/design.ts）。4 個の配置は、1 枚のマーカーがステッカーのどの位置のものかを、
+// 同じ面のほかのマーカーと格子が合うかで決める（決まらない面は作らない）
 export function reconstructFaces(
   markers: Marker[],
   size: { width: number; height: number },
@@ -237,8 +339,10 @@ export function reconstructFaces(
   scheme: StickerScheme = "aruco54",
   o: FaceOptions = DEFAULT_FACE,
   frontAlways = false,
+  design: StickerDesign = STANDARD_DESIGN,
 ): FacesResult {
-  // ステッカーの ID のみ・写った色が ID の色と合うもの。54 種類の符号で同じ ID が 2 つあれば大きい方
+  const multi = design.at.length > 1;
+  // ステッカーの ID のみ・写った色が ID の色と合うもの。54 種類の符号で同じ ID が 2 つあれば大きい方（1 枚に 1 個の配置）
   const coded: Coded[] = [];
   const byId = new Map<number, Coded>();
   const checked = scheme === "unique54" ? frameColorFilter(markers.filter((m) => decode(scheme, m.id)).map((m) => ({ ...m, face: decode(scheme, m.id)!.face }))) : markers;
@@ -249,7 +353,7 @@ export function reconstructFaces(
     const dec = decode(scheme, m.id);
     if (!dec || (!colorConsistent(scheme, m.id, m.rgb) && !supported.has(m))) continue;
     const c: Coded = { ...m, dec };
-    if (dec.sticker < 0) {
+    if (dec.sticker < 0 || multi) {
       coded.push(c);
       continue;
     }
@@ -257,13 +361,70 @@ export function reconstructFaces(
     if (!p || m.side > p.side) byId.set(dec.sticker, c);
   }
   coded.push(...byId.values());
-  let pool: Marker[] = coded.sort((a, b) => b.side - a.side);
+  // 位置の決まったステッカーを基準に選ぶ（同じ大きさなら大きい方）
+  let pool: StickerHyp[] = virtualMarkers(coded, design, o).sort((a, b) => Number(b.resolved) - Number(a.resolved) || b.side - a.side);
+  const srcOf = (m: Marker) => (m as StickerHyp).src ?? m;
+  const weightOf = (m: Marker) => (m as StickerHyp).weight ?? 1;
   const faces: NonNullable<ReturnType<typeof toFace>>[] = [];
   while (pool.length) {
     const ref = pool[0];
-    const g = gatherGroup(ref, pool, o);
-    const used = new Set(g ? [...g.cells.values()].map((c) => c.m) : [ref]);
-    used.add(ref);
+    let g: Group | null;
+    let used: Set<Marker>;
+    if (!multi) {
+      g = gatherGroup(ref, pool, o);
+      used = new Set(g ? [...g.cells.values()].map((c) => c.m) : [ref]);
+      used.add(ref);
+    } else {
+      // 基準のマーカーの位置の仮説ごとに格子を作り、いちばんよく説明するものを選ぶ。ステッカーの間の隙間は狭いので、4 個のマーカーは
+      // 面の上にほぼ等間隔に並び、ステッカー半分ずらした格子にも形の上では合う。決め手は ID: 正しい格子では 1 つのマスに入るマーカーは
+      // どれも同じステッカー（同じ ID）、ずれた格子では隣のステッカーのマーカーと混ざる。マスごとに、いちばん多い ID の元のマーカーの数から
+      // ほかの ID の数を引いたものの合計で比べる。同じだけ説明する別の仮説があれば、どこが面か決められないので面にしない
+      const cands: { g: Group; n: number; res: number; major: Map<string, number> }[] = [];
+      for (const r of pool.filter((h) => h.src === ref.src)) {
+        const gr = gatherGroup(r, pool, o);
+        if (!gr) continue;
+        // マスごと・ID ごとの、格子に合ったステッカーのマーカーの数（同じステッカーの仮説は 1 度だけ数える）
+        const byKey = new Map<string, Map<number, Map<Marker, number>>>();
+        for (const a of gr.accepted) {
+          const id = (a.m as Coded).dec.sticker >= 0 ? (a.m as Coded).dec.sticker : -1 - (a.m as Coded).dec.face;
+          const ids = byKey.get(a.key) ?? new Map<number, Map<Marker, number>>();
+          ids.set(id, (ids.get(id) ?? new Map()).set(srcOf(a.m), weightOf(a.m)));
+          byKey.set(a.key, ids);
+        }
+        let n = 0;
+        const major = new Map<string, number>();
+        const count = (xs: Map<Marker, number>) => [...xs.values()].reduce((a, b) => a + b, 0);
+        for (const [key, ids] of byKey) {
+          const ranked = [...ids.entries()].sort((a, b) => count(b[1]) - count(a[1]));
+          n += count(ranked[0][1]) - ranked.slice(1).reduce((sum, x) => sum + count(x[1]), 0);
+          major.set(key, ranked[0][0]);
+        }
+        cands.push({ g: gr, n, res: gr.accepted.reduce((sum, a) => sum + a.res, 0) / Math.max(1, gr.accepted.length), major });
+      }
+      cands.sort((a, b) => b.n - a.n || a.res - b.res);
+      const best = cands[0];
+      const tied = !best || best.n <= 0 || (cands.length > 1 && cands[1].n === best.n && cands[1].res < best.res + 0.05);
+      g = tied ? null : best.g;
+      // 使ったマーカー: 格子に合ったステッカーの仮説すべてと、同じステッカー（54 種類は ID が同じ）のマーカー
+      const srcs = new Set<Marker>([ref.src]);
+      const ids = new Set<number>();
+      for (const a of best?.g.accepted ?? []) {
+        srcs.add(srcOf(a.m));
+        if ((a.m as Coded).dec.sticker >= 0) ids.add((a.m as Coded).dec.sticker);
+      }
+      used = new Set(pool.filter((h) => srcs.has(srcOf(h)) || (h.dec.sticker >= 0 && ids.has(h.dec.sticker))));
+      // マスの読みは、そのマスでいちばん多い ID のマーカーのうち格子にいちばん合うもの。確からしさは同じ ID の読みでいちばん確かなもの
+      if (g) {
+        const idOf = (m: Marker) => ((m as Coded).dec.sticker >= 0 ? (m as Coded).dec.sticker : -1 - (m as Coded).dec.face);
+        for (const [key, cell] of g.cells) {
+          const same = g.accepted.filter((a) => a.key === key && idOf(a.m) === best.major.get(key));
+          if (!same.length) continue;
+          const top = same.reduce((a, b) => (b.res < a.res ? b : a));
+          const fit = Math.max(...same.map((a) => a.m.fit));
+          g.cells.set(key, { ...cell, m: { ...top.m, fit } as Coded });
+        }
+      }
+    }
     pool = pool.filter((m) => !used.has(m));
     if (!g) continue;
     const face = toFace(g, size);
@@ -533,6 +694,18 @@ function centerVote(c: { m: Marker; rot: number; i: number; j: number }): [numbe
   return [c.i + v[0], c.j + v[1]];
 }
 
+// 回転途中の形状認識に渡すマーカー: 4 個の配置は、同じ ID（同じステッカー）のうち読みのいちばん確かな 1 枚だけ
+// （同じステッカーのマーカーは同じことしか分からず、数が 4 倍になると重い）
+export function turnMarkers(markers: Marker[], design: StickerDesign): Marker[] {
+  if (design.at.length < 2) return markers;
+  const best = new Map<number, Marker>();
+  for (const m of markers) {
+    const p = best.get(m.id);
+    if (!p || m.fit > p.fit) best.set(m.id, m);
+  }
+  return [...best.values()];
+}
+
 // ---- 観測と復号 ----
 
 export interface CubeFrame {
@@ -707,14 +880,14 @@ export function turnTimes(frames: CubeFrame[], moves: DecodedMove[]): DecodedMov
 }
 
 // フレームごとのマーカーから面を組み立てる（傾きを次のフレームへ引き継ぐ）。回している途中の層も求める（本体の姿勢と角度を引き継ぐ）
-export function facesOverTime(frames: { t: number; markers: Marker[] }[], size: { width: number; height: number }, scheme: StickerScheme = "aruco54"): CubeFrame[] {
+export function facesOverTime(frames: { t: number; markers: Marker[] }[], size: { width: number; height: number }, scheme: StickerScheme = "aruco54", design: StickerDesign = STANDARD_DESIGN): CubeFrame[] {
   let tilt: number[] | null = null;
   let pose: Pose | null = null;
   let track: TurnTrack | null = null;
   return frames.map((f) => {
-    const r = reconstructFaces(f.markers, size, tilt, scheme);
+    const r = reconstructFaces(f.markers, size, tilt, scheme, undefined, false, design);
     tilt = r.tilt;
-    const tr = recognizeTurn(f.markers, r.faces, size, pose);
+    const tr = recognizeTurn(turnMarkers(f.markers, design), r.faces, size, pose, { ...DEFAULT_TURN, design });
     if (tr.pose) pose = tr.pose;
     track = unwrapTurn(track, tr.turn, f.t);
     const turn = tr.turn && track ? { slot: tr.turn.slot, angle: tr.turn.angle, total: track.total, ids: tr.placed.filter((p) => p.layer).map((p) => p.id) } : null;

@@ -202,51 +202,28 @@ export function FreePanel() {
 }
 
 export function StartCard() {
-  const cal = useStore(controller.store, (s) => s.calibration);
   const camera = useStore(controller.store, (s) => s.camera);
-  const aruco = useStore(settingsStore, (s) => s.stickers !== "color");
   return (
     <div>
-      {aruco ? (
-        <>
-          <div class="status-banner">
-            <strong>ArUco マーカーのキューブ</strong>
-            色をマーカーの ID で判定するので、揃ったキューブならスキャンなしで始められます。崩れたキューブは 6 面をスキャンしてください。
-          </div>
-          <div class="btn-row">
-            <button class="btn primary" disabled={camera !== "on"} onClick={() => controller.startFromSolved()}>
-              揃った状態から開始
-            </button>
-            <button class="btn" disabled={camera !== "on"} onClick={() => controller.beginScan()}>
-              6面スキャン
-            </button>
-          </div>
-        </>
-      ) : (
-        <>
-          <div class="status-banner">
-            <strong>まずキューブの状態を読み取ります</strong>
-            6面を順番にカメラへ見せると、色と配置を記録して追跡を始めます。完成したキューブでも、崩れたキューブでもOKです。
-          </div>
-          <div class="btn-row">
-            <button class="btn primary" disabled={camera !== "on"} onClick={() => controller.beginScan()}>
-              6面スキャンを始める
-            </button>
-            {cal && (
-              <button class="btn" disabled={camera !== "on"} onClick={() => controller.startFromSolved()}>
-                完成状態から開始（前回の色）
-              </button>
-            )}
-          </div>
-        </>
-      )}
+      <div class="status-banner">
+        <strong>ArUco マーカーのキューブ</strong>
+        色をマーカーの ID で判定するので、揃ったキューブならスキャンなしで始められます。崩れたキューブは 6 面をスキャンしてください。
+      </div>
+      <div class="btn-row">
+        <button class="btn primary" disabled={camera !== "on"} onClick={() => controller.startFromSolved()}>
+          揃った状態から開始
+        </button>
+        <button class="btn" disabled={camera !== "on"} onClick={() => controller.beginScan()}>
+          6面スキャン
+        </button>
+      </div>
       {camera !== "on" && <p class="muted small">先にカメラを開始してください。カメラがなくても「デモで試す」で動きを確認できます。</p>}
       <div class="section">
         <h3>うまく追跡するコツ</h3>
         <ul class="small muted" style={{ paddingLeft: 18, margin: 0 }}>
           <li>カメラを少し上に置き、キューブの「正面」と「上面」の2面が映るようにする</li>
           <li>明るい場所で。強い反射や逆光は避ける</li>
-          <li>キューブは画面の中央付近、枠いっぱいの大きさで</li>
+          <li>キューブは画面の中央付近に。マーカーが小さすぎると読めません（マスの間隔が 40px 以上）</li>
           <li>最初はゆっくり（1秒に1〜2手）。慣れたら速く</li>
         </ul>
       </div>

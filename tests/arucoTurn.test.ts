@@ -6,7 +6,7 @@ import { ArucoBench, DEFAULT_CONFIGS, type Marker } from "../src/aruco/detect";
 import { type TurnShape, recognizeTurn, unwrapTurn } from "../src/aruco/turn";
 import type { Pose } from "../src/vision/pose";
 import { MOVE_NAMES, NORMAL, type Vec3, inverseMove, moveAmount, moveFace, parseMoves } from "../src/cube/model";
-import { type CV, initOpenCv } from "../src/vision/quads";
+import { type CV, initOpenCv } from "../src/vision/image";
 import { applyMoveStickers, renderArucoCube, solvedStickers } from "./arucoCube";
 
 let cv: CV;

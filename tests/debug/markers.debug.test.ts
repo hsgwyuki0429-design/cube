@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 import { it } from "vitest";
 import { ARUCO12_CODES, UNIQUE54_CODES } from "../../src/aruco/codes";
 import { maxChannel, measureCells, rescueRejected } from "../../src/aruco/detect";
-import { initOpenCv } from "../../src/vision/quads";
+import { initOpenCv } from "../../src/vision/image";
 
 type CV = any;
 const pop = (x: number) => {

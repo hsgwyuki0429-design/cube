@@ -5,7 +5,7 @@ import { createRequire } from "node:module";
 import { it } from "vitest";
 import { VIEW, type Vec3, parseMoves } from "../../src/cube/model";
 import { processAruco } from "../../src/vision/arucoFrame";
-import { initOpenCv } from "../../src/vision/quads";
+import { initOpenCv } from "../../src/vision/image";
 import { applyMoveStickers, renderArucoCube, solvedStickers, stickerAt } from "../arucoCube";
 
 it("再認識の効果", async () => {

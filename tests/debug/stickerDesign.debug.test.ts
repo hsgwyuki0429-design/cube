@@ -8,7 +8,7 @@ import { createRequire } from "node:module";
 import { it } from "vitest";
 import { DESIGNS, designLook } from "../../src/aruco/design";
 import { ArucoBench, DEFAULT_CONFIGS } from "../../src/aruco/detect";
-import { initOpenCv } from "../../src/vision/quads";
+import { initOpenCv } from "../../src/vision/image";
 import { renderArucoCube } from "../arucoCube";
 import { H, PITCHES, SHAKES, W, inPoly, makeScenes } from "../arucoScenes";
 import { writePng } from "./png";

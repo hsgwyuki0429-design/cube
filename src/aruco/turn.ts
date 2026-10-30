@@ -11,6 +11,7 @@ import { NORMAL, type Vec3 } from "../cube/model";
 import { type Pt, fitHomography } from "../vision/homography";
 import { type Pose, defaultFocal, estimatePose, latticePoint } from "../vision/pose";
 import type { VisibleFace } from "./cube";
+import { STANDARD_DESIGN, type StickerDesign } from "./design";
 import type { Marker } from "./detect";
 
 export interface TurnShape {
@@ -58,6 +59,24 @@ const STICKERS: { pos: Vec3; normal: Vec3 }[] = Array.from({ length: 54 }, (_, i
   return { pos: latticePoint(slot, (cell % 3) + 0.5, Math.floor(cell / 3) + 0.5), normal: NORMAL[slot] };
 });
 
+// ステッカーの辺（マスの間隔 = 1）: 16mm のステッカーを 19mm 間隔で貼ったとき
+const STICKER_SIDE = 0.84;
+// 各マスの中のマーカーの中心（ステッカーの中のマーカーの配置ごと）。4 個の配置は 1 枚のマーカーがどの位置のものか分からないので、
+// 4 つの位置のどれかに合えばよい（4 つの位置は 90° ごとに回しても同じなので、貼った向きによらない）
+const markerPoints = new Map<string, Vec3[][]>();
+function pointsOf(design: StickerDesign): Vec3[][] {
+  let pts = markerPoints.get(design.key);
+  if (!pts) {
+    pts = Array.from({ length: 54 }, (_, i) => {
+      const slot = Math.floor(i / 9);
+      const cell = i % 9;
+      return design.at.map(([x, y]) => latticePoint(slot, (cell % 3) + 0.5 + (x - 0.5) * STICKER_SIDE, Math.floor(cell / 3) + 0.5 + (y - 0.5) * STICKER_SIDE));
+    });
+    markerPoints.set(design.key, pts);
+  }
+  return pts;
+}
+
 // マーカーの 4 隅の射影変換を分解した、マーカーの平面の外向きの法線（カメラフレーム、x 右・y 上・z 手前）
 export function markerNormal(m: Marker, size: { width: number; height: number }, focal = defaultFocal(size.width, size.height)): Vec3 | null {
   const pts: Pt[] = [0, 1, 2, 3].map((i) => [m.corners[i * 2], m.corners[i * 2 + 1]]);
@@ -90,6 +109,7 @@ export function markerNormal(m: Marker, size: { width: number; height: number },
 const centerOf = (m: Marker): Pt => [(m.corners[0] + m.corners[2] + m.corners[4] + m.corners[6]) / 4, (m.corners[1] + m.corners[3] + m.corners[5] + m.corners[7]) / 4];
 
 export interface TurnOptions {
+  design: StickerDesign; // ステッカーの中のマーカーの配置
   bodyTol: number; // 本体のマスとみなす中心のずれ（マスの間隔に対する割合）
   matchTol: number; // 回している層のマスと合うとみなすずれ
   gain: number; // 回したマスの方が、回していないマスよりこれだけ合うときだけ「回っている」と数える（軸の上のマスは回しても動かない）
@@ -100,41 +120,68 @@ export interface TurnOptions {
   pairTol: number; // 回している層に合ったマーカーが 2 枚だけのとき、ずれの平均がこれ以下であること
 }
 
-export const DEFAULT_TURN: TurnOptions = { bodyTol: 0.25, matchTol: 0.35, gain: 0.1, normalTol: 0.75, minAngle: (6 * Math.PI) / 180, minGain: 0.3, anchorTol: 0.12, pairTol: 0.06 };
+export const DEFAULT_TURN: TurnOptions = { design: STANDARD_DESIGN, bodyTol: 0.25, matchTol: 0.35, gain: 0.1, normalTol: 0.75, minAngle: (6 * Math.PI) / 180, minGain: 0.3, anchorTol: 0.12, pairTol: 0.06 };
 
 type Obs = { m: Marker; c: Pt; n: Vec3 | null };
 
-// 姿勢 pose のもとで、マス（STICKERS の番号）のうち use に入るものを軸 axis のまわりに th 回したとき、マーカー x に最も合うマスとずれ
-function nearest(ctx: Ctx, x: Obs, use: (i: number) => boolean, axis: number, th: number, o: TurnOptions): { s: number; d: number } {
-  let bd = Infinity;
-  let bs = -1;
+// 仮説（軸 axis のまわりに th 回したマスのうち use に入るもの）ごとに、見えるマスの法線と、マーカーの中心の射影を先に求めておく
+// （マーカーごとに求め直すと、仮説 360 通り × マーカー × 54 マスで三角関数と射影を繰り返して、ライブで 1 フレーム 30ms かかった）
+interface Placed {
+  i: number;
+  n: Vec3; // マスの法線（キューブの座標）
+  pts: Pt[]; // マーカーの中心の射影
+}
+function placeStickers(ctx: Ctx, use: (i: number) => boolean, axis: number, th: number, o: TurnOptions): Placed[] {
+  const pts = pointsOf(o.design);
+  const c = Math.cos(th);
+  const s = Math.sin(th);
+  const rot = (v: V): Vec3 => (!th ? (v as Vec3) : axis === 0 ? [v[0], c * v[1] - s * v[2], s * v[1] + c * v[2]] : axis === 1 ? [c * v[0] + s * v[2], v[1], -s * v[0] + c * v[2]] : [c * v[0] - s * v[1], s * v[0] + c * v[1], v[2]]);
+  const out: Placed[] = [];
   for (let i = 0; i < 54; i++) {
     if (!use(i)) continue;
     const st = STICKERS[i];
-    const q = th ? axisRot(axis, th, st.pos) : st.pos;
-    const nn = th ? axisRot(axis, th, st.normal) : st.normal;
-    if (ctx.facing(q, nn) <= 0.02) continue;
-    if (x.n && dot(rotateT(ctx.pose.R, x.n), nn) < o.normalTol) continue;
-    const p = ctx.project(q);
-    if (!p) continue;
-    const d = Math.hypot(p[0] - x.c[0], p[1] - x.c[1]) / ctx.pitch;
-    if (d < bd) {
-      bd = d;
-      bs = i;
+    const n = rot(st.normal);
+    if (ctx.facing(rot(st.pos), n) <= 0.02) continue;
+    const ps: Pt[] = [];
+    for (const pt of pts[i]) {
+      const p = ctx.project(rot(pt));
+      if (p) ps.push(p);
+    }
+    if (ps.length) out.push({ i, n, pts: ps });
+  }
+  return out;
+}
+
+// マーカーの法線（キューブの座標。姿勢ごとに 1 回）
+const cubeNormal = (ctx: Ctx, x: Obs): Vec3 | null => (x.n ? rotateT(ctx.pose.R, x.n) : null);
+
+// 先に求めたマスのうち、マーカー x（法線 n はキューブの座標）に最も合うマスとずれ（マスの間隔に対する割合）
+function nearestIn(ctx: Ctx, placed: Placed[], x: Obs, n: Vec3 | null, o: TurnOptions): { s: number; d: number } {
+  let bd = Infinity;
+  let bs = -1;
+  for (const p of placed) {
+    if (n && dot(n, p.n) < o.normalTol) continue;
+    for (const q of p.pts) {
+      const d = Math.hypot(q[0] - x.c[0], q[1] - x.c[1]) / ctx.pitch;
+      if (d < bd) {
+        bd = d;
+        bs = p.i;
+      }
     }
   }
   return { s: bs, d: bd };
 }
 
 // マーカー x と 54 マスそれぞれ（回していない位置）のずれ（向きが合わない・見えないマスは Infinity）
-function distances(ctx: Ctx, x: Obs, o: TurnOptions): number[] {
-  const n = x.n ? rotateT(ctx.pose.R, x.n) : null;
-  return STICKERS.map((st) => {
-    if (ctx.facing(st.pos, st.normal) <= 0.02) return Infinity;
-    if (n && dot(n, st.normal) < o.normalTol) return Infinity;
-    const p = ctx.project(st.pos);
-    return p ? Math.hypot(p[0] - x.c[0], p[1] - x.c[1]) / ctx.pitch : Infinity;
-  });
+function distances(ctx: Ctx, placed: Placed[], x: Obs, n: Vec3 | null, o: TurnOptions): number[] {
+  const out = new Array<number>(54).fill(Infinity);
+  for (const p of placed) {
+    if (n && dot(n, p.n) < o.normalTol) continue;
+    let best = Infinity;
+    for (const q of p.pts) best = Math.min(best, Math.hypot(q[0] - x.c[0], q[1] - x.c[1]) / ctx.pitch);
+    out[p.i] = best;
+  }
+  return out;
 }
 
 interface Ctx {
@@ -176,7 +223,8 @@ function anchorPose(faces: VisibleFace[], obs: Obs[], size: { width: number; hei
   for (const p of [...sets.map(est), prev]) {
     const ctx = p && context(p, size, focal);
     if (!ctx) continue;
-    const inliers = obs.filter((x) => nearest(ctx, x, () => true, 0, 0, o).d < o.anchorTol).length;
+    const all = placeStickers(ctx, () => true, 0, 0, o);
+    const inliers = obs.filter((x) => nearestIn(ctx, all, x, cubeNormal(ctx, x), o).d < o.anchorTol).length;
     if (!best || inliers > best.inliers || (inliers === best.inliers && p.err < best.ctx.pose.err)) best = { ctx, inliers };
   }
   return best?.ctx ?? null;
@@ -189,7 +237,9 @@ export function recognizeTurn(markers: Marker[], faces: VisibleFace[], size: { w
   const ctx = anchorPose(faces, obs, size, focal, o, prev);
   if (!ctx) return { pose: null, turn: null, placed: [], unexplained: markers.length };
   // 回していないときの、各マーカーと各マスのずれ（仮説ごとに使い回す）
-  const still = obs.map((x) => distances(ctx, x, o));
+  const normals = obs.map((x) => cubeNormal(ctx, x));
+  const unturned = placeStickers(ctx, () => true, 0, 0, o);
+  const still = obs.map((x, k) => distances(ctx, unturned, x, normals[k], o));
   const rest = obs.filter((_, k) => Math.min(...still[k]) >= o.bodyTol).length;
   // 回していないマスより合いそうなマーカーが 2 枚なければ、回している層はない（止まっているフレームの大半はここで終わる）
   if (obs.filter((_, k) => Math.min(...still[k]) >= o.gain).length < 2) return { pose: ctx.pose, turn: null, placed: placeAll(ctx, obs, null, o), unexplained: rest };
@@ -197,13 +247,14 @@ export function recognizeTurn(markers: Marker[], faces: VisibleFace[], size: { w
   // すべてのマーカーを「回っていないマス」か「回ったマス」のどちらかで説明できるか（片方だけで照らすと、R の層と R・M の 2 層が同じ点になる）
   const score = (axis: number, layer: number, block: boolean, th: number) => {
     const use = (i: number) => (block ? STICKERS[i].pos[axis] * layer <= 0.1 : STICKERS[i].pos[axis] * layer >= 0.9);
+    const moved = placeStickers(ctx, use, axis, th, o);
     let cost = 0;
     let n = 0;
     let err = 0;
     obs.forEach((x, k) => {
       let ds = Infinity;
       for (let i = 0; i < 54; i++) if (!use(i) && still[k][i] < ds) ds = still[k][i];
-      const dm = nearest(ctx, x, use, axis, th, o).d;
+      const dm = nearestIn(ctx, moved, x, normals[k], o).d;
       if (dm < o.matchTol && dm < ds - o.gain) {
         n++;
         err += dm;
@@ -274,10 +325,13 @@ function bodyDiff(pose: Pose, axis: number, th: number, prev: Pose): number {
 // 各マーカーを、本体のマスか回している層のマス（turn の角度で回した位置）のうち合う方に置く
 function placeAll(ctx: Ctx, obs: Obs[], turn: TurnShape | null, o: TurnOptions): PlacedMarker[] {
   const out: PlacedMarker[] = [];
+  const inLayer = (i: number) => !!turn && STICKERS[i].pos[turn.axis] * turn.layer >= 0.9;
+  const body = placeStickers(ctx, (i) => !inLayer(i), 0, 0, o);
+  const layer = turn ? placeStickers(ctx, inLayer, turn.axis, turn.angle, o) : [];
   for (const x of obs) {
-    const inLayer = (i: number) => !!turn && STICKERS[i].pos[turn.axis] * turn.layer >= 0.9;
-    const b = nearest(ctx, x, (i) => !inLayer(i), 0, 0, o);
-    const l = turn ? nearest(ctx, x, inLayer, turn.axis, turn.angle, o) : { s: -1, d: Infinity };
+    const n = cubeNormal(ctx, x);
+    const b = nearestIn(ctx, body, x, n, o);
+    const l = turn ? nearestIn(ctx, layer, x, n, o) : { s: -1, d: Infinity };
     if (b.d < o.bodyTol && b.d <= l.d) out.push({ id: x.m.id, center: STICKERS[b.s].pos, normal: STICKERS[b.s].normal, layer: false, err: b.d });
     else if (turn && l.d < o.matchTol) out.push({ id: x.m.id, center: axisRot(turn.axis, turn.angle, STICKERS[l.s].pos), normal: axisRot(turn.axis, turn.angle, STICKERS[l.s].normal), layer: true, err: l.d });
   }

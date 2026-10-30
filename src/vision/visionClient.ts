@@ -2,11 +2,10 @@
 import type { EngineOptions, TrackUpdate } from "../track/engine";
 import type { DecodedMove } from "../track/types";
 import type { Lab } from "./color";
-import type { Pt } from "./homography";
 import type { PipelineConfig } from "./pipeline";
 import type { FrameMessage, FromWorker, StreamPartial, ToWorker, VideoRefineOptions } from "./protocol";
 import type { Recording } from "./recorder";
-import type { HandSample, RefineInput, RefineResult } from "./refine";
+import type { RefineInput, RefineResult } from "./refine";
 import type { VideoFileInfo } from "./videoFile";
 
 export class VisionClient {
@@ -20,7 +19,7 @@ export class VisionClient {
   readonly ready: Promise<{ opencv: boolean; ms: number }>;
   isReady = false;
   opencv = false;
-  workWidth = 800;
+  workWidth = 1280;
   procFps = 0;
   lastProcMs = 0;
   lastError: string | null = null;
@@ -100,14 +99,6 @@ export class VisionClient {
 
   setConfig(config: Partial<PipelineConfig>): void {
     this.post({ type: "config", config });
-  }
-
-  setHands(hands: Pt[][]): void {
-    this.post({ type: "hands", hands });
-  }
-
-  setRefs(refs: Lab[] | null): void {
-    this.post({ type: "refs", refs });
   }
 
   startTracking(state: ArrayLike<number>, refs: Lab[], options: Partial<EngineOptions>, orients?: number[]): void {
@@ -252,8 +243,8 @@ export class RefineClient {
     return id;
   }
 
-  feed(id: number, recording: Recording, hands: HandSample[], input?: RefineInput): void {
-    this.worker?.postMessage({ type: "stream-feed", id, input, recording, hands } satisfies ToWorker);
+  feed(id: number, recording: Recording, input?: RefineInput): void {
+    this.worker?.postMessage({ type: "stream-feed", id, input, recording } satisfies ToWorker);
   }
 
   // 終わりの時刻と状態（完成なら solved）を渡し、全体の結果をもらう

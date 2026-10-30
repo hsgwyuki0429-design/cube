@@ -8,7 +8,7 @@ import { ARUCO_REFS, PRINT_COLORS } from "../src/aruco/palette";
 import { VIEW, type Vec3, parseMoves } from "../src/cube/model";
 import { applyH } from "../src/vision/homography";
 import { processAruco } from "../src/vision/arucoFrame";
-import { type CV, initOpenCv } from "../src/vision/quads";
+import { type CV, initOpenCv } from "../src/vision/image";
 import { applyMoveStickers, renderArucoCube, solvedStickers, stickerAt } from "./arucoCube";
 
 let cv: CV;

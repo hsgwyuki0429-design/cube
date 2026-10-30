@@ -3,7 +3,7 @@
 // 前回の観測と違うときだけ観測としてデコーダへ渡す。高速回転では層がそろう瞬間が短いので、時間は短めにする。
 import type { Lab } from "../vision/color";
 import type { ColorModel } from "./colorModel";
-import type { FaceObservation, Observation } from "./types";
+import type { FaceObservation, Observation, TurnSnapshot } from "./types";
 
 export interface FaceReading {
   slot: number;
@@ -19,6 +19,7 @@ export interface FaceReading {
 export interface FrameReading {
   t: number;
   faces: FaceReading[];
+  turn?: TurnSnapshot; // 回転途中の形で見えた層の回転（src/aruco/turn.ts）
 }
 
 export interface ObserverOptions {

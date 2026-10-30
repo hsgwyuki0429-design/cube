@@ -1,7 +1,6 @@
 import { useEffect } from "preact/hooks";
 import { controller } from "../app/controller";
 import { DEFAULT_SETTINGS, type Settings, settingsStore, updateSettings } from "../app/settings";
-import { clearCalibration } from "../app/storage";
 import { useStore } from "../app/store";
 import { FrameRecorder } from "../vision/recorder";
 
@@ -52,8 +51,6 @@ function NumberInput<K extends keyof Settings>(props: { k: K; min: number; max: 
 
 export function SettingsPage() {
   const cameras = useStore(controller.store, (s) => s.cameras);
-  const cal = useStore(controller.store, (s) => s.calibration);
-  const hands = useStore(controller.store, (s) => s.hands);
   const info = useStore(controller.store, (s) => s.cameraInfo);
   useEffect(() => {
     controller.refreshCameras();
@@ -91,9 +88,6 @@ export function SettingsPage() {
       <div class="card" style={{ marginTop: 16 }}>
         <div class="card-head">キューブと表示</div>
         <div class="card-body form">
-          <Field label="配色" desc="標準（白の反対が黄、緑の反対が青、赤の反対が橙）ならスキャンの順番を間違えても自動で直せます">
-            <Select k="scheme" options={[["standard", "標準配色（白上・緑前・赤右）"], ["other", "その他の配色（スキャン手順どおり）"]]} />
-          </Field>
           <Field label="手順の表記" desc="持ち方基準: 今の持ち方で見た R/U など。センター色基準: 白=U、緑=F のように色で固定（スマートキューブと同じ）">
             <Select k="notation" options={[["relative", "持ち方基準"], ["absolute", "センター色基準"]]} />
           </Field>
@@ -127,18 +121,18 @@ export function SettingsPage() {
         <div class="card-body form">
           <Field
             label="ステッカー"
-            desc="ArUco マーカー: 各ステッカーに色付きの ArUco マーカーを貼ったキューブ。色を読まずにマーカーの ID でステッカーを判定します（照明・色の取り違えに強い）。スキャンなしで「揃った状態から開始」できます。切り替えると追跡をやめます"
+            desc="各ステッカーに貼った色付きの ArUco マーカーの種類（印刷用 PDF は docs/stickers/）。色を読まずにマーカーの ID でステッカーを判定するので、揃ったキューブならスキャンなしで始められます。切り替えると追跡をやめます"
           >
-            <Select k="stickers" options={[["color", "普通の色"], ["unique54", "ArUco マーカー（54 種類・3×3・マスごとに違う）"], ["aruco12", "ArUco マーカー（12 種類・3×3）"], ["aruco", "ArUco マーカー（54 種類・4×4・最初に印刷した版）"]]} />
+            <Select k="stickers" options={[["unique54", "54 種類・3×3・マスごとに違う（推奨）"], ["aruco12", "12 種類・3×3"], ["aruco", "54 種類・4×4・最初に印刷した版"]]} />
           </Field>
-          <Field label="面の検出" desc="自動: 画面のどこにあっても面を探します。ガイド枠: 画面中央の枠に面を合わせる（暗い場所や検出が不安定なとき）。ArUco マーカーでは使いません">
-            <Select k="detection" options={[["auto", "自動（推奨）"], ["guide", "ガイド枠"]]} />
+          <Field
+            label="マーカーの配置"
+            desc="ステッカーの中のマーカーの並べ方（54 種類・マスごとに違う符号のとき）。4 個・幅 1/2 は指で一部が隠れても読めることが多い代わりに、手ぶれ・回す速さのぶれに弱くなります。印刷用 PDF は docs/stickers/"
+          >
+            <Select k="stickerDesign" options={[["standard", "1 個（いっぱいの大きさ）"], ["quad-half", "4 個・幅 1/2"]]} />
           </Field>
-          <Field label="手の検出" desc={`指で隠れたステッカーを読まないようにします（MediaPipe）。状態: ${hands === "ready" ? "動作中" : hands === "loading" ? "読み込み中" : hands === "error" ? "使えません" : "オフ"}`}>
-            <Toggle k="handMask" />
-          </Field>
-          <Field label="処理の解像度（長辺 px）" desc="映像の長辺をこの大きさに縮めて認識・精密解析します。大きいほど小さく映ったキューブも検出できますが重くなります">
-            <NumberInput k="workWidth" min={480} max={1280} step={80} />
+          <Field label="処理の解像度（長辺 px）" desc="映像の長辺をこの大きさに縮めて認識・精密解析します。大きいほど小さく映ったマーカーも読めますが重くなります">
+            <NumberInput k="workWidth" min={960} max={1920} step={160} />
           </Field>
           <Field label="安定判定の時間（ms）" desc="層がそろって見える時間がこれ以上あれば読み取ります。短いほど速い回転に追従しますが、誤読が増えます（30fpsのカメラでは33で1フレーム）">
             <NumberInput k="stableMs" min={15} max={120} step={1} />
@@ -152,33 +146,19 @@ export function SettingsPage() {
           <Field label="持ち替えのコスト" desc="大きいほど「持ち替え」より「回した」と解釈しやすくなります">
             <NumberInput k="rotationCost" min={0.5} max={4} step={0.25} />
           </Field>
-          <Field label="色の許容距離" desc="キャリブレーションした色からこれ以上離れた色は「不明」として無視します">
-            <NumberInput k="maxColorDistance" min={18} max={50} step={2} />
-          </Field>
-          <Field label="デバッグ表示" desc="検出した四角形・処理時間・手のマスクを映像に重ねます">
+          <Field label="デバッグ表示" desc="検出したマーカーの四角形と処理時間を映像に重ねます">
             <Toggle k="debug" />
           </Field>
           <div class="btn-row">
             <button
               class="btn small"
               onClick={() => {
-                const { detection, handMask, workWidth, stableMs, maxMovesPerStep, beamWidth, rotationCost, maxColorDistance, debug } = DEFAULT_SETTINGS;
-                settingsStore.set({ detection, handMask, workWidth, stableMs, maxMovesPerStep, beamWidth, rotationCost, maxColorDistance, debug });
+                const { workWidth, stableMs, maxMovesPerStep, beamWidth, rotationCost, debug } = DEFAULT_SETTINGS;
+                settingsStore.set({ workWidth, stableMs, maxMovesPerStep, beamWidth, rotationCost, debug });
               }}
             >
               認識設定を初期値に戻す
             </button>
-            {cal && (
-              <button
-                class="btn small danger"
-                onClick={() => {
-                  clearCalibration();
-                  controller.store.set({ calibration: null });
-                }}
-              >
-                保存した色（キャリブレーション）を消す
-              </button>
-            )}
           </div>
         </div>
       </div>

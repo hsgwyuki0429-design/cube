@@ -3,6 +3,7 @@
 // 正解の手順（truth）を持っているので、追跡結果と比較できる。
 import * as THREE from "three";
 import { type StickerScheme, idForFacelet, markerBits, markerSize } from "../aruco/codes";
+import { STANDARD_DESIGN, type StickerDesign, designOf } from "../aruco/design";
 import { PRINT_COLORS } from "../aruco/palette";
 import { FACE_TURN, NORMAL, ORIENTATIONS, ROWDIR, type CubeState, applyMove, cubeFaceAt, faceletAt, moveAmount, moveFace, solvedState, F, U } from "../cube/model";
 
@@ -31,13 +32,14 @@ export interface SyntheticOptions {
   fps?: number;
   hands?: boolean; // 回転中に指（肌色の物体）が一部を隠す
   wobble?: boolean;
-  aruco?: StickerScheme | null; // 各ステッカーに色付き ArUco マーカーを描く（符号の種類。src/aruco/codes.ts）
+  aruco?: StickerScheme; // 各ステッカーに描く色付き ArUco マーカーの符号の種類（src/aruco/codes.ts）
+  design?: string; // ステッカーの中のマーカーの配置（src/aruco/design.ts の key）
 }
 
-// ArUco ステッカー: 外側に辺の 8% の色の余白、マーカーの白いセルをステッカーの色に置き換える（印刷した PDF と同じ）。
-// マーカーの上辺はその面の「上」（行 0 の側 = -ROWDIR）
-function arucoSticker(geom: THREE.PlaneGeometry, scheme: StickerScheme, facelet: number, face: number): THREE.Mesh {
-  const N = 100;
+// ArUco ステッカー: マーカーの白いセルをステッカーの色に置き換える（印刷した PDF と同じ）。マーカーの配置は design
+// （今の配置は外側に辺の 8% の色の余白・その内側いっぱいに 1 個）。マーカーの上辺はその面の「上」（行 0 の側 = -ROWDIR）
+function arucoSticker(geom: THREE.PlaneGeometry, scheme: StickerScheme, facelet: number, face: number, design: StickerDesign): THREE.Mesh {
+  const N = 200;
   const canvas = document.createElement("canvas");
   canvas.width = canvas.height = N;
   const ctx = canvas.getContext("2d")!;
@@ -47,10 +49,13 @@ function arucoSticker(geom: THREE.PlaneGeometry, scheme: StickerScheme, facelet:
   ctx.fillRect(0, 0, N, N);
   const bits = markerBits(scheme, idForFacelet(scheme, facelet));
   const k = markerSize(scheme) + 2;
-  const m = N * 0.08;
-  const cell = (N - 2 * m) / k;
+  const cell = (N * design.side) / k;
   ctx.fillStyle = "#151515";
-  for (let r = 0; r < k; r++) for (let c = 0; c < k; c++) if (!bits[r * k + c]) ctx.fillRect(m + c * cell, m + r * cell, cell + 0.5, cell + 0.5);
+  for (const [cx, cy] of design.at) {
+    const x0 = N * (cx - design.side / 2);
+    const y0 = N * (cy - design.side / 2);
+    for (let r = 0; r < k; r++) for (let c = 0; c < k; c++) if (!bits[r * k + c]) ctx.fillRect(x0 + c * cell, y0 + r * cell, cell + 0.5, cell + 0.5);
+  }
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 4;
@@ -92,7 +97,7 @@ export class SyntheticCube {
   busy = false;
 
   constructor(options: SyntheticOptions = {}) {
-    this.opts = { width: 960, height: 540, fps: 30, hands: true, wobble: true, aruco: null, ...options };
+    this.opts = { width: 960, height: 540, fps: 30, hands: true, wobble: true, aruco: "unique54", design: STANDARD_DESIGN.key, ...options };
     this.canvas = document.createElement("canvas");
     this.canvas.width = this.opts.width;
     this.canvas.height = this.opts.height;
@@ -120,7 +125,6 @@ export class SyntheticCube {
     const body = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.6 });
     const box = new THREE.BoxGeometry(0.98, 0.98, 0.98);
     const sticker = new THREE.PlaneGeometry(0.84, 0.84);
-    const mats = COLORS.map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.45 }));
     for (let x = -1; x <= 1; x++)
       for (let y = -1; y <= 1; y++)
         for (let z = -1; z <= 1; z++) {
@@ -129,14 +133,7 @@ export class SyntheticCube {
           obj.add(new THREE.Mesh(box, body));
           NORMAL.forEach((n, f) => {
             if (n[0] * x + n[1] * y + n[2] * z !== 1) return;
-            if (this.opts.aruco) {
-              obj.add(arucoSticker(sticker, this.opts.aruco, faceletAt([x, y, z], n), f));
-              return;
-            }
-            const s = new THREE.Mesh(sticker, mats[f]);
-            s.position.set(n[0] * 0.491, n[1] * 0.491, n[2] * 0.491);
-            s.lookAt(n[0] * 2, n[1] * 2, n[2] * 2);
-            obj.add(s);
+            obj.add(arucoSticker(sticker, this.opts.aruco, faceletAt([x, y, z], n), f, designOf(this.opts.design)));
           });
           obj.position.set(x, y, z);
           this.group.add(obj);

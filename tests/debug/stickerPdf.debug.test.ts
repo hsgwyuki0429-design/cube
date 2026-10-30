@@ -9,7 +9,7 @@ import { join } from "node:path";
 import { beforeAll, expect, it } from "vitest";
 import { colorConsistent } from "../../src/aruco/cube";
 import { ArucoBench, DEFAULT_CONFIGS } from "../../src/aruco/detect";
-import { type CV, initOpenCv } from "../../src/vision/quads";
+import { type CV, initOpenCv } from "../../src/vision/image";
 
 let cv: CV;
 beforeAll(async () => {

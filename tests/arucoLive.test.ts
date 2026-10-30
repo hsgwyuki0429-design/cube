@@ -9,7 +9,7 @@ import { CERTAIN, TrackerEngine, doubtfulCells } from "../src/track/engine";
 import { ARUCO_OBSERVER } from "../src/track/observer";
 import { simplifyMoves } from "../src/track/merge";
 import { DEFAULT_PIPELINE, processFrame } from "../src/vision/pipeline";
-import { type CV, initOpenCv } from "../src/vision/quads";
+import { type CV, initOpenCv } from "../src/vision/image";
 import { Refiner } from "../src/vision/refine";
 import { applyMoveStickers, renderArucoCube, solvedStickers, stickerAt } from "./arucoCube";
 
@@ -27,7 +27,7 @@ describe("ArUco の認識（本体の経路）", () => {
     let st = solvedStickers();
     for (const m of parseMoves("R U F'")) st = applyMoveStickers(st, m);
     const img = renderArucoCube(cv, { ...SIZE, stickers: st, orient: 0, eye: EYE, noise: 2 });
-    const r = processFrame(cv, img, 0, PIPELINE, { last: null }, ARUCO_REFS);
+    const r = processFrame(cv, img, 0, PIPELINE, {});
     expect(r.faces[0].slot).toBe(2);
     const at = stickerAt(st);
     for (const f of r.faces) {
@@ -63,9 +63,9 @@ describe("30fps のカメラで回す（揃った状態から）", () => {
       const turning = done < truth.length && t >= s;
       const fr = turning ? (t - s) / turnMs : 0;
       const img = renderArucoCube(cv, { ...SIZE, stickers: st, orient: 0, eye: [EYE[0] + 0.1 * Math.sin(t / 300), EYE[1], EYE[2]], turn: turning ? { move: truth[done], fraction: fr, spread: 0.15 } : undefined, noise: 2, seed: Math.round(t) + 1, scheme });
-      const r = processFrame(cv, img, t, pipeline, memory, engine.colors.refs);
-      engine.push({ t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, ids: f.ids })) });
-      refiner?.push(img, t, []);
+      const r = processFrame(cv, img, t, pipeline, memory);
+      engine.push({ t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, ids: f.ids })), turn: r.turn });
+      refiner?.push(img, t);
     }
     return { engine, refiner, truth };
   }
@@ -112,8 +112,8 @@ describe("正面だけが見えているとき（読んだステッカーの ID�
       const turning = t >= 330 && t < 500;
       const eye: Vec3 = t < 800 ? [0.01, 0.02, 7.5] : [0.01, 4.5, 6.2];
       const img = renderArucoCube(cv, { ...SIZE, stickers: st, orient: 0, eye, turn: turning ? { move, fraction: (t - 330) / 170, spread: 0.15 } : undefined, noise: 2, seed: Math.round(t) + 1, scheme });
-      const r = processFrame(cv, img, t, pipeline, memory, engine.colors.refs);
-      engine.push({ t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, ids: f.ids })) });
+      const r = processFrame(cv, img, t, pipeline, memory);
+      engine.push({ t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, ids: f.ids })), turn: r.turn });
     }
     return { engine, front: front! };
   }
