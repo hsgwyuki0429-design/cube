@@ -18,6 +18,7 @@ export interface VisibleFace {
   slot: number; // カメラフレームの面（0 上 / 1 右 / 2 正面 / 3 下 / 4 左）
   colors: number[]; // 9 セル（row*3+col、行 = 画像の下向き・列 = 右向き）のステッカーの色（センターの面 0〜5）。-1 = 見えない
   ids: number[]; // 同じ並びのステッカー（揃った状態での facelet 番号）。54 種類の符号のときだけ。分からなければ -1
+  conf: number[]; // 同じ並びの、読みの確からしさ（0〜1。マーカーのマスの中心の明暗が符号どおりの割合 fit から: readConfidence）
   outline: Pt[]; // 3×3 の外枠（画像座標、左上から時計回り）
   H: Mat3; // 面の座標（x = 列・y = 行、0〜3）→ 画像。本体の認識の DetectedFace（rot = 0）と同じ
   partial?: boolean; // 1 列（1×3・1×2）か 1 枚だけの面（外枠は推定。3D の傾きの計算には使わない）
@@ -440,7 +441,10 @@ function layout(face: NonNullable<ReturnType<typeof toFace>>, slot: number, E: n
       const [ci, cj] = k.split(",").map(Number);
       return cells.filter((c) => Math.abs(c.i - ci) <= 1 && Math.abs(c.j - cj) <= 1).length;
     };
-    const key = [...count.keys()].sort((a, b) => count.get(b)! - count.get(a)! || inside(b) - inside(a))[0];
+    const ranked = [...count.keys()].sort((a, b) => count.get(b)! - count.get(a)! || inside(b) - inside(a));
+    const key = ranked[0];
+    // 票も広がりも同じ候補が 2 つ（読み違いと本物が 1 枚ずつなど）なら、どちらが真ん中か決められないので面にしない（決めつけない）
+    if (ranked.length > 1 && count.get(ranked[1]) === count.get(key) && inside(ranked[1]) === inside(key)) return null;
     voted = key.split(",").map(Number) as [number, number];
     const bad = new Set(votes.filter((v) => `${v.at[0]},${v.at[1]}` !== key).map((v) => v.c));
     cells = cells.filter((c) => !bad.has(c));
@@ -465,6 +469,7 @@ function layout(face: NonNullable<ReturnType<typeof toFace>>, slot: number, E: n
   }
   const ids = new Array(9).fill(-1);
   const colors = new Array(9).fill(-1);
+  const conf = new Array(9).fill(1);
   for (const x of rc) {
     const r = x.rc[0] + dr;
     const c = x.rc[1] + dc;
@@ -473,6 +478,7 @@ function layout(face: NonNullable<ReturnType<typeof toFace>>, slot: number, E: n
     // センターの符号が真ん中以外にある（同じ色のセンターとそれ以外の取り違え）なら、色は同じなのでそのまま使う
     colors[r * 3 + c] = dec.face;
     ids[r * 3 + c] = dec.sticker;
+    conf[r * 3 + c] = readConfidence(x.c.m.fit);
   }
   // セルの角（r, c は 0.5 刻み）の画像座標
   const corner = (r: number, c: number): Pt => {
@@ -490,7 +496,14 @@ function layout(face: NonNullable<ReturnType<typeof toFace>>, slot: number, E: n
     outline,
   );
   if (!H) return null;
-  return { colors, ids, outline, H };
+  return { colors, ids, conf, outline, H };
+}
+
+// 読みの確からしさ: マスの中心の明暗が符号どおりの割合（fit）から。合成画像（54 種類・指・ぶれ・180 場面）で、誤読 22 枚のうち
+// 20 枚が fit 0.95 未満、正しい読み 1,859 枚の 93% が 0.95 以上だった（fit 0.85〜0.9 の誤読は 28%・0.9〜0.95 は 10%・それ以上 0.1%）。
+// 確からしさの低い読みは観測のコストを下げ、1 枚の誤読で手を足さないようにする（決めつけない）
+export function readConfidence(fit: number): number {
+  return fit < 0.9 ? 0.4 : fit < 0.95 ? 0.7 : 1;
 }
 
 // 1 枚だけの面の格子の間隔（マーカーの辺に対する比）: 同じフレームの 3×3 の面がなければ、18mm のステッカーを 19mm 間隔で貼ったとき
@@ -517,25 +530,35 @@ export interface CubeFrame {
 }
 
 const MISMATCH = 1.5; // 1 枚の矛盾のコスト（色の観測と同じ。src/track/colorModel.ts）
+const ID_MISMATCH = 1.0; // 色は合うのに別のステッカー（src/track/observer.ts の idMismatchCost と同じ）
 
-// 1 フレームの読み: カメラフレームの面ごとの 9 セルの色（-1 = 読めない）。3 マス以上読めた面だけ
-type Reading = Map<number, Int8Array>;
+// 1 フレームの読み: カメラフレームの面ごとの 9 セルの色（-1 = 読めない）と、読んだステッカー（54 種類の符号のとき。-1 = 不明）。
+// 3 マス以上読めた面だけ
+interface Cells {
+  c: Int8Array;
+  id: Int16Array;
+  w: Float32Array; // 読みの確からしさ（合わせたフレームのうち最大）
+}
+type Reading = Map<number, Cells>;
 
 function readingOf(faces: VisibleFace[]): Reading {
   const r: Reading = new Map();
   for (const f of faces) {
     if (f.colors.filter((c) => c >= 0).length < 3) continue;
-    r.set(f.slot, Int8Array.from(f.colors));
+    r.set(f.slot, { c: Int8Array.from(f.colors), id: Int16Array.from(f.ids), w: Float32Array.from(f.conf) });
   }
   return r;
 }
 
-// 両方で読めたセルの色が食い違うか
+// 両方で読めたセルの色（かステッカー）が食い違うか。同じ色の別のステッカーは、色だけでは見えない手が起きたしるし
 function conflicts(a: Reading, b: Reading): boolean {
   for (const [slot, x] of a) {
     const y = b.get(slot);
     if (!y) continue;
-    for (let c = 0; c < 9; c++) if (x[c] >= 0 && y[c] >= 0 && x[c] !== y[c]) return true;
+    for (let c = 0; c < 9; c++) {
+      if (x.c[c] >= 0 && y.c[c] >= 0 && x.c[c] !== y.c[c]) return true;
+      if (x.id[c] >= 0 && y.id[c] >= 0 && x.id[c] !== y.id[c]) return true;
+    }
   }
   return false;
 }
@@ -545,7 +568,7 @@ function newCells(a: Reading, ref: Reading): number {
   let n = 0;
   for (const [slot, x] of a) {
     const y = ref.get(slot);
-    for (let c = 0; c < 9; c++) if (x[c] >= 0 && (!y || y[c] < 0)) n++;
+    for (let c = 0; c < 9; c++) if (x.c[c] >= 0 && (!y || y.c[c] < 0)) n++;
   }
   return n;
 }
@@ -553,12 +576,17 @@ function newCells(a: Reading, ref: Reading): number {
 function mergeInto(into: Reading, b: Reading): void {
   for (const [slot, y] of b) {
     const x = into.get(slot);
-    if (!x) into.set(slot, Int8Array.from(y));
-    else for (let c = 0; c < 9; c++) if (x[c] < 0) x[c] = y[c];
+    if (!x) into.set(slot, { c: Int8Array.from(y.c), id: Int16Array.from(y.id), w: Float32Array.from(y.w) });
+    else
+      for (let c = 0; c < 9; c++) {
+        if (x.c[c] < 0) x.c[c] = y.c[c];
+        if (x.id[c] < 0) x.id[c] = y.id[c];
+        if (y.c[c] >= 0) x.w[c] = Math.max(x.w[c], y.w[c]);
+      }
   }
 }
 
-const cloneReading = (r: Reading): Reading => new Map([...r].map(([k, v]) => [k, Int8Array.from(v)]));
+const cloneReading = (r: Reading): Reading => new Map([...r].map(([k, v]) => [k, { c: Int8Array.from(v.c), id: Int16Array.from(v.id), w: Float32Array.from(v.w) }]));
 
 // 見え方が stableFrames 枚続いたら観測を出す。斜めの面の小さいマーカーはフレームごとに読めたり読めなかったりするので、
 // まったく同じ読みが続くことは求めない: 読めたセルどうしが食い違わないフレームは同じ見え方として読みを合わせる。
@@ -579,14 +607,18 @@ export function buildObservations(frames: CubeFrame[], stableFrames = 3): Observ
     if (run.done || run.count < stableFrames) continue;
     run.done = true;
     if (last && !conflicts(run.reading, last) && newCells(run.reading, last) < 3) continue;
-    const faces: FaceObservation[] = [...run.reading].map(([slot, colors]) => {
+    const faces: FaceObservation[] = [...run.reading].map(([slot, { c: colors, id, w }]) => {
       const cost = new Float32Array(54);
       const labels = Int8Array.from(colors);
+      // 確からしさの低い読み（readConfidence）はコストを下げる
       colors.forEach((color, cell) => {
         if (color < 0) return;
-        for (let c = 0; c < 6; c++) cost[cell * 6 + c] = c === color ? 0 : MISMATCH;
+        for (let c = 0; c < 6; c++) cost[cell * 6 + c] = c === color ? 0 : MISMATCH * w[cell];
       });
-      return { slot, cost, labels };
+      // 読んだステッカー（色が合うものだけ）。同じ色の別のステッカーのコストは 1 手と同じ
+      const ids = Int16Array.from(id, (v, cell) => (v >= 0 && Math.floor(v / 9) === colors[cell] ? v : -1));
+      if (!ids.some((v) => v >= 0)) return { slot, cost, labels };
+      return { slot, cost, labels, ids, idCost: Float32Array.from(w, (x) => ID_MISMATCH * x) };
     });
     const t0 = frames[run.start].t;
     out.push({ t: t0, tPrevEnd: Math.min(lastSeen, t0), faces: faces.sort((a, b) => a.slot - b.slot) });

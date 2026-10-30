@@ -28,6 +28,11 @@ unique54 は符号の空きが少ないので、色はフレームの中で比�
 ArUco で動く: `processFrame` の入口で分岐し（`PipelineConfig.stickers`、`src/vision/arucoFrame.ts`）、マーカーから組み立てた面の
 各セルを代表色（`src/aruco/palette.ts`）の Lab にして同じ `FrameResult` で返す。代表色が固定なのでスキャンなしで揃った状態から始められる。
 デモ・E2E は `?stickers=unique54`・`E2E_STICKERS=unique54`（`aruco12`・4×4 の 54 種類は `aruco`）。
+54 種類は読んだ ID もデコーダで照合する（`FaceObservation.ids`。仮説の状態から各マスのステッカーを `src/cube/stickers.ts` で求め、
+色は合うのに別のステッカーなら 1 手と同じコスト）。読みの確からしさ（マーカーの fit: `readConfidence`）でコストを下げ、面の真ん中が
+決まらない面は作らない。組み立てた面の読めなかったマスは切り出して読み直す（再認識、`src/aruco/reread.ts`。追跡が未確定・推定と
+みるマス = `focusCells` から先に、ライブ 4 マス・精密解析は全部）。追跡はマスごとの確からしさ（`TrackerEngine.cellBelief`: 有力な仮説の
+一致・最後に見た時刻・最後に動かした時刻）を `TrackUpdate.cells` で出す。
 ステッカーの中のマーカーの配置（大きさ・4 個・暗いマスの色）の候補は `src/aruco/design.ts`。指で隠れたときの比較は
 `tests/debug/stickerDesign.debug.test.ts`（4 個・幅 1/2 が指に強く、今の大きさがぶれに強い。どれを使うかはユーザーが実物で決める。
 本体の認識はまだ今の配置だけ）。候補の印刷用 PDF は `docs/stickers/cubevision_unique54_designs.pdf`。キューブモードの 3D は実際の速さと間で動く（`turnTimes`・`src/aruco/timeline.ts`）。本体の「ArUco」の画面（`src/aruco/`、入口は `src/ui/ArucoScreen.tsx`。初めて開いたときに

@@ -160,7 +160,7 @@ export class Refiner {
     if (t < this.input.from || t > this.input.to) return;
     const run = this.input.tracked ? processTracked : processFrame;
     const r = run(this.cv, img, t, this.config, this.memory, this.engine.colors.refs, hands ?? this.handsAt(t, img.width, img.height));
-    const reading = { t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, alts: f.alts })) };
+    const reading = { t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, alts: f.alts, ids: f.ids })) };
     this.engine.push(reading);
     this.looks.push({ t, solved: reading.faces.length > 0 && this.engine.looksSolved(reading) });
     this.patches.push({ t, faces: r.faces.map((f) => facePatch(img, { ...f, labs: f.labs })) });

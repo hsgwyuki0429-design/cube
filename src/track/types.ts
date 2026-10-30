@@ -10,6 +10,10 @@ export interface FaceObservation {
   cost: Float32Array;
   labels: Int8Array; // 9 セルの最尤色（-1 = 不明）
   alts?: Float32Array[]; // 窓の位置をずらした読みのコスト（どれか 1 つが正しい。デコーダは最も合うものを使う）
+  // マスごとに違う ArUco ステッカー: 9 セルで読んだステッカー（揃った状態での facelet 番号、-1 = 不明）と、
+  // 色は合うのに別のステッカーだったときのペナルティ。同じ色のどのステッカーかまで照らす（src/cube/stickers.ts）
+  ids?: Int16Array;
+  idCost?: Float32Array;
 }
 
 export interface Observation {
