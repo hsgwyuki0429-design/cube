@@ -8,7 +8,7 @@
 import { rgbToLab } from "../vision/color";
 import { skinLike } from "../track/colorModel";
 import { type Mat3, applyH } from "../vision/homography";
-import type { VisibleFace } from "./cube";
+import { type VisibleFace, cellH } from "./cube";
 import { STANDARD_DESIGN, type StickerDesign } from "./design";
 import type { ImageLike } from "./detect";
 
@@ -167,8 +167,9 @@ export function fillByColor(img: ImageLike, faces: VisibleFace[], refs: (Chroma 
   for (const f of faces) {
     if (f.partial || !f.marker) continue;
     for (let cell = 0; cell < 9; cell++) {
-      if (f.colors[cell] >= 0) continue;
-      const c = ringClass(img, f.H, cell, f.marker, refs, ring, o);
+      // 回している途中の層のマスは補わない（傾いて動いている面で、縁の位置が確かでない）
+      if (f.colors[cell] >= 0 || f.layer?.cells.includes(cell)) continue;
+      const c = ringClass(img, cellH(f, cell), cell, f.marker, refs, ring, o);
       if (c < 0) continue;
       f.colors[cell] = c;
       f.conf[cell] = COLOR_CONF;

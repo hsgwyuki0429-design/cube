@@ -1,17 +1,15 @@
 // 動画の上に、解析したフレームの検出結果を重ねる。動画の表示時刻にいちばん近い解析フレームを使う。
 // テストモード: マーカーごとの読めた・読めない。キューブモード: 組み立てた面と推定した手
-import { useEffect, useMemo, useRef, useState } from "preact/hooks";
-import { MOVE_NAMES, VIEW, applyMoves, solvedState } from "../cube/model";
-import { stickerIdAt } from "../cube/stickers";
-import { lastMoved } from "../track/engine";
-import { RingLegend, RingView } from "../ui/RingView";
-import { PRINT_COLORS } from "./palette";
+import { useEffect, useRef, useState } from "preact/hooks";
+import { MOVE_NAMES } from "../cube/model";
+import { applyH } from "../vision/homography";
+import { estimatePose } from "../vision/pose";
 import { TimedCube3D } from "./timedCube";
 import type { CubeFrame, CubeResult, VisibleFace } from "./cube";
 import { FaceNet, SLOT_NAMES, heldName } from "./cubePanel";
 import type { VideoInfo } from "./protocol";
 import type { FrameRecord, Summary } from "./stats";
-import { type StickerScheme, decode, hasIdentity } from "./codes";
+import { type StickerScheme, decode } from "./codes";
 import { markerLabel } from "./stickers";
 
 export interface ViewerProps {
@@ -132,6 +130,16 @@ export function Viewer({ url, frames, info, timeScale, configNames, scheme, summ
         ctx.closePath();
         ctx.stroke();
         label(SLOT_NAMES[face.slot], p[0][0] + 16, p[0][1] - 10, "rgba(160,30,180,0.85)");
+        // 回している途中の層（外側の 1 列）は別の格子（橙）
+        if (face.layer) {
+          const [x0, y0, x1, y1] = face.layer.rect;
+          const q = ([[x0, y0], [x1, y0], [x1, y1], [x0, y1]] as [number, number][]).map(([u, v]) => P(...applyH(face.layer!.H, u, v)));
+          ctx.strokeStyle = "#ffa000";
+          ctx.beginPath();
+          q.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
+          ctx.closePath();
+          ctx.stroke();
+        }
       }
       const markers = f.results[config]?.markers ?? [];
       const assign = summary?.slotOf[config]?.[index];
@@ -232,31 +240,8 @@ export function Viewer({ url, frames, info, timeScale, configNames, scheme, summ
   };
   const doneMoves = moves.filter((m) => m.t <= nowReal);
   const turning = moves.find((m) => (m.t0 ?? m.t) <= nowReal && nowReal < m.t);
-  // 円環図: いまの時刻までの手を回した状態。54 種類は、ステッカーごとに組み立てた面で読めた時刻から「見えた / 推定」を出す
-  const seenTimes = useMemo(() => {
-    if (!cube || !hasIdentity(scheme)) return null;
-    const out: number[][] = Array.from({ length: 54 }, () => []);
-    cube.faces.forEach((fs, i) => {
-      for (const f of fs) for (const id of f.ids) if (id >= 0) out[id].push((frames[i]?.t ?? 0) * timeScale);
-    });
-    return out;
-  }, [cube, frames, scheme, timeScale]);
-  const ring = useMemo(() => {
-    if (!cube) return null;
-    const state = applyMoves(solvedState(), doneMoves.map((m) => m.move));
-    const orient = (turning ?? doneMoves[doneMoves.length - 1] ?? moves[0])?.orient ?? 0;
-    const highlight = new Set(faces.flatMap((f) => f.colors.flatMap((c, cell) => (c >= 0 ? [VIEW[(orient * 6 + f.slot) * 9 + cell]] : []))));
-    if (!seenTimes) return { state, highlight, cells: null };
-    const moved = lastMoved(state, doneMoves);
-    const ids = Array.from({ length: 54 }, (_, f) => stickerIdAt(state, f));
-    const lastSeen = (id: number) => {
-      const ts = seenTimes[id];
-      let best = -1;
-      for (const t of ts) if (t <= nowReal + 1) best = t;
-      return best;
-    };
-    return { state, highlight, cells: { certainty: new Array(54).fill(1), seenAt: ids.map((id) => (id >= 0 ? lastSeen(id) : -1)), movedAt: ids.map((id) => (id >= 0 ? moved[id] : -1)) } };
-  }, [cube, doneMoves.length, turning, faces, seenTimes, nowReal]);
+  // カメラに映ったキューブの傾き（組み立てた面の格子から。src/vision/pose.ts）
+  const tilt = info && faces.length ? (estimatePose(faces.map((f) => ({ slot: f.slot, H: f.H, rot: 0, held: !!f.partial })), info.analyzedWidth, info.analyzedHeight)?.R ?? null) : null;
   const missedHere = slots.filter((s) => s.track[index] === 1);
   const f = frames[index];
 
@@ -336,15 +321,8 @@ export function Viewer({ url, frames, info, timeScale, configNames, scheme, summ
               <FaceNet faces={faces} />
               {moves.length > 0 && (
                 <div class="cube-3d">
-                  <TimedCube3D moves={moves} time={realMs} held />
-                  <div class="hint">推定した手順で動かしたキューブ（動画の時刻に合わせ、回し始め〜回し終わりの速さで回す・カメラから見た持ち方）</div>
-                </div>
-              )}
-              {ring && (
-                <div class="cube-3d">
-                  <RingView state={ring.state} colors={PRINT_COLORS} cells={ring.cells} lastMove={doneMoves.length ? doneMoves[doneMoves.length - 1].move : null} showIds={hasIdentity(scheme)} highlight={ring.highlight} size={240} />
-                  <RingLegend />
-                  <div class="hint">円環図（U を中心に上から見下ろした図、正面 = 下）。太い枠 = このフレームで読めたマス</div>
+                  <TimedCube3D moves={moves} time={realMs} held pose={tilt} />
+                  <div class="hint">推定した手順で動かしたキューブ（動画の時刻までに回し始めた手を、決まった速さで 1 手ずつ回す・カメラに映ったキューブと同じ向き）</div>
                 </div>
               )}
             </div>

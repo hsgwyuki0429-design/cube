@@ -119,18 +119,6 @@ export function SettingsPage() {
       <div class="card" style={{ marginTop: 16 }}>
         <div class="card-head">認識</div>
         <div class="card-body form">
-          <Field
-            label="ステッカー"
-            desc="各ステッカーに貼った色付きの ArUco マーカーの種類（印刷用 PDF は docs/stickers/）。色を読まずにマーカーの ID でステッカーを判定するので、揃ったキューブならスキャンなしで始められます。切り替えると追跡をやめます"
-          >
-            <Select k="stickers" options={[["unique54", "54 種類・3×3・マスごとに違う（推奨）"], ["aruco12", "12 種類・3×3"], ["aruco", "54 種類・4×4・最初に印刷した版"]]} />
-          </Field>
-          <Field
-            label="マーカーの配置"
-            desc="ステッカーの中のマーカーの並べ方（54 種類・マスごとに違う符号のとき）。4 個・幅 1/2 は指で一部が隠れても読めることが多い代わりに、手ぶれ・回す速さのぶれに弱くなります。印刷用 PDF は docs/stickers/"
-          >
-            <Select k="stickerDesign" options={[["standard", "1 個（いっぱいの大きさ）"], ["quad-half", "4 個・幅 1/2"]]} />
-          </Field>
           <Field label="処理の解像度（長辺 px）" desc="映像の長辺をこの大きさに縮めて認識・精密解析します。大きいほど小さく映ったマーカーも読めますが重くなります">
             <NumberInput k="workWidth" min={960} max={1920} step={160} />
           </Field>

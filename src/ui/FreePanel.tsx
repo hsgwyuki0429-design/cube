@@ -7,7 +7,6 @@ import { type CubeState, MOVE_NAMES, applyMoves, isSolved, relativeMove, statesE
 import { solveState } from "../cube/solver";
 import { mergeQuickRepeats, simplifyMoves } from "../track/merge";
 import { viewOrient } from "./notation";
-import { RingLegend, RingView } from "./RingView";
 import { VideoAnalysis } from "./VideoAnalysis";
 
 // カメラの実測 fps が低いと速い回転を取りこぼす（暗い場所ではカメラが露光を伸ばして fps が落ちる）
@@ -128,22 +127,6 @@ function SolutionGuide() {
   );
 }
 
-// 円環図: 54 マスの対応・確からしさ・直前の手（src/ui/RingView.tsx）
-function RingSection() {
-  const track = useStore(controller.store, (s) => s.track);
-  const cube = useStore(controller.store, (s) => s.cube);
-  const ids = useStore(settingsStore, (s) => s.stickers === "unique54" || s.stickers === "aruco");
-  if (!track || !cube) return null;
-  const last = track.moves[track.moves.length - 1];
-  return (
-    <div class="section">
-      <h3>円環図（マスの対応）</h3>
-      <RingView state={track.state} colors={cube.display} cells={track.cells} lastMove={last ? last.move : null} showIds={ids} />
-      <RingLegend />
-    </div>
-  );
-}
-
 export function FreePanel() {
   const track = useStore(controller.store, (s) => s.track);
   const base = useStore(controller.store, (s) => s.baseMoves);
@@ -174,7 +157,6 @@ export function FreePanel() {
           <div class="v">{recent.length ? `${(duration / 1000).toFixed(1)}s` : "—"}</div>
         </div>
       </div>
-      <RingSection />
       <div class="section">
         <h3>解法ガイド</h3>
         <SolutionGuide />

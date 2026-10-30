@@ -11,7 +11,7 @@
 // 精密解析・キューブモードでは、後ろのフレームからも同じように引き継ぐ（前後フレーム）。DOM もカメラも知らない
 import { NORMAL, faceletGeometry } from "../cube/model";
 import { type Pt, applyH } from "../vision/homography";
-import type { VisibleFace } from "./cube";
+import { type VisibleFace, cellH } from "./cube";
 
 export interface IdTrackOptions {
   maxGapMs: number; // これより前のフレームからは引き継がない
@@ -38,7 +38,7 @@ interface Snapshot {
   faceIds: Map<number, Int16Array>; // 面ごとの、読めた（引き継いでいない）ステッカー
 }
 
-const cellCenter = (f: VisibleFace, cell: number): Pt => applyH(f.H, (cell % 3) + 0.5, Math.floor(cell / 3) + 0.5);
+const cellCenter = (f: VisibleFace, cell: number): Pt => applyH(cellH(f, cell), (cell % 3) + 0.5, Math.floor(cell / 3) + 0.5);
 const facePitch = (f: VisibleFace) => {
   const a = applyH(f.H, 1, 1.5);
   const b = applyH(f.H, 2, 1.5);

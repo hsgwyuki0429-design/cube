@@ -27,4 +27,14 @@ describe("still-frame skipper", () => {
     expect(n).toBeGreaterThanOrEqual(4);
     expect(n).toBeLessThanOrEqual(6);
   });
+
+  it("ゆっくり動き出したときは、動いたと分かる前の数フレームも処理する（回し始めの時刻のため）", () => {
+    const s = new StillSkipper();
+    const t = (k: number) => k * 8;
+    for (let k = 0; k < 10; k++) s.next(frame(100), t(k));
+    s.next(frame(101), t(10)); // 差が小さく「止まっている」
+    s.next(frame(102), t(11));
+    const moved = s.next(frame(140), t(12));
+    expect(moved.map((x) => x.t)).toEqual([t(8), t(9), t(10), t(11), t(12)]);
+  });
 });

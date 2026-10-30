@@ -2,7 +2,7 @@
 // 動画ファイルを読み込ませて解析し、結果の表と画面を e2e-output/aruco/ に書き出す。
 //
 //   npm run build && ARUCO_VIDEO=path/to/video.mp4 node scripts/aruco-e2e.mjs                  # テストモード（シート）
-//   ARUCO_SCHEME=aruco54 …                                                                    # 54 種類（4×4）のステッカー（既定は 12 種類）
+//   ARUCO_SCHEME=aruco54 …                                                                    # テストモードのシートの符号（既定は 12 種類）
 //   ARUCO_MODE=cube ARUCO_TRUTH="R U R' U'" [ARUCO_END_SOLVED=1] ARUCO_VIDEO=… node scripts/aruco-e2e.mjs  # キューブモード
 //   （合成動画は tests/debug/arucoVideo.debug.test.ts・arucoCubeVideo.debug.test.ts で作れる）
 import { spawn } from "node:child_process";
@@ -99,7 +99,7 @@ async function runCube(page) {
   });
   await page.waitForTimeout(2500);
   await page.locator(".card", { hasText: "3. 動画で確かめる" }).screenshot({ path: `${OUT}/${basename(VIDEO)}.end.png` });
-  // 動画の 3D: 手の回し始めと回し終わりの間の時刻では、3D もその手の途中（実際の速さで回す）
+  // 動画の 3D: 手の回し始めと回し終わりの間の時刻に止めると、3D はその手を回し終えている（回し始めた手を決まった速さで回す）
   const mid = await page.evaluate(async () => {
     const { cube, info } = window.__aruco;
     const ms = cube.result.moves;
@@ -119,20 +119,17 @@ async function runCube(page) {
     return { k, ts, s, e: s + idx.moveDuration(k), t0: m.t0, t: m.t, cur: v.currentTime, hint };
   });
   console.log("動画の途中の 3D:", JSON.stringify(mid));
-  if (mid !== "skip" && !(mid.ts > mid.s && mid.ts < mid.e)) throw new Error("動画の手の途中で、3D がその手の途中になっていない");
-  // 手順の再生: 実際の速さで、最初の手の回し始め〜最後の手の回し終わり（+ 前後 0.4 秒）かかる
+  if (mid !== "skip" && Math.abs(mid.ts - mid.e) > 1) throw new Error("動画の手の途中で止めたのに、3D がその手を回し終えていない");
+  // 手順の再生: 等間隔（1 手 400ms）で、手数 × 400ms（+ 前の 400ms）かかる
   const replay = page.locator(".cube-replay");
   await replay.locator("text=⏮ 最初へ").click();
   const r0 = Date.now();
   await replay.locator("text=▶ 再生").click();
   await replay.locator("text=▶ 再生").waitFor({ timeout: 60000 });
   const took = Date.now() - r0;
-  const span = await page.evaluate(() => {
-    const ms = window.__aruco.cube.result.moves;
-    return ms[ms.length - 1].t - (ms[0].t0 ?? ms[0].t) + 800;
-  });
-  console.log(`手順の再生: ${took}ms（実際の長さ ${Math.round(span)}ms）`);
-  if (Math.abs(took - span) > 600) throw new Error("手順の再生が実際の速さになっていない");
+  const span = await page.evaluate(() => (window.__aruco.cube.result.moves.length + 1) * 400);
+  console.log(`手順の再生: ${took}ms（等間隔 ${span}ms）`);
+  if (Math.abs(took - span) > 1500) throw new Error("手順の再生が等間隔になっていない");
   await page.locator(".card", { hasText: "2. 推定した手順" }).screenshot({ path: `${OUT}/${basename(VIDEO)}.replay.png` });
   if (!TRUTH) return true;
   const want = TRUTH.trim().split(/\s+/).join(" ");
@@ -147,13 +144,14 @@ try {
   page.on("pageerror", (e) => console.log("[pageerror]", e.message));
   await page.goto(`http://localhost:${PORT}/aruco.html`);
   await page.waitForFunction(() => !document.body.textContent.includes("OpenCV.js を読み込み中"), null, { timeout: 120000 });
-  await page.selectOption('label:has-text("ステッカーの種類") select', SCHEME);
   await page.setInputFiles('input[type="file"]', VIDEO);
+  // キューブモードは本体と同じステッカー（54 種類・4 個・幅 1/2）だけ。テストモードはシートの符号を選ぶ
   if (MODE === "cube") {
     failed = !(await runCube(page));
     throw "skip";
   }
   await page.click("text=シート（検出率）");
+  await page.selectOption('label:has-text("シートの符号") select', SCHEME);
   await page.selectOption('label:has-text("写したシート") select', SHEET);
   if (CONFIGS) {
     const want = new Set(CONFIGS.split(",").map(Number));

@@ -10,7 +10,7 @@ import { demuxFile, readSamples, rotationOf } from "../src/aruco/demux";
 import { ARUCO12_CODES, CONFUSABLE12, UNIQUE54_CODES, byteList, centerOffset, distance3, code4x4, decode, makeDictionary, markerBits as schemeBits } from "../src/aruco/codes";
 import { colorConsistent, frameColorFilter } from "../src/aruco/cube";
 import { DESIGNS, SHADE, STANDARD_DESIGN, designLook } from "../src/aruco/design";
-import { moveAt, moveSpans, playerTimestamp } from "../src/aruco/timeline";
+import { moveAt, moveSpans } from "../src/aruco/timeline";
 import { markerBits } from "../src/aruco/dict4x4";
 import { PRINT_COLORS } from "../src/aruco/palette";
 import { type FrameRecord, summarize, toCsv, toMarkdown } from "../src/aruco/stats";
@@ -368,20 +368,13 @@ describe("12 種類（3×3）の符号", () => {
   });
 });
 
-// 動画解析の 3D を実際の速さと間で動かす（src/aruco/timeline.ts）
+// 動画解析の 3D: 動画の時刻までに回し始めた手を決まった速さで回す（src/aruco/timeline.ts・timedCube.tsx）
 describe("3D の再生の時間", () => {
   const mv = (t0: number | undefined, t: number) => ({ move: 0, t0, t, orient: 0 });
-  it("回している間は比例で進み、手の間は前の手の終わりで止まる", () => {
-    const moves = [mv(1000, 1100), mv(1500, 1700)];
-    const spans = moveSpans(moves);
-    const pStart = [0, 1000];
-    const pDur = [1000, 1500];
-    expect(playerTimestamp(500, spans, pStart, pDur)).toBe(0);
-    expect(playerTimestamp(1050, spans, pStart, pDur)).toBe(500);
-    expect(playerTimestamp(1300, spans, pStart, pDur)).toBe(1000); // 間: 1 手目の終わり
-    expect(playerTimestamp(1600, spans, pStart, pDur)).toBe(1750);
-    expect(playerTimestamp(9999, spans, pStart, pDur)).toBe(2500);
+  it("回し始めた手の番号", () => {
+    const spans = moveSpans([mv(1000, 1100), mv(1500, 1700)]);
     expect(moveAt(1300, spans)).toBe(0);
+    expect(moveAt(1600, spans)).toBe(1);
     expect(moveAt(900, spans)).toBe(-1);
   });
   it("回し始めの分からない手・重なる手は、前の手の後ろにずらす", () => {

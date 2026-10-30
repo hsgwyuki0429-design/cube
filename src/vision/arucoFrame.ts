@@ -4,17 +4,17 @@
 // 普通のステッカーと同じ経路（FrameResult）で動く。
 import { fillByColor, frameRefs, ringGeometry, skinFraction } from "../aruco/colorFill";
 import { IdTracker } from "../aruco/idTrack";
-import { type VisibleFace, reconstructFaces, trustedColors, turnMarkers } from "../aruco/cube";
-import { DEFAULT_TURN, type TurnTrack, recognizeTurn, unwrapTurn } from "../aruco/turn";
+import { type VisibleFace, cellH, readConfidence, reconstructFaces, trustedColors, turnMarkers } from "../aruco/cube";
+import { DEFAULT_TURN, type TurnResult, type TurnTrack, layerCells, projectedFace, recognizeTurn, unwrapTurn } from "../aruco/turn";
 import type { TurnSnapshot } from "../track/types";
 import type { Pose } from "./pose";
 import { ArucoBench, DEFAULT_CONFIGS, type Marker, THOROUGH_PARAMS } from "../aruco/detect";
-import { type StickerScheme, markerSize } from "../aruco/codes";
+import { type StickerScheme, decode, markerSize } from "../aruco/codes";
 import { STANDARD_DESIGN, type StickerDesign, designOf } from "../aruco/design";
 import { ARUCO_REFS } from "../aruco/palette";
 import { rereadFaces } from "../aruco/reread";
 import type { Lab } from "./color";
-import type { Pt } from "./homography";
+import { type Mat3, type Pt, invertH } from "./homography";
 import type { DetectedFace, FrameResult } from "./pipeline";
 import type { CV } from "./image";
 import type { PixelSource } from "./image";
@@ -95,6 +95,9 @@ export function processAruco(
   const prev = tilts.get(memory);
   const r = reconstructFaces(markers, img, prev && t - prev.t < TILT_MS ? prev.tilt : null, scheme, undefined, true, design);
   if (r.faces.length) tilts.set(memory, { t, tilt: r.tilt });
+  // 回転途中の形: 回している層が見えたら、その層が通る面の外側の 1 列を層の格子で置き、面から外れた層のマーカーもその列に入れる
+  const tr = opts.turn === false || !r.faces.length ? null : recognizeTurnFor(markers, r.faces, img, t, memory, design);
+  if (tr?.turn && tr.pose) applyTurnLayers(r.faces, tr, img, markers, scheme);
   const budget = opts.reread ?? (thorough ? 27 : 4);
   if (budget > 0 && r.faces.length) {
     if (!rereader || rereader.cv !== cv || rereader.scheme !== scheme || rereader.design !== design) {
@@ -110,9 +113,9 @@ export function processAruco(
     let tracker = trackers.get(memory);
     if (!tracker) trackers.set(memory, (tracker = new IdTracker()));
     const bySlot = new Map(r.faces.map((f) => [f.slot, f]));
-    tracker.update(t, r.faces, null, (slot, cell) => skinFraction(img, bySlot.get(slot)!.H, cell) > 0.15);
+    tracker.update(t, r.faces, null, (slot, cell) => skinFraction(img, cellH(bySlot.get(slot)!, cell), cell) > 0.15);
   }
-  const turn = opts.turn === false ? undefined : turnSnapshot(markers, r.faces, img, t, memory, design);
+  const turn = tr ? turnSnapshot(tr, t, memory) : undefined;
   const quads: Pt[][] = markers.map((m) => [0, 1, 2, 3].map((i) => [m.corners[i * 2], m.corners[i * 2 + 1]] as Pt));
   const faces: DetectedFace[] = r.faces.map((f) => {
     const known = f.colors.map((c) => c >= 0);
@@ -122,7 +125,9 @@ export function processAruco(
       H: f.H,
       found: known.filter(Boolean).length,
       labs: f.colors.map((c) => (c >= 0 ? ([...ARUCO_REFS[c]] as Lab) : ([0, 0, 0] as Lab))),
-      spread: new Array(9).fill(0),
+      // 回している途中の層のマスは「動いている」（手の時刻の判定: src/track/timing.ts は、層の側面のマスが止まっているときと
+      // 変わったフレームを回し始めとする。層の格子で追うと回す前と同じステッカーが読めるので、変わっていないように見えてしまう）
+      spread: Array.from({ length: 9 }, (_, cell) => (f.layer?.cells.includes(cell) ? MOVING_SPREAD : 0)),
       valid: known,
       // 読みの確からしさ（マーカーの fit。読み直したマスは少し弱い: src/aruco/reread.ts）
       weight: f.conf,
@@ -130,6 +135,7 @@ export function processAruco(
       // 1 列・1 枚の面: 色は使うが、外枠は推定なので 3D の傾き（estimatePose）には使わない
       held: !!f.partial,
       ...(f.ids.some((id) => id >= 0) ? { ids: f.ids } : {}),
+      ...(f.layer ? { layer: f.layer } : {}),
     };
   });
   // 普通のステッカーと同じく正面（スロット 2）を先頭に。面があれば必ず正面がある（reconstructFaces の frontAlways）
@@ -138,17 +144,65 @@ export function processAruco(
   return { faces: [front, ...faces.filter((f) => f !== front)], quads, turn };
 }
 
-// 回転途中の形状認識: 回している層と角度を求め、前のフレームとつなぐ（同じ層が回り続けていれば、回し始めからの角度を足していく）。
-// 回している層が見えたフレームだけ、そのつながりを返す
-function turnSnapshot(markers: Marker[], faces: VisibleFace[], img: PixelSource, t: number, memory: object, design: StickerDesign): TurnSnapshot | undefined {
+// 回転途中の形状認識: 回している層と角度を求める（本体の姿勢は前のフレームのものも候補に入れる）
+function recognizeTurnFor(markers: Marker[], faces: VisibleFace[], img: PixelSource, t: number, memory: object, design: StickerDesign): TurnResult {
   const st = turnStates.get(memory) ?? { pose: null, poseT: -Infinity, track: null, snap: null };
   turnStates.set(memory, st);
-  if (!faces.length) return undefined;
   const tr = recognizeTurn(turnMarkers(markers, design), faces, img, st.pose && t - st.poseT < POSE_MS && t > st.poseT ? st.pose : null, { ...DEFAULT_TURN, design });
   if (tr.pose) {
     st.pose = tr.pose;
     st.poseT = t;
   }
+  return tr;
+}
+
+// 層を回している途中のフレームで、層が通る面（4 面のうち見えているもの）の外側の 1 列を、本体の格子とは別の格子（層の格子）にする。
+// 層の格子 = 観測した本体の格子に、姿勢から射影した「回した面の平面」と「回していない面の平面」の関係を掛けたもの（姿勢の誤差は
+// 両方に同じように入るので打ち消し合う）。面の組み立てで同じ列が層として分けてあればそれを使う。
+// 層のマーカーは本体の格子に合わないので面から外れていることがある: 形状認識で層のマスに置いたマーカーを、読めていないマスに入れる。
+// 隠れたマスも、その列にあれば層の格子で置く（ほかに決め手がなければ、同じ列のマスと一緒に動いたと考える）
+const LAYER_CONF = 0.7;
+const MOVING_SPREAD = 100; // 回している途中の層のマスのばらつき（DetectedFace.spread） // 形状認識で層に置いたマーカーの読みの確からしさ
+function applyTurnLayers(faces: VisibleFace[], tr: TurnResult, size: { width: number; height: number }, markers: Marker[], scheme: StickerScheme): void {
+  const turn = tr.turn!;
+  const pose = tr.pose!;
+  for (const f of faces) {
+    if (f.partial) continue;
+    const cells = layerCells(f.slot, turn);
+    if (cells.length !== 3) continue;
+    if (f.layer && f.layer.cells.join() === cells.join()) continue;
+    const Mb = projectedFace(pose, size, f.slot);
+    const Ml = projectedFace(pose, size, f.slot, turn);
+    if (!Mb || !Ml) continue;
+    const H = mulH(Ml, mulH(invertH(Mb), f.H));
+    const rows = cells.map((k) => Math.floor(k / 3));
+    const cols = cells.map((k) => k % 3);
+    f.layer = { cells, H, rect: [Math.min(...cols), Math.min(...rows), Math.max(...cols) + 1, Math.max(...rows) + 1] };
+  }
+  const fitOf = new Map(markers.map((m) => [m.id, m.fit]));
+  for (const p of tr.placed) {
+    if (!p.layer) continue;
+    const f = faces.find((x) => x.slot === Math.floor(p.sticker / 9));
+    const cell = p.sticker % 9;
+    if (!f?.layer?.cells.includes(cell) || f.colors[cell] >= 0) continue;
+    const dec = decode(scheme, p.id);
+    if (!dec) continue;
+    f.colors[cell] = dec.face;
+    f.ids[cell] = dec.sticker;
+    f.conf[cell] = Math.min(LAYER_CONF, readConfidence(fitOf.get(p.id) ?? 0));
+  }
+}
+
+const mulH = (a: Mat3, b: Mat3): Mat3 => {
+  const out: number[] = [];
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) out.push(a[r * 3] * b[c] + a[r * 3 + 1] * b[3 + c] + a[r * 3 + 2] * b[6 + c]);
+  return out;
+};
+
+// 回している層と角度を前のフレームとつなぐ（同じ層が回り続けていれば、回し始めからの角度を足していく）。
+// 回している層が見えたフレームだけ、そのつながりを返す
+function turnSnapshot(tr: TurnResult, t: number, memory: object): TurnSnapshot | undefined {
+  const st = turnStates.get(memory)!;
   const prev = st.track;
   st.track = unwrapTurn(st.track, tr.turn, t, TURN_GAP_MS);
   if (!tr.turn || !st.track) return undefined;

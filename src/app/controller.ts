@@ -12,10 +12,10 @@ import type { RefineInput, RefineResult } from "../vision/refine";
 import { FrameRecorder } from "../vision/recorder";
 import type { VideoFileInfo } from "../vision/videoFile";
 import { RefineClient, VisionClient } from "../vision/visionClient";
-import { stickerScheme } from "../aruco/codes";
 import { ARUCO_OBSERVER } from "../track/observer";
 import { ARUCO_NAMES, ARUCO_REFS } from "../aruco/palette";
 import { type Settings, settingsStore } from "./settings";
+import { STICKERS } from "../aruco/design";
 import { loadSolves, personalSequences } from "./storage";
 import { createStore } from "./store";
 
@@ -77,7 +77,6 @@ export const displayColors = (names: string[]): string[] => names.map((n) => NAM
 export const VIDEO_MAX_FPS = 120;
 
 class Controller {
-  private stickers: Settings["stickers"] | null = null; // 最後に反映したステッカーの種類
   readonly store = createStore<AppState>({
     screen: initialScreen(),
     panel: "free",
@@ -159,25 +158,14 @@ class Controller {
 
   private applySettings(s: Settings): void {
     if (!this.vision) return;
-    if (this.stickers !== s.stickers) {
-      // ステッカーの符号を変えた: 別のキューブなので、いまの追跡はやめる（揃った状態から始めるか、スキャンする）
-      const had = !!this.store.get().cube || !!this.store.get().scan;
-      if (this.stickers !== null && had) {
-        this.cancelAnalysis();
-        this.vision.stopTracking();
-        this.store.set({ cube: null, track: null, scan: null });
-        this.toast("ステッカーを切り替えました。「揃った状態から開始」かスキャンで始めてください", 6000);
-      }
-      this.stickers = s.stickers;
-    }
     this.vision.workWidth = s.workWidth;
-    this.vision.setConfig(this.pipelineConfig(s));
+    this.vision.setConfig(this.pipelineConfig());
     this.vision.setTrackingOptions(this.engineOptions(s));
   }
 
-  // 認識の設定（ステッカーの符号・マーカーの配置）。4 個の配置は 54 種類・マスごとに違う符号のときだけ
-  pipelineConfig(s: Settings = settingsStore.get()): Partial<PipelineConfig> {
-    return { stickers: s.stickers, arucoDesign: s.stickers === "unique54" ? s.stickerDesign : "standard" };
+  // 認識の設定（ステッカーの符号・マーカーの配置は STICKERS だけ）
+  pipelineConfig(): Partial<PipelineConfig> {
+    return { ...STICKERS };
   }
 
   engineOptions(s: Settings = settingsStore.get()): Partial<EngineOptions> {
@@ -256,8 +244,7 @@ class Controller {
     const { SyntheticCube } = await import("../synthetic/syntheticCube");
     this.camera.stop();
     this.synthetic?.stop();
-    const s = settingsStore.get();
-    const syn = new SyntheticCube({ aruco: stickerScheme(s.stickers), design: this.pipelineConfig(s).arucoDesign });
+    const syn = new SyntheticCube({ aruco: STICKERS.stickers, design: STICKERS.arucoDesign });
     this.synthetic = syn;
     syn.setView("front", 0);
     const info = await this.camera.attach(syn.stream());
@@ -422,7 +409,7 @@ class Controller {
       from: session.from,
       to: Infinity,
       engine: this.engineOptions(),
-      pipeline: this.pipelineConfig(s),
+      pipeline: this.pipelineConfig(),
       ...(opts.timed ? {} : { keepPatchesMs: 3000 }),
     };
     const id = await this.refiner.startStream((p) => this.onAnalysisPartial(session, p));
@@ -502,7 +489,7 @@ class Controller {
     onInfo?: (info: VideoFileInfo, analyzedFrames: number) => void,
   ): { result: Promise<RefineResult>; cancel: () => void } {
     const s = settingsStore.get();
-    const input: RefineInput = { state: Array.from(opts.state), refs: ARUCO_REFS, from: 0, to: Infinity, engine: this.engineOptions(), pipeline: this.pipelineConfig(s) };
+    const input: RefineInput = { state: Array.from(opts.state), refs: ARUCO_REFS, from: 0, to: Infinity, engine: this.engineOptions(), pipeline: this.pipelineConfig() };
     return this.videoRefiner.runVideo(file, input, opts.target, { maxSide: s.workWidth, captureFps: opts.captureFps, maxFps: opts.maxFps ?? VIDEO_MAX_FPS }, progress, onInfo);
   }
 

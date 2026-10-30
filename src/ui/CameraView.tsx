@@ -4,10 +4,23 @@ import { controller } from "../app/controller";
 import { settingsStore } from "../app/settings";
 import { useStore } from "../app/store";
 import { type Lab, NAMED_COLORS, colorDistance, nearestNamed } from "../vision/color";
-import type { Pt } from "../vision/homography";
+import { type Mat3, type Pt, applyH } from "../vision/homography";
 import { slotPoint } from "../vision/layout";
 import type { FrameMessage } from "../vision/protocol";
 import { SLOT_LABEL } from "./notation";
+import { cellH, type FaceLayer } from "../aruco/cube";
+
+// 面の格子のまとまり: ふだんは 3×3 の 1 つ。回している途中の層があれば、本体（残りの 2 列）と層（外側の 1 列）
+function blocksOf(face: { H: Mat3; layer?: FaceLayer }): { H: Mat3; rect: [number, number, number, number]; layer: boolean }[] {
+  const L = face.layer;
+  if (!L) return [{ H: face.H, rect: [0, 0, 3, 3], layer: false }];
+  const [x0, y0, x1] = L.rect;
+  const body: [number, number, number, number] = x1 - x0 === 1 ? (x0 === 0 ? [1, 0, 3, 3] : [0, 0, 2, 3]) : y0 === 0 ? [0, 1, 3, 3] : [0, 0, 3, 2];
+  return [
+    { H: face.H, rect: body, layer: false },
+    { H: L.H, rect: L.rect, layer: true },
+  ];
+}
 
 function classifyColor(lab: Lab, refs: Lab[] | null, display: string[] | null): string {
   if (refs && display) {
@@ -78,28 +91,36 @@ export function CameraView() {
 
       for (const face of m.faces) {
         const anchor = face.slot === 2;
-        const outline = [slotPoint(face, 0, 0), slotPoint(face, 3, 0), slotPoint(face, 3, 3), slotPoint(face, 0, 3)].map(map);
-        ctx.lineWidth = anchor ? 3 : 2;
-        ctx.strokeStyle = anchor ? "rgba(111,211,255,0.95)" : "rgba(111,211,255,0.6)";
-        ctx.beginPath();
-        outline.forEach((p, i) => (i ? ctx.lineTo(...p) : ctx.moveTo(...p)));
-        ctx.closePath();
-        ctx.stroke();
-        ctx.lineWidth = 1;
-        ctx.strokeStyle = "rgba(111,211,255,0.45)";
-        for (let i = 1; i < 3; i++) {
+        // 枠と格子: 回している途中の層（外側の 1 列）があれば、本体（残りの 2 列）と層を別々の格子で描く
+        const blocks = blocksOf(face);
+        for (const bl of blocks) {
+          const [x0, y0, x1, y1] = bl.rect;
+          const at = (x: number, y: number) => map(applyH(bl.H, x, y));
+          ctx.lineWidth = anchor ? 3 : 2;
+          ctx.strokeStyle = bl.layer ? "rgba(255,176,32,0.95)" : anchor ? "rgba(111,211,255,0.95)" : "rgba(111,211,255,0.6)";
           ctx.beginPath();
-          ctx.moveTo(...map(slotPoint(face, i, 0)));
-          ctx.lineTo(...map(slotPoint(face, i, 3)));
-          ctx.moveTo(...map(slotPoint(face, 0, i)));
-          ctx.lineTo(...map(slotPoint(face, 3, i)));
+          [at(x0, y0), at(x1, y0), at(x1, y1), at(x0, y1)].forEach((p, i) => (i ? ctx.lineTo(...p) : ctx.moveTo(...p)));
+          ctx.closePath();
+          ctx.stroke();
+          ctx.lineWidth = 1;
+          ctx.strokeStyle = bl.layer ? "rgba(255,176,32,0.5)" : "rgba(111,211,255,0.45)";
+          ctx.beginPath();
+          for (let x = x0 + 1; x < x1; x++) {
+            ctx.moveTo(...at(x, y0));
+            ctx.lineTo(...at(x, y1));
+          }
+          for (let y = y0 + 1; y < y1; y++) {
+            ctx.moveTo(...at(x0, y));
+            ctx.lineTo(...at(x1, y));
+          }
           ctx.stroke();
         }
-        // 各セルの分類色（小さな四角）
+        // 各セルの分類色（小さな四角。層のマスは層の格子で置く）
         for (let cell = 0; cell < 9; cell++) {
           const x = (cell % 3) + 0.5;
           const y = Math.floor(cell / 3) + 0.5;
-          const pts = [slotPoint(face, x - 0.17, y - 0.17), slotPoint(face, x + 0.17, y - 0.17), slotPoint(face, x + 0.17, y + 0.17), slotPoint(face, x - 0.17, y + 0.17)].map(map);
+          const Hc = cellH(face, cell);
+          const pts = ([[x - 0.17, y - 0.17], [x + 0.17, y - 0.17], [x + 0.17, y + 0.17], [x - 0.17, y + 0.17]] as Pt[]).map(([u, v]) => map(applyH(Hc, u, v)));
           ctx.beginPath();
           pts.forEach((p, i) => (i ? ctx.lineTo(...p) : ctx.moveTo(...p)));
           ctx.closePath();

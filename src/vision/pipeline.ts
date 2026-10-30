@@ -1,6 +1,7 @@
 // 1 フレームの処理: ArUco マーカー（各ステッカーに色付きのマーカー）を検出して見えている面を組み立て、各セルの色（代表色の Lab）・
 // ステッカーの ID・読みの確からしさを返す（src/vision/arucoFrame.ts）。Worker とテストの両方から使う（OpenCV のオブジェクトは呼び出し側が渡す）
 import { stickerScheme } from "../aruco/codes";
+import type { FaceLayer } from "../aruco/cube";
 import { processAruco } from "./arucoFrame";
 import type { Lab } from "./color";
 import type { Mat3, Pt } from "./homography";
@@ -43,6 +44,7 @@ export interface DetectedFace {
   weight: number[]; // セルの読みの確からしさ
   masked: boolean[];
   ids?: number[]; // 読んだステッカーの ID（揃った状態での facelet 番号。-1 = 不明。54 種類の符号のとき）
+  layer?: FaceLayer; // 回している途中の層（外側の 1 列）の格子。H は残りの 2 列（本体）の格子
 }
 
 export interface FrameResult {

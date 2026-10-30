@@ -16,23 +16,26 @@
 削除した（2026-10。実物の照明・指・ステッカーレスで色の読みが安定しなかった）。マーカーの ID から色（センターの面）が決まるので、
 照明や色の取り違えに強く、揃ったキューブならスキャンなしで始められる。元の企画は `docs/cube-vision-plan.md`（オンライン対戦などはまだ範囲外）。
 
-- **符号**は 3 種類（`src/aruco/codes.ts`。設定の「ステッカー」）: 推奨の自作 3×3 の 54 種類 `unique54`（既定。マスごとに違う。ID = facelet 番号で
-  向きも決めて貼る。1 枚の ID と向きから面の真ん中が分かる `centerOffset` ので、センターが隠れても面を組み立てる）、自作 3×3 の 12 種類 `aruco12`
-  （ID = 面、センターは +6）、最初に印刷した DICT_4X4_100 の 54 種類 `aruco`（ID = facelet 番号）。3×3 は明るい印刷色 `PRINT_COLORS`。
-  印刷用 PDF は `docs/stickers/`、`node scripts/aruco-stickers.mjs` で作る。54 種類の印刷用ステッカーは 16mm（`STICKER_MM`）と 15mm
-- **マーカーの配置**（ステッカーの中のマーカーの大きさ・個数。`src/aruco/design.ts`、設定の「マーカーの配置」・`PipelineConfig.arucoDesign`。unique54 だけ）:
-  `standard`（1 個・辺 0.84。既定）と `quad-half`（4 個・幅 1/2。2×2 に同じ ID・同じ向き）を認識できる。4 個は指に強く、ぶれ・遠さに弱い
-  （下の「認識の要点」）。ほかの候補（幅 1/3・濃い同色など）は比較だけ（`tests/debug/stickerDesign.debug.test.ts`、PDF は
-  `docs/stickers/cubevision_unique54_designs.pdf`）。どれを使うかはユーザーが実物で決める
+- **本体のアプリが対応するステッカーは 1 種類だけ**（`STICKERS`、`src/aruco/design.ts`。設定では選ばない）: 自作 3×3 の 54 種類 `unique54`
+  （マスごとに違う。ID = facelet 番号で向きも決めて貼る。1 枚の ID と向きから面の真ん中が分かる `centerOffset` ので、センターが隠れても
+  面を組み立てる）のマーカーを、幅 1/2 で 2×2 に 4 個（`quad-half`。同じ ID・同じ向き）。印刷用 PDF は
+  `docs/stickers/cubevision_unique54_designs.pdf` の 5 ページ目（`node scripts/aruco-stickers.mjs designs` で作る）。4 個は指に強く、
+  ぶれ・遠さに弱い（下の「認識の要点」）。デモ・E2E の合成キューブもこのステッカーを描く
+- 認識の部品（`src/aruco/`）は、ほかの符号（12 種類 `aruco12`・最初に印刷した 4×4 の 54 種類 `aruco`）と配置（1 個 `standard` など）も
+  扱える（`PipelineConfig.stickers`・`arucoDesign`。テスト・ArUco の画面のテストモード・比較用）。3×3 は明るい印刷色 `PRINT_COLORS`。
+  ほかの配置の候補（幅 1/3・濃い同色など）の比較は `tests/debug/stickerDesign.debug.test.ts`
 - 本体の「ArUco」の画面（`src/aruco/`、入口は `src/ui/ArucoScreen.tsx`。初めて開いたときに読み込む）は、スロー撮影の動画から手順を推定する
   キューブモードと、方式 × 色 × 大きさの検出率を出すテストモード。解析 Worker（OpenCV.js をもう 1 つ持つ）は PWA の事前のキャッシュに入れない。
-  `#aruco`・`aruco.html`（移動するだけ）で直接開ける。キューブモードの 3D は実際の速さと間で動く（`turnTimes`・`src/aruco/timeline.ts`）
-- マスごとの確からしさは円環図（`src/ui/RingView.tsx`・幾何は `src/ui/ring.ts`。jagarikin さんの図と同じ考え方: 9 本の層ごとに側面の 12 枚を
-  1 本の円に並べ、各ステッカーを 2 本の円の交わるところに置く。球面上の円の立体射影で、U・R・F の角から見た向き）で、フリーの画面と
-  ArUco の「動画で確かめる」に出す
+  `#aruco`・`aruco.html`（移動するだけ）で直接開ける。キューブモードは本体と同じステッカーだけ（テストモードはシートの符号を選ぶ）
+- **3D キューブの回し方**: どの手も決まった速さで 1 手ずつ回し、回転を必ず描く。ライブ（`src/ui/Cube3D.tsx`）は前の手を回し終えてから
+  次の手を足す（cubing.js は回している途中に次の手を足すと前の手を一瞬で終わらせ、速く回すと回転が描かれない手があった。1 手 約 170ms、
+  たまれば速めるが 約 85ms より速くしない）。精密解析の結果に乗り換えて過去の手が変わったら、変わらない所まで戻してそこから回し直す。
+  動画の解析（`src/aruco/timedCube.tsx`）は動画の時刻までに回し始めた手を 1 手 220ms（画面の時間）で回し、カメラに映ったキューブと同じ
+  向き（傾きにも追従）。手順の再生は等間隔（400ms ごとに 1 手）
+- 円環図（マスごとの確からしさの図）は廃止した（2026-10）
 
 ArUco を触ったら `npx vitest run tests/aruco.test.ts tests/arucoCube.test.ts tests/arucoLive.test.ts tests/arucoTurn.test.ts tests/turnHint.test.ts`、
-`npm run build && npm run e2e`（`E2E_STICKERS=aruco12`・`aruco`、`E2E_DESIGN=quad-half`、`E2E_MODE=timer` も）、合成動画での E2E
+`npm run build && npm run e2e`（`E2E_MODE=timer` も）、合成動画での E2E
 （`scripts/aruco-e2e.mjs`・`scripts/video-e2e.mjs`）を回す。符号・色・PDF を変えたら `tests/debug/stickerPdf.debug.test.ts` も。
 総合評価（1 フレーム・手順・速い回転、配置ごと）は `tests/debug/arucoEval.debug.test.ts`。
 
@@ -176,6 +179,13 @@ facelet の直接置換テーブルを手書きすると必ず間違える。**3
   **マスごとに読んだ ID がどれだけ揃うか**で選ぶ（半マスずれた格子も形の上では合ってしまうので、形では選ばない）。同点なら面を作らない
 - **読んだ ID の照合**（54 種類）: `FaceObservation.ids`。仮説の状態から各マスのステッカーを `src/cube/stickers.ts` で求め、色は合うのに別の
   ステッカーなら 1 手と同じコスト。読みの確からしさ（マーカーの fit: `readConfidence`）でコストを下げ、面の真ん中が決まらない面は作らない
+- **回している途中の層は別のブロック**（`VisibleFace.layer`・`cellH`）: マーカーを 1 つずつ読んでから面を組み立てるとき、面の外側の 1 列だけが
+  残りの 2 列の格子からずれていれば、その列を別の格子にする（`splitLayer`。面の格子は本体の 2 列だけで当てる。1 つの格子で全部に
+  合わせると回っている列に引っ張られ、実物とずれた格子で読み直し・色の補完をしていた）。形状認識で層が分かれば（下の「回転途中の形」）、
+  層が通る面の外側の 1 列を、観測した本体の格子に姿勢から射影した「回した面」と「回していない面」の関係を掛けた格子で置き
+  （`applyTurnLayers`、`src/vision/arucoFrame.ts`）、本体の格子から外れた層のマーカーもその列に入れる。**隠れて読めなかったマスも、
+  その列にあれば層の格子で置く**（ほかに決め手がなければ、同じ列のマスと一緒に動いたと考える）。層のマスは色で補わない。
+  画面では本体を青、層を橙の格子で描く。回転途中の合成画像（6 手 × 8 角度 × 2 視点）で、誤った色のマス 101 → 32
 - **再認識**（`src/aruco/reread.ts`）: 組み立てた面の読めなかったマスを切り出して読み直す。追跡が未確定・推定とみるマス（`focusCells`。
   `TrackerEngine.cellBelief`: 有力な仮説の一致・最後に見た時刻・最後に動かした時刻を `TrackUpdate.cells` で出す）から先に、ライブ 4 マス・
   精密解析は全部
@@ -259,8 +269,9 @@ facelet の直接置換テーブルを手書きすると必ず間違える。**3
   届くたびに、リアルタイムの追跡をそれに乗り換え（`engine.rebase`: 解析の前からあった手は残し、解析の手順をつなぎ、その時刻より
   後の観測を通し直す）。遅れが 6 秒を超えたら乗り換えない（通し直す観測が多すぎる）
 - 精密解析は実時間に追いつかない。**間引かない**（30fps 相当にしただけで速い手を読み違えた）。代わりに、キューブも手も止まっている
-  フレームを飛ばす（`src/vision/motion.ts` の `StillSkipper`。動き出したら直前の 1 枚、止まった最初の 1 枚は処理するので、回し始め・
-  回し終わりの時刻は変わらない）。設定はライブより重い（二値化の窓を細かく `arucoThorough`・読めなかったマスを全部読み直す）
+  フレームを飛ばす（`src/vision/motion.ts` の `StillSkipper`。動き出したら直前の 4 枚、止まった最初の 1 枚は処理するので、回し始め・
+  回し終わりの時刻は変わらない。ゆっくり回し始めると最初の数フレームは「止まっている」に入るので、直前の 1 枚だけでは 4 個の配置の
+  合成動画で回し始めを 45ms 遅く読んでいた。止まっている間に 200ms ごとに処理する 1 枚も、取っておいた中のいちばん古いもの）。設定はライブより重い（二値化の窓を細かく `arucoThorough`・読めなかったマスを全部読み直す）
 - 精密解析は直前のフレームのマーカーの周り（マーカーの辺の 2.5 倍まで広げる）で検出する（`arucoRegion`、`src/vision/arucoFrame.ts`。
   マーカーの大きさの範囲は画像全体と同じ画素数にする。切り出しの縁の近くに見つかった・何も見つからないときは全体でやり直す）。
   全体で検出したのと同じマーカーが読める（合成の 2171 枚中 2168 枚が同じ位置）。キューブが画面の半分ほどの場面で 1 フレーム 106 → 77ms
@@ -334,4 +345,4 @@ CV: OpenCV.js（@techstark/opencv-js。ArUco の検出）
 
 スマホで検証するときは `npm run dev:lan`（LAN 公開 + 自己署名 HTTPS。`getUserMedia` は HTTPS か localhost が必須）。
 カメラは `frameRate: { ideal: 60 }` を要求し、実際の fps は画面上部に表示している（要求と実測は違う）。
-デモ（合成カメラ）は `?demo`、符号・配置は `?stickers=aruco12`（`aruco`）・`?design=quad-half`。
+デモ（合成カメラ）は `?demo`。
