@@ -21,6 +21,11 @@ export interface PipelineConfig {
   // aruco12 は 3×3 の 12 種類、aruco は最初に印刷した 4×4 の 54 種類（src/aruco/codes.ts）
   stickers?: "color" | "aruco" | "aruco12" | "unique54";
   arucoThorough?: boolean; // ArUco: 二値化の窓を細かく試す（精密解析。src/aruco/detect.ts の THOROUGH_PARAMS）
+  // ArUco: 組み立てた面の読めなかったマスを、切り出して拡大して読み直す数（再認識。src/aruco/reread.ts）。
+  // 省略時はライブ 4・精密解析（arucoThorough）は全部
+  arucoReread?: number;
+  // ArUco: 先に読み直すマス（カメラフレームの slot * 9 + cell）。追跡が未確定・推定とみているマス（TrackerEngine.cellBelief）
+  focus?: number[];
   guideSize: number; // ガイド枠モード: 短辺に対する枠の大きさ
   region: number; // セル内のサンプリング範囲
   maxSpread: number; // セル内のばらつきがこれ以上なら読まない
@@ -79,6 +84,7 @@ export interface DetectedFace {
   masked: boolean[]; // 手で隠れている
   // 窓の位置が一意に決まらなかったとき、1 段ずらした格子での読み（どちらが正しいかはデコーダが状態と照らして決める）
   alts?: { labs: Lab[]; valid: boolean[] }[];
+  ids?: number[]; // ArUco ステッカー（マスごとに違う符号）: 読んだステッカーの ID（揃った状態での facelet 番号。-1 = 不明）
 }
 
 export interface FrameResult {
@@ -348,7 +354,8 @@ export function processFrame(
   refs: Lab[] | null,
   hands: Pt[][] = [],
 ): FrameResult {
-  if (config.stickers && config.stickers !== "color" && cv) return processAruco(cv, img, t, memory, stickerScheme(config.stickers), !!config.arucoThorough);
+  if (config.stickers && config.stickers !== "color" && cv)
+    return processAruco(cv, img, t, memory, stickerScheme(config.stickers), !!config.arucoThorough, { reread: config.arucoReread, focus: config.focus });
   let placed: PlacedFace[] = [];
   let quadsOut: Pt[][] = [];
   if (config.mode === "guide" || !cv) {

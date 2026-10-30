@@ -13,6 +13,7 @@ export interface FaceReading {
   spread?: number[]; // 9（セル内の色のばらつき。開始・終了時刻の判定に使う）
   masked?: boolean[]; // 9（手で隠れている）
   alts?: { labs: Lab[]; valid: boolean[] }[]; // 窓の位置が曖昧なとき、ずらした格子での読み
+  ids?: number[]; // 9（マスごとに違う ArUco ステッカーの ID = 揃った状態での facelet 番号。-1 = 読めない）
 }
 
 export interface FrameReading {
@@ -29,6 +30,7 @@ export interface ObserverOptions {
   // ArUco は斜めの面のマーカーが読めたり読めなかったりするので、組み合わせの一致を求めると観測が出ない
   mergeSlots?: boolean;
   singleFrameWeight: number; // 1フレームだけの観測の重み（1枚の誤読が1手分のコストを超えないように）
+  idMismatchCost?: number; // 色は合うのに読んだステッカーと違うときのコスト（既定 1.0。1 手のコストと同じ）
 }
 
 // ArUco ステッカー: 読めたマスの色は ID から確定するので、少ないマスでも観測に入れる（ライブと精密解析で同じ）
@@ -42,7 +44,7 @@ export const DEFAULT_OBSERVER: ObserverOptions = {
 
 interface Labeled {
   t: number;
-  faces: { slot: number; labs: Lab[]; labels: Int8Array; weight: number[] }[];
+  faces: { slot: number; labs: Lab[]; labels: Int8Array; weight: number[]; ids: Int16Array | null }[];
 }
 
 const signature = (f: Labeled) => f.faces.map((x) => x.slot).sort().join(",");
@@ -53,10 +55,18 @@ function conflicts(a: Int8Array, b: Int8Array): number {
   return n;
 }
 
+// 両方で読めたステッカーが食い違うセルの数（同じ色の別のステッカー: 色だけでは見えない手が起きた）
+function idConflicts(a: Int16Array | null | undefined, b: Int16Array | null | undefined): number {
+  if (!a || !b) return 0;
+  let n = 0;
+  for (let i = 0; i < 9; i++) if (a[i] >= 0 && b[i] >= 0 && a[i] !== b[i]) n++;
+  return n;
+}
+
 export class FaceObserver {
   options: ObserverOptions;
   private frames: Labeled[] = [];
-  private last: { slots: string; faces: Map<number, Int8Array> } | null = null;
+  private last: { slots: string; faces: Map<number, Int8Array>; ids: Map<number, Int16Array | null> } | null = null;
   private lastConsistentT = 0;
   private deltas: number[] = [];
   private lastT: number | null = null;
@@ -94,10 +104,11 @@ export class FaceObserver {
         labs: f.labs,
         labels: Int8Array.from(f.labs.map((lab, i) => (f.valid[i] ? this.colors.classify(lab).label : -1))),
         weight: f.weight ?? [1, 1, 1, 1, 1, 1, 1, 1, 1],
+        ids: f.ids ? Int16Array.from(f.ids.map((id, i) => (f.valid[i] ? id : -1))) : null,
       })),
     };
     // 前回の観測とまだ矛盾していないなら、その観測は「この時刻まで続いていた」
-    if (this.last && signature(labeled) === this.last.slots && labeled.faces.every((f) => conflicts(f.labels, this.last!.faces.get(f.slot)!) === 0)) {
+    if (this.last && signature(labeled) === this.last.slots && labeled.faces.every((f) => conflicts(f.labels, this.last!.faces.get(f.slot)!) === 0 && idConflicts(f.ids, this.last!.ids.get(f.slot)) === 0)) {
       this.lastConsistentT = frame.t;
     }
     if (this.lastT !== null && frame.t > this.lastT) {
@@ -121,7 +132,7 @@ export class FaceObserver {
       if (known < minKnown && f.slot === 2) return null;
       for (const g of this.frames) {
         const gf = g.faces.find((x) => x.slot === f.slot)!;
-        if (conflicts(gf.labels, f.labels)) return null;
+        if (conflicts(gf.labels, f.labels) || idConflicts(gf.ids, f.ids)) return null;
       }
     }
 
@@ -130,6 +141,9 @@ export class FaceObserver {
     for (const f of common) {
       const cost = new Float32Array(54);
       const labels = new Int8Array(9).fill(-1);
+      // 読んだステッカー: 読めたフレームの ID（安定を見るフレームの間で食い違わないことは上で確かめた）
+      const ids = f.ids ? new Int16Array(9).fill(-1) : null;
+      const idCost = ids ? new Float32Array(9) : null;
       let known = 0;
       for (let cell = 0; cell < 9; cell++) {
         const labs: Lab[] = [];
@@ -147,6 +161,13 @@ export class FaceObserver {
         const wmean = (wsum / labs.length) * (this.frames.length === 1 ? this.options.singleFrameWeight : 1);
         if (wmean < 1) for (let c = 0; c < 6; c++) cost[cell * 6 + c] *= wmean;
         if (labels[cell] >= 0) known++;
+        if (ids && idCost && labels[cell] >= 0) {
+          for (const g of this.frames) {
+            const id = g.faces.find((x) => x.slot === f.slot)!.ids?.[cell] ?? -1;
+            if (id >= 0 && Math.floor(id / 9) === labels[cell]) ids[cell] = id;
+          }
+          if (ids[cell] >= 0) idCost[cell] = (this.options.idMismatchCost ?? 1) * Math.min(1, wmean);
+        }
       }
       if (known >= (this.options.minSideKnown ?? 3) || f.slot === 2) {
         // 窓の位置をずらした読み（このフレームのもの）。どちらが正しいかはデコーダが決める
@@ -161,7 +182,9 @@ export class FaceObserver {
           }
           return c;
         });
-        faces.push(alts?.length ? { slot: f.slot, cost, labels, alts } : { slot: f.slot, cost, labels });
+        const obsFace: FaceObservation = alts?.length ? { slot: f.slot, cost, labels, alts } : { slot: f.slot, cost, labels };
+        if (ids && idCost && ids.some((id) => id >= 0)) Object.assign(obsFace, { ids, idCost });
+        faces.push(obsFace);
       }
     }
     if (!faces.some((f) => f.slot === 2)) return null;
@@ -172,7 +195,7 @@ export class FaceObserver {
         this.last.slots === slots &&
         faces.every((f) => {
           const prev = this.last!.faces.get(f.slot)!;
-          if (conflicts(prev, f.labels)) return false;
+          if (conflicts(prev, f.labels) || idConflicts(this.last!.ids.get(f.slot), f.ids)) return false;
           // 新しく読めるようになったセルが2枚以上あれば情報が増えたので出す
           let gained = 0;
           for (let i = 0; i < 9; i++) if (prev[i] < 0 && f.labels[i] >= 0) gained++;
@@ -185,7 +208,7 @@ export class FaceObserver {
     }
     const t = this.frames[0].t;
     const tPrevEnd = this.last ? Math.min(this.lastConsistentT, t) : t;
-    this.last = { slots, faces: new Map(faces.map((f) => [f.slot, f.labels])) };
+    this.last = { slots, faces: new Map(faces.map((f) => [f.slot, f.labels])), ids: new Map(faces.map((f) => [f.slot, f.ids ?? null])) };
     this.lastConsistentT = frame.t;
     this.emitted++;
     return { t, tPrevEnd, faces };

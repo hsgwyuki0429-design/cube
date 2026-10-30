@@ -2,7 +2,7 @@
 // メインスレッドは描画と UI だけを受け持つ。
 import cvModule from "@techstark/opencv-js";
 import { type Mat3, ORIENTATIONS, mul } from "../cube/model";
-import { TrackerEngine } from "../track/engine";
+import { TrackerEngine, focusCells } from "../track/engine";
 import { StreamDecoder, decodeRecording } from "./decode";
 import { StillSkipper } from "./motion";
 import { estimatePose, rotationAngle } from "./pose";
@@ -22,6 +22,7 @@ let refs: Lab[] | null = null;
 let engine: TrackerEngine | null = null;
 const memory: { last: PipelineMemory | null } = { last: null };
 let lastPose: { t: number; M: Mat3 } | null = null; // 直前に送った 3D の向き（キューブ固定 → カメラ）
+let focus: number[] | undefined; // 追跡が未確定・推定とみているマス（ArUco で先に読み直す）
 
 // ソルブ中から進める精密解析（解析用の Worker で使う）
 interface Stream {
@@ -88,15 +89,18 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
       case "track-start":
         refs = msg.refs;
         engine = new TrackerEngine(Uint8Array.from(msg.state), msg.refs, msg.options, msg.orients);
+        focus = undefined;
         return;
       case "track-options":
         engine?.setOptions(msg.options);
         return;
       case "track-reset":
         engine?.reset(Uint8Array.from(msg.state), msg.orients);
+        focus = undefined;
         return;
       case "track-stop":
         engine = null;
+        focus = undefined;
         return;
       case "track-query":
         post({ type: "track-snapshot", id: msg.id, track: engine ? engine.snapshot() : null });
@@ -189,9 +193,10 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
         const img = ctx!.getImageData(0, 0, w, h);
         const handsPx = hands.map((hull) => hull.map(([x, y]) => [x * w, y * h] as Pt));
         // キューブを見つけた後は、直前の位置の周りだけを縮小して処理する（速さが追従の前提）
-        const result = processTracked(cv, img, msg.t, config, memory, engine ? engine.colors.refs : refs, handsPx);
-        const reading = { t: msg.t, faces: result.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, alts: f.alts })) };
+        const result = processTracked(cv, img, msg.t, focus?.length ? { ...config, focus } : config, memory, engine ? engine.colors.refs : refs, handsPx);
+        const reading = { t: msg.t, faces: result.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, alts: f.alts, ids: f.ids })) };
         const track = engine?.push(reading) ?? undefined;
+        if (track) focus = focusCells(track.cells, track.orient);
         let looksSolved: boolean | undefined;
         let pose: FrameMessage["pose"];
         if (engine && reading.faces.length) {

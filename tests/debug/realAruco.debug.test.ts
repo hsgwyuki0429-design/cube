@@ -100,7 +100,7 @@ it("ライブの経路での 3D の向き", async () => {
     frames++;
     const t = (i * 1000) / FPS;
     const r = processFrame(cv, { data: buf, width: W, height: H }, t, pipeline, memory, engine.colors.refs);
-    const reading = { t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked })) };
+    const reading = { t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, ids: f.ids })) };
     engine.push(reading);
     let M: number[] | null = null;
     if (reading.faces.length) {

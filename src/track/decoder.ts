@@ -13,6 +13,7 @@
 // 参考: AllefDouglasDev/rubik-cube (MIT) の app/src/tracking/decoder.ts のビームサーチを基に、
 // 姿勢（24通り）を仮説に含め、ソフトな色コスト・下限による刈り込み・見失い検出と復帰を加えたもの。
 import { MOVE_SRC, NUM_MOVES, NUM_ORIENTATIONS, OPPOSITE, VIEW, type CubeState, cubeFaceAt, moveFace, statesEqual } from "../cube/model";
+import { stickerIdAt } from "../cube/stickers";
 import { type MovePrior, EMPTY_CONTEXT, movePrior, shiftContext } from "./prior";
 import type { DecodedMove, Observation, TrackStatus } from "./types";
 
@@ -133,6 +134,8 @@ interface CompiledObs {
   costs: Float32Array[]; // face ごと
   faceOf: Int32Array;
   alts: (Float32Array[] | undefined)[]; // face ごとの、窓の位置をずらした読みのコスト
+  ids: (Int16Array | undefined)[]; // face ごとの、読んだステッカー（マスごとに違う ArUco ステッカー）
+  idCost: (Float32Array | undefined)[];
 }
 
 // ずらした格子の読みを使うときの上乗せ（見つかった格子の位置を少しだけ優先する。1 手のコスト 1.0 より小さく）
@@ -150,7 +153,7 @@ function compile(obs: Observation, o: number): CompiledObs {
       faceOf[k * 9 + cell] = k;
     }
   });
-  return { idx, costBase, costs: obs.faces.map((f) => f.cost), faceOf, alts: obs.faces.map((f) => f.alts) };
+  return { idx, costBase, costs: obs.faces.map((f) => f.cost), faceOf, alts: obs.faces.map((f) => f.alts), ids: obs.faces.map((f) => f.ids), idCost: obs.faces.map((f) => f.idCost) };
 }
 
 function evalCost(state: Uint8Array, c: CompiledObs): number {
@@ -160,6 +163,17 @@ function evalCost(state: Uint8Array, c: CompiledObs): number {
     const main = c.costs[k];
     let s = 0;
     for (let i = base; i < base + 9; i++) s += main[c.costBase[i] + state[c.idx[i]]];
+    // 読んだステッカー: 色が合っていて（色の矛盾は上で払っている）、仮説ではそこに別のステッカーがあるとき
+    const ids = c.ids[k];
+    if (ids) {
+      const ic = c.idCost[k]!;
+      for (let cell = 0; cell < 9; cell++) {
+        const id = ids[cell];
+        if (id < 0) continue;
+        const f = c.idx[base + cell];
+        if (state[f] === Math.floor(id / 9) && stickerIdAt(state, f) !== id) s += ic[cell];
+      }
+    }
     const alts = c.alts[k];
     if (alts)
       for (const a of alts) {
