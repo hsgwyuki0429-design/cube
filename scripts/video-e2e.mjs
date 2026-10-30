@@ -1,9 +1,9 @@
 // 動画ファイルの精密解析（タイマーの「スロー動画から記録」・フリーの「動画を解析」）の端から端までのテスト。
-// ビルド済みのアプリを開き、ArUco（unique54）のキューブの合成動画を読み込ませて、手順とタイムを確かめる。
+// ビルド済みのアプリを開き、ArUco（unique54・4 個・幅 1/2）のキューブの合成動画を読み込ませて、手順とタイムを確かめる。
 //   npm run build && VIDEO_FREE=tperm.mp4 VIDEO_TIMER=timer.mp4 node scripts/video-e2e.mjs
 // 動画は tests/debug/arucoCubeVideo.debug.test.ts で作る:
-//   フリー: ARUCO_SCHEME=unique54 ARUCO_VIDEO=tperm.mp4（揃った状態から T-perm 2 回、240fps）
-//   タイマー: ARUCO_SCHEME=unique54 ARUCO_START="R U F' L D2 B" ARUCO_ALG="B' D2 L' F U' R'" ARUCO_FILE_FPS=30 ARUCO_VIDEO=timer.mp4
+//   フリー: ARUCO_SCHEME=unique54 ARUCO_DESIGN=quad-half ARUCO_VIDEO=tperm.mp4（揃った状態から T-perm 2 回、240fps）
+//   タイマー: ARUCO_SCHEME=unique54 ARUCO_DESIGN=quad-half ARUCO_START="R U F' L D2 B" ARUCO_ALG="B' D2 L' F U' R'" ARUCO_FILE_FPS=30 ARUCO_VIDEO=timer.mp4
 //   （240fps で撮って 30fps の再生に書き出した動画。撮影した fps に 240 を入れて実際の時間に直す）
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
@@ -47,7 +47,7 @@ async function open() {
   const logs = [];
   page.on("console", (m) => logs.push(`[${m.type()}] ${m.text()}`));
   page.on("pageerror", (e) => logs.push(`[pageerror] ${e.message}`));
-  await page.goto(`http://localhost:${PORT}/?stickers=unique54`);
+  await page.goto(`http://localhost:${PORT}/`);
   await page.waitForFunction(() => !!window.__cubevision, null, { timeout: 60000 });
   // 揃った状態から（ArUco はスキャンなしで始められる）
   await page.evaluate(() => window.__cubevision.startFromSolved());

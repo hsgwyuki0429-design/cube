@@ -7,6 +7,7 @@ import "./aruco.css";
 import { SCHEMES, SCHEME_LABEL, type StickerScheme } from "./codes";
 import type { CubeFrame, CubeResult, VisibleFace } from "./cube";
 import { CubeResults } from "./cubePanel";
+import { STICKERS } from "./design";
 import { DEFAULT_CONFIGS, type DetectorConfig, PARAM_KEYS, TUNED_PARAMS } from "./detect";
 import type { FromArucoWorker, VideoInfo } from "./protocol";
 import { type FrameRecord, SPEED_LABELS, type Summary, colorLabel, summarize, toCsv, toMarkdown } from "./stats";
@@ -36,7 +37,6 @@ export function ArucoPage() {
   const [file, setFile] = useState<File | null>(null);
   const [fileUrl, setFileUrl] = useState<string | null>(null);
   const [scheme, setScheme] = useState<StickerScheme>("unique54");
-  const [design, setDesign] = useState("standard");
   const [runScheme, setRunScheme] = useState<StickerScheme>("unique54");
   const [sheetKey, setSheetKey] = useState("t12");
   const [captureFps, setCaptureFps] = useState("");
@@ -110,14 +110,16 @@ export function ArucoPage() {
     framesRef.current = [];
     setRunConfigs(configs);
     setRunMode(mode);
-    setRunScheme(scheme);
+    // キューブモードは本体と同じステッカーだけ（54 種類・4 個・幅 1/2）。テストモードはシートの符号を選ぶ
+    const runWith: StickerScheme = mode === "cube" ? STICKERS.stickers : scheme;
+    setRunScheme(runWith);
     setCube(null);
     setInfo(null);
     setProgress(null);
     setError(null);
     setRunning(true);
     setVersion((v) => v + 1);
-    workerRef.current.postMessage({ type: "analyze", file, options: { configs, maxSide, stride, scheme, design: scheme === "unique54" ? design : "standard" } });
+    workerRef.current.postMessage({ type: "analyze", file, options: { configs, maxSide, stride, scheme: runWith, design: mode === "cube" ? STICKERS.arucoDesign : "standard" } });
   };
 
   const sheets = SHEETS.filter((s) => s.scheme === scheme);
@@ -183,20 +185,13 @@ export function ArucoPage() {
       <div class="card">
         <div class="card-head">1. 動画と条件</div>
         <div class="card-body form">
-          <label>
-            ステッカーの種類
-            <select value={scheme} onChange={(e) => setScheme((e.target as HTMLSelectElement).value as StickerScheme)}>
-              {SCHEMES.map((k) => (
-                <option value={k}>{SCHEME_LABEL[k]}</option>
-              ))}
-            </select>
-          </label>
-          {scheme === "unique54" && (
+          {mode === "sheet" && (
             <label>
-              マーカーの配置
-              <select value={design} onChange={(e) => setDesign((e.target as HTMLSelectElement).value)}>
-                <option value="standard">1 個（いっぱいの大きさ）</option>
-                <option value="quad-half">4 個・幅 1/2</option>
+              シートの符号
+              <select value={scheme} onChange={(e) => setScheme((e.target as HTMLSelectElement).value as StickerScheme)}>
+                {SCHEMES.map((k) => (
+                  <option value={k}>{SCHEME_LABEL[k]}</option>
+                ))}
               </select>
             </label>
           )}

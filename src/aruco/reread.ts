@@ -4,7 +4,7 @@
 // 分かる: centerOffset）と合うときだけ使う（合わない読みは捨てて「不明」のまま。無理に決めない）。DOM もカメラも知らない
 import { type Mat3, type Pt, applyH, invertH } from "../vision/homography";
 import { type StickerScheme, centerOffset, decode, hasIdentity } from "./codes";
-import { colorConsistent, readConfidence } from "./cube";
+import { cellH, colorConsistent, readConfidence } from "./cube";
 import type { VisibleFace } from "./cube";
 import type { ArucoBench, ImageLike } from "./detect";
 
@@ -116,7 +116,7 @@ export function rereadFaces(bench: ArucoBench, img: ImageLike, faces: VisibleFac
   todo.sort((a, b) => a.pri - b.pri);
   const got = new Set<number>();
   for (const { f, cell } of todo.slice(0, budget)) {
-    const r = rereadCell(bench, img, f.H, cell, scheme);
+    const r = rereadCell(bench, img, cellH(f, cell), cell, scheme);
     if (!r) continue;
     f.colors[cell] = r.face;
     f.ids[cell] = r.sticker;

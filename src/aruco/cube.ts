@@ -25,6 +25,20 @@ export interface VisibleFace {
   H: Mat3; // 面の座標（x = 列・y = 行、0〜3）→ 画像。本体の認識の DetectedFace（rot = 0）と同じ
   partial?: boolean; // 1 列（1×3・1×2）か 1 枚だけの面（外枠は推定。3D の傾きの計算には使わない）
   marker?: number; // マーカー（今の配置の 1 個。4 個の配置は仮想のマーカー）の辺（マスの間隔 = 1）
+  // 回している途中の層（外側の 1 列か 1 行）: その列のマスは本体（残りの 2 列）の格子 H からずれているので、別の格子で置く。
+  // 隠れて読めなかったマスも、その列にあれば層の格子で置く（ほかに決め手がなければ、同じ列のマスと一緒に動いたと考える）
+  layer?: FaceLayer;
+}
+
+export interface FaceLayer {
+  cells: number[]; // 層のマス（その列・行の 3 マス）
+  H: Mat3; // 層の格子（面の座標 → 画像。座標は H と同じ 0〜3）
+  rect: [number, number, number, number]; // 層の範囲（面の座標の x0, y0, x1, y1）
+}
+
+// マス cell の格子（回している途中の層のマスは層の格子）
+export function cellH(f: { H: Mat3; layer?: FaceLayer }, cell: number): Mat3 {
+  return f.layer?.cells.includes(cell) ? f.layer.H : f.H;
 }
 
 export interface FaceOptions {
@@ -85,6 +99,81 @@ interface Group {
   G: Mat3; // 基準の座標（マーカーの辺 = 1、基準のマーカーの中心が原点）→ 画像
   pitch: number;
   accepted: { m: Marker; key: string; res: number }[]; // 格子の点に合ったマーカーすべて（同じマスに何枚あっても）
+  layer?: { axis: 0 | 1; v: number; G: Mat3 }; // 回している途中の層: 基準の座標の i（axis 0）か j（axis 1）が v の列。G はその列の格子
+}
+
+// 回している途中の層を分ける: 外側の 1 列（行）のマーカーだけが、残りの 2 列の格子からずれていれば、その列を別の格子にする。
+// 1 つの格子で全部に合わせると、回っている列に引っ張られて面全体の格子が実物からずれていた（指・再認識・色の補完の位置も狂う）
+const SPLIT = { minShift: 0.15, maxBodyErr: 0.08, ratio: 3 }; // ずれ・本体の合い方（マーカーの辺 = 1）、ずれ / 本体の合い方
+function splitLayer(cells: Group["cells"], pitch: number): Group["layer"] | null {
+  const list = [...cells.values()];
+  if (list.length < 3) return null;
+  const pts = (c: (typeof list)[number]) => {
+    const img = cornersOf(c.m);
+    return [0, 1, 2, 3].map((k) => {
+      const u = UNIT[(k + c.rot) % 4];
+      return { src: [c.i * pitch + u[0], c.j * pitch + u[1]] as Pt, dst: img[k] };
+    });
+  };
+  const fit = (cs: typeof list) => {
+    const ps = cs.flatMap(pts);
+    return fitHomography(
+      ps.map((p) => p.src),
+      ps.map((p) => p.dst),
+    );
+  };
+  // マーカーの角のずれ（そのマーカーの辺の長さに対する割合）の平均
+  const err = (G: Mat3, c: (typeof list)[number]) => {
+    const ps = pts(c);
+    const side = (Math.hypot(ps[1].dst[0] - ps[0].dst[0], ps[1].dst[1] - ps[0].dst[1]) + Math.hypot(ps[2].dst[0] - ps[1].dst[0], ps[2].dst[1] - ps[1].dst[1])) / 2 || 1;
+    return ps.reduce((sum, p) => {
+      const q = applyH(G, p.src[0], p.src[1]);
+      return sum + Math.hypot(q[0] - p.dst[0], q[1] - p.dst[1]);
+    }, 0) / 4 / side;
+  };
+  const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / Math.max(1, xs.length);
+  let best: { layer: NonNullable<Group["layer"]>; score: number } | null = null;
+  for (const axis of [0, 1] as const) {
+    const at = (c: (typeof list)[number]) => (axis === 0 ? c.i : c.j);
+    const vs = list.map(at);
+    const lo = Math.min(...vs);
+    const hi = Math.max(...vs);
+    if (hi - lo !== 2) continue;
+    for (const v of [lo, hi]) {
+      const layer = list.filter((c) => at(c) === v);
+      const body = list.filter((c) => at(c) !== v);
+      // 本体は 2 列に広がっていること（1 列だけでは、どちらが回ったか決められない）
+      if (!layer.length || body.length < 2 || new Set(body.map(at)).size < 2) continue;
+      const Gb = fit(body);
+      if (!Gb) continue;
+      const bodyErr = mean(body.map((c) => err(Gb, c)));
+      const shift = mean(layer.map((c) => err(Gb, c)));
+      if (bodyErr > SPLIT.maxBodyErr || shift < SPLIT.minShift || shift < bodyErr * SPLIT.ratio) continue;
+      // 層の格子: 2 マス以上ならその角から。1 マスだけなら、本体の格子をそのマスのずれだけ平行に動かす（1 枚の角から延ばすと遠くが狂う）
+      let Gl: Mat3 | null = null;
+      if (layer.length >= 2) Gl = fit(layer);
+      else {
+        const Gi = invertH(Gb);
+        const ps = pts(layer[0]);
+        const d = ps.reduce((acc, p) => {
+          const q = applyH(Gi, p.dst[0], p.dst[1]);
+          return [acc[0] + (q[0] - p.src[0]) / 4, acc[1] + (q[1] - p.src[1]) / 4];
+        }, [0, 0]);
+        Gl = mulH(Gb, [1, 0, d[0], 0, 1, d[1], 0, 0, 1]);
+      }
+      if (!Gl) continue;
+      const score = shift / (bodyErr + 0.02);
+      if (!best || score > best.score) best = { layer: { axis, v, G: Gl }, score };
+    }
+  }
+  return best?.layer ?? null;
+}
+
+// 3×3 の行列の積 a·b
+function mulH(a: Mat3, b: number[]): Mat3 {
+  const out: number[] = [];
+  for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) out.push(a[r * 3] * b[c] + a[r * 3 + 1] * b[3 + c] + a[r * 3 + 2] * b[6 + c]);
+  return out as Mat3;
 }
 
 function gatherGroup(ref: Marker, pool: Marker[], o: FaceOptions): Group | null {
@@ -144,6 +233,23 @@ function gatherGroup(ref: Marker, pool: Marker[], o: FaceOptions): Group | null 
     }
     const refit = fitHomography(src, dst);
     if (refit) G = refit;
+  }
+  const layer = splitLayer(cells, pitch);
+  if (layer) {
+    // 面の格子は本体（残りの 2 列）だけで当て直す
+    const body = [...cells.values()].filter((c) => (layer.axis === 0 ? c.i : c.j) !== layer.v);
+    const src: Pt[] = [];
+    const dst: Pt[] = [];
+    for (const c of body) {
+      const pts = cornersOf(c.m);
+      for (let k = 0; k < 4; k++) {
+        const u = UNIT[(k + c.rot) % 4];
+        src.push([c.i * pitch + u[0], c.j * pitch + u[1]]);
+        dst.push(pts[k]);
+      }
+    }
+    const Gb = fitHomography(src, dst);
+    if (Gb) return { cells, G: Gb, pitch, accepted, layer };
   }
   return { cells, G, pitch, accepted };
 }
@@ -669,7 +775,36 @@ function layout(face: NonNullable<ReturnType<typeof toFace>>, slot: number, E: n
     outline,
   );
   if (!H) return null;
-  return { colors, ids, conf, outline, H, marker: 1 / g.pitch };
+  // 回している途中の層: その列（行）の 3 マスと、層の格子
+  let layer: FaceLayer | undefined;
+  if (g.layer) {
+    const L = g.layer;
+    const cellsIn: number[] = [];
+    for (let r = 0; r < 3; r++)
+      for (let c = 0; c < 3; c++) {
+        const [i, j] = best.inv(r - dr, c - dc);
+        if ((L.axis === 0 ? i : j) === L.v) cellsIn.push(r * 3 + c);
+      }
+    const cornerL = (r: number, c: number): Pt => {
+      const [i, j] = best.inv(r - dr, c - dc);
+      return applyH(L.G, i * g.pitch, j * g.pitch);
+    };
+    const HL = fitHomography(
+      [
+        [0, 0],
+        [3, 0],
+        [3, 3],
+        [0, 3],
+      ],
+      [cornerL(-0.5, -0.5), cornerL(-0.5, 2.5), cornerL(2.5, 2.5), cornerL(2.5, -0.5)],
+    );
+    if (HL && cellsIn.length === 3) {
+      const rows = cellsIn.map((k) => Math.floor(k / 3));
+      const cols = cellsIn.map((k) => k % 3);
+      layer = { cells: cellsIn, H: HL, rect: [Math.min(...cols), Math.min(...rows), Math.max(...cols) + 1, Math.max(...rows) + 1] };
+    }
+  }
+  return { colors, ids, conf, outline, H, marker: 1 / g.pitch, ...(layer ? { layer } : {}) };
 }
 
 // 読みの確からしさ: マスの中心の明暗が符号どおりの割合（fit）から。合成画像（54 種類・指・ぶれ・180 場面）で、誤読 22 枚のうち

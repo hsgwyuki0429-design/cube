@@ -112,3 +112,7 @@ export function designLook(d: StickerDesign, scheme: StickerScheme = "unique54")
   ].map(([i, j]) => ({ pair: `${names[i]}–${names[j]}`, dE: deltaE76(means[i], means[j]) }));
   return { colorArea: area, meanDeltaE: dE, minPairDeltaE: minPair, pairs };
 }
+
+// 対応するステッカー: 各ステッカーに 54 種類（マスごとに違う 3×3 の符号）の色付き ArUco マーカーを、幅 1/2 で 2×2 に 4 個
+// （cubevision_unique54_designs.pdf の「4 個・幅 1/2」。src/aruco/codes.ts・この DESIGNS）
+export const STICKERS = { stickers: "unique54", arucoDesign: "quad-half" } as const;

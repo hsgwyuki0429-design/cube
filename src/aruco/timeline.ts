@@ -1,6 +1,4 @@
-// 推定した手順を、実際に回した速さと間で 3D に再生するための時間の対応（DOM を知らない）。
-// 手 i は実時間 [start, end]（回し始め〜回し終わり）に回る。3D（cubing.js）の再生位置は手ごとに [pStart, pStart + pDur]
-// で、間がない。実時間の T を 3D の再生位置に写す: 回している途中はその手の中を比例で進め、手と手の間は前の手の終わりで止める。
+// 推定した手順の時刻（DOM を知らない）。3D（src/aruco/timedCube.tsx）は、動画の時刻 T までに回し始めた手を決まった速さで回す
 import type { DecodedMove } from "../track/types";
 
 export interface Span {
@@ -24,16 +22,6 @@ export function moveSpans(moves: DecodedMove[]): Span[] {
     prevEnd = end;
   }
   return out;
-}
-
-// 実時間 T → 3D の再生位置。pStart[i]・pDur[i] は 3D 側の手 i の開始位置と長さ
-export function playerTimestamp(T: number, spans: Span[], pStart: number[], pDur: number[]): number {
-  if (!spans.length || T <= spans[0].start) return 0;
-  let i = 0;
-  while (i + 1 < spans.length && spans[i + 1].start <= T) i++;
-  const s = spans[i];
-  if (T >= s.end) return pStart[i] + pDur[i];
-  return pStart[i] + (pDur[i] * (T - s.start)) / (s.end - s.start);
 }
 
 // いま回している（または最後に回した）手の番号。手の前なら -1

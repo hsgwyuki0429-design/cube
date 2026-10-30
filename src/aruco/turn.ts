@@ -8,7 +8,7 @@
 // 形だけからは 90° ごとの区別がつかない（θ は -45°〜45°）。フレームをまたいで θ をつなぐと（unwrapTurn）、回した向きと量が分かる。
 // DOM もカメラも知らない
 import { NORMAL, type Vec3 } from "../cube/model";
-import { type Pt, fitHomography } from "../vision/homography";
+import { type Mat3, type Pt, fitHomography } from "../vision/homography";
 import { type Pose, defaultFocal, estimatePose, latticePoint } from "../vision/pose";
 import type { VisibleFace } from "./cube";
 import { STANDARD_DESIGN, type StickerDesign } from "./design";
@@ -25,6 +25,7 @@ export interface TurnShape {
 
 export interface PlacedMarker {
   id: number;
+  sticker: number; // 合ったマス（回す前の位置。カメラフレームの面 slot * 9 + cell）
   center: Vec3; // キューブの座標（カメラフレームに揃ったキューブ、マス = 1、面は ±1.5）
   normal: Vec3;
   layer: boolean; // 回している層のマーカー
@@ -332,8 +333,8 @@ function placeAll(ctx: Ctx, obs: Obs[], turn: TurnShape | null, o: TurnOptions):
     const n = cubeNormal(ctx, x);
     const b = nearestIn(ctx, body, x, n, o);
     const l = turn ? nearestIn(ctx, layer, x, n, o) : { s: -1, d: Infinity };
-    if (b.d < o.bodyTol && b.d <= l.d) out.push({ id: x.m.id, center: STICKERS[b.s].pos, normal: STICKERS[b.s].normal, layer: false, err: b.d });
-    else if (turn && l.d < o.matchTol) out.push({ id: x.m.id, center: axisRot(turn.axis, turn.angle, STICKERS[l.s].pos), normal: axisRot(turn.axis, turn.angle, STICKERS[l.s].normal), layer: true, err: l.d });
+    if (b.d < o.bodyTol && b.d <= l.d) out.push({ id: x.m.id, sticker: b.s, center: STICKERS[b.s].pos, normal: STICKERS[b.s].normal, layer: false, err: b.d });
+    else if (turn && l.d < o.matchTol) out.push({ id: x.m.id, sticker: l.s, center: axisRot(turn.axis, turn.angle, STICKERS[l.s].pos), normal: axisRot(turn.axis, turn.angle, STICKERS[l.s].normal), layer: true, err: l.d });
   }
   return out;
 }
@@ -358,3 +359,31 @@ export function unwrapTurn(prev: TurnTrack | null, turn: TurnShape | null, t = 0
 
 // 回している向き: 外から見て時計回りなら 1、反時計回りなら -1（total は軸の正の向きのまわり。上・右・正面の面は軸の正の側）
 export const turnSense = (slot: number, total: number) => (total * (slot < 3 ? 1 : -1) < 0 ? 1 : -1);
+
+// 回している層が通る面（層の外側の面とその反対の面を除く 4 面）の、層のマス（その面の外側の 1 列）
+export function layerCells(slot: number, turn: TurnShape): number[] {
+  if (slot === turn.slot || NORMAL[slot][turn.axis] !== 0) return [];
+  const out: number[] = [];
+  for (let cell = 0; cell < 9; cell++) if (STICKERS[slot * 9 + cell].pos[turn.axis] * turn.layer >= 0.9) out.push(cell);
+  return out;
+}
+
+// 面 slot の格子（面の座標 0〜3 → 画像）を、本体の姿勢 pose で射影したもの。turn を渡すと、層の角度だけ回した面の平面
+export function projectedFace(pose: Pose, size: { width: number; height: number }, slot: number, turn: TurnShape | null = null): Mat3 | null {
+  const ctx = context(pose, size, defaultFocal(size.width, size.height));
+  if (!ctx) return null;
+  const corners: Pt[] = [
+    [0, 0],
+    [3, 0],
+    [3, 3],
+    [0, 3],
+  ];
+  const img: Pt[] = [];
+  for (const [x, y] of corners) {
+    const q = latticePoint(slot, x, y);
+    const p = ctx.project(turn ? axisRot(turn.axis, turn.angle, q) : q);
+    if (!p) return null;
+    img.push(p);
+  }
+  return fitHomography(corners, img);
+}

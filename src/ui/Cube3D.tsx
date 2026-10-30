@@ -20,6 +20,12 @@ export interface Cube3DProps {
 }
 
 const EXTRAPOLATE_MS = 250;
+// 手のアニメーション: 1 手ずつ、前の手を回し終えてから次を回す（cubing.js は回している途中に次の手を足すと、前の手を一瞬で
+// 終わらせるので、速く回すと回転が描かれない手があった）。ふだんは 1 手 約 170ms（tempoScale 3）、たまっていれば速めるが、
+// 人が回るのを見て取れる 1 手 約 85ms（tempoScale 6）より速くしない
+const BASE_TEMPO = 3;
+const MAX_TEMPO = 6;
+const CATCH_UP_MS = 500; // cubing.js の 1 手の長さ（tempoScale 1 のとき）
 const SPIN_MIN = (40 * Math.PI) / 180 / 1000; // rad/ms
 
 // cubing.js の Cube3D は面ごとの素材を共有している（U L F R B D の順の色）
@@ -50,7 +56,9 @@ export function matToQuat(m: readonly number[]): Quaternion {
 export function Cube3D(props: Cube3DProps) {
   const host = useRef<HTMLDivElement>(null);
   const player = useRef<TwistyPlayer | null>(null);
-  const shown = useRef<number[]>([]);
+  const shown = useRef<number[]>([]); // 表示する手（回し終えたものと、queue で待っているもの）
+  const queue = useRef<number[]>([]); // まだ回していない手
+  const pumping = useRef(0); // 次の手を回すタイマー
   const epochRef = useRef(-1);
   const puzzleObj = useRef<Object3D | null>(null);
   const targetQ = useRef(new Quaternion());
@@ -92,6 +100,9 @@ export function Cube3D(props: Cube3DProps) {
     return () => {
       cancelled = true;
       cancelAnimationFrame(raf.current);
+      clearTimeout(pumping.current);
+      pumping.current = 0;
+      queue.current = [];
       player.current?.remove();
       player.current = null;
       puzzleObj.current = null;
@@ -133,29 +144,53 @@ export function Cube3D(props: Cube3DProps) {
     raf.current = requestAnimationFrame(step);
   };
 
+  // 待っている手を 1 つ回し、回し終わるころに次を回す
+  const pump = () => {
+    pumping.current = 0;
+    const p = player.current;
+    const m = queue.current.shift();
+    if (!p || m === undefined) return;
+    const tempo = Math.min(MAX_TEMPO, BASE_TEMPO + 0.75 * queue.current.length);
+    p.tempoScale = tempo;
+    p.experimentalAddMove(MOVE_NAMES[m]);
+    pumping.current = window.setTimeout(pump, CATCH_UP_MS / tempo + 15);
+  };
+
   const apply = () => {
     const p = player.current;
     if (!p || props.controls) return;
     if (props.setupMoves === null) return;
     if (epochRef.current !== props.epoch) {
       epochRef.current = props.epoch;
+      clearTimeout(pumping.current);
+      pumping.current = 0;
+      queue.current = [];
       p.experimentalSetupAlg = props.setupMoves.map((m) => MOVE_NAMES[m]).join(" ");
       p.alg = props.moves.map((m) => MOVE_NAMES[m]).join(" ");
       p.jumpToEnd();
       shown.current = [...props.moves];
-    } else {
-      const old = shown.current;
-      let k = 0;
-      while (k < old.length && k < props.moves.length && old[k] === props.moves[k]) k++;
-      if (k === old.length) {
-        for (const m of props.moves.slice(k)) p.experimentalAddMove(MOVE_NAMES[m]);
-      } else {
-        // 過去の手の解釈が変わった: 一気に置き換える
-        p.alg = props.moves.map((m) => MOVE_NAMES[m]).join(" ");
-        p.jumpToEnd();
-      }
-      shown.current = [...props.moves];
+      return;
     }
+    const old = shown.current;
+    let k = 0;
+    while (k < old.length && k < props.moves.length && old[k] === props.moves[k]) k++;
+    const done = old.length - queue.current.length; // 回し終えた（回している）手の数
+    if (k >= done) {
+      // 回した手はそのまま: 待っている手を新しい手順の続きに置き換える
+      queue.current = props.moves.slice(done);
+    } else {
+      // 回した手の解釈が変わった（精密解析の結果に乗り換えたなど）: 変わらない所まで戻し、そこから先を 1 手ずつ回し直す
+      clearTimeout(pumping.current);
+      pumping.current = 0;
+      p.alg = props.moves
+        .slice(0, k)
+        .map((m) => MOVE_NAMES[m])
+        .join(" ");
+      p.jumpToEnd();
+      queue.current = props.moves.slice(k);
+    }
+    shown.current = [...props.moves];
+    if (!pumping.current && queue.current.length) pump();
   };
 
   useEffect(apply, [props.epoch, props.setupMoves, props.moves]);
