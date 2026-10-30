@@ -27,7 +27,10 @@ unique54 は符号の空きが少ないので、色はフレームの中で比�
 12 種類は誤り訂正がないので、2 ビットで入れ替わりうる ID の組（`CONFUSABLE12`）の相手の色に写ったマーカーを捨てる（`colorConsistent`。色そのものの一致は求めない: 暖かい照明で薄い青・緑が灰色・黄緑に写った）。ライブは角を向けても正面を決める（`frontAlways`）。設定の「ステッカー」を ArUco にすると、普通のプレイ（追跡・スキャン・精密解析・タイマー）も
 ArUco で動く: `processFrame` の入口で分岐し（`PipelineConfig.stickers`、`src/vision/arucoFrame.ts`）、マーカーから組み立てた面の
 各セルを代表色（`src/aruco/palette.ts`）の Lab にして同じ `FrameResult` で返す。代表色が固定なのでスキャンなしで揃った状態から始められる。
-デモ・E2E は `?stickers=unique54`・`E2E_STICKERS=unique54`（`aruco12`・4×4 の 54 種類は `aruco`）。キューブモードの 3D は実際の速さと間で動く（`turnTimes`・`src/aruco/timeline.ts`）。本体の「ArUco」の画面（`src/aruco/`、入口は `src/ui/ArucoScreen.tsx`。初めて開いたときに
+デモ・E2E は `?stickers=unique54`・`E2E_STICKERS=unique54`（`aruco12`・4×4 の 54 種類は `aruco`）。
+ステッカーの中のマーカーの配置（大きさ・4 個・暗いマスの色）の候補は `src/aruco/design.ts`。指で隠れたときの比較は
+`tests/debug/stickerDesign.debug.test.ts`（4 個・幅 1/2 が指に強く、今の大きさがぶれに強い。どれを使うかはユーザーが実物で決める。
+本体の認識はまだ今の配置だけ）。候補の印刷用 PDF は `docs/stickers/cubevision_unique54_designs.pdf`。キューブモードの 3D は実際の速さと間で動く（`turnTimes`・`src/aruco/timeline.ts`）。本体の「ArUco」の画面（`src/aruco/`、入口は `src/ui/ArucoScreen.tsx`。初めて開いたときに
 読み込む）では、スマホのスロー撮影（240fps）の動画を後から解析する。
 キューブモードは見えている面を組み立てて（射影変換・法線・キューブの傾き）、本体のオフラインのデコーダで手順を推定し、
 テストモードは方式（グレー / max(RGB) / パラメータ調整）× 色 × 大きさの検出率を出す。本体の追跡・認識のコードとは独立していて、

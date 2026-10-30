@@ -74,6 +74,35 @@ export function fingerPolygon(fg: Finger, grow = 1): [number, number][] {
   return pts;
 }
 
+// 点 (x, y) から指の芯（線分 a–b）までの距離
+export function fingerDistance(fg: Finger, x: number, y: number): number {
+  const dx = fg.b[0] - fg.a[0];
+  const dy = fg.b[1] - fg.a[1];
+  const len = Math.hypot(dx, dy) || 1;
+  const t = Math.max(0, Math.min(1, ((x - fg.a[0]) * dx + (y - fg.a[1]) * dy) / (len * len)));
+  return Math.hypot(x - (fg.a[0] + dx * t), y - (fg.a[1] + dy * t));
+}
+
+// 指: 肌色のカプセル。幅方向に陰影をつける。img は 1 画素 stride 個（RGB を先頭に）
+export function paintFingers(img: { [i: number]: number }, w: number, h: number, fingers: Finger[], stride = 4): void {
+  for (const fg of fingers) {
+    const col = fg.color ?? [222, 170, 140];
+    const poly = fingerPolygon(fg);
+    const xs = poly.map((q) => q[0]);
+    const ys = poly.map((q) => q[1]);
+    for (let y = Math.max(0, Math.floor(Math.min(...ys))); y <= Math.min(h - 1, Math.ceil(Math.max(...ys))); y++)
+      for (let x = Math.max(0, Math.floor(Math.min(...xs))); x <= Math.min(w - 1, Math.ceil(Math.max(...xs))); x++) {
+        const dist = fingerDistance(fg, x, y);
+        if (dist > fg.width / 2) continue;
+        const shade = 0.75 + 0.35 * Math.sqrt(Math.max(0, 1 - (dist / (fg.width / 2)) ** 2));
+        const k = (y * w + x) * stride;
+        img[k] = col[0] * shade;
+        img[k + 1] = col[1] * shade;
+        img[k + 2] = col[2] * shade;
+      }
+  }
+}
+
 type Img = { data: Uint8ClampedArray; width: number; height: number };
 
 const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -282,30 +311,7 @@ export function renderCube(o: RenderOptions): Img {
       }
   }
 
-  for (const fg of re?.fingers ?? []) {
-    // 指: 肌色のカプセル。幅方向に陰影をつける
-    const col = fg.color ?? [222, 170, 140];
-    const poly = fingerPolygon(fg);
-    const xs = poly.map((q) => q[0]);
-    const ys = poly.map((q) => q[1]);
-    const dx = fg.b[0] - fg.a[0];
-    const dy = fg.b[1] - fg.a[1];
-    const len = Math.hypot(dx, dy) || 1;
-    for (let y = Math.max(0, Math.floor(Math.min(...ys))); y <= Math.min(h - 1, Math.ceil(Math.max(...ys))); y++)
-      for (let x = Math.max(0, Math.floor(Math.min(...xs))); x <= Math.min(w - 1, Math.ceil(Math.max(...xs))); x++) {
-        // 線分までの距離
-        const t = Math.max(0, Math.min(1, ((x - fg.a[0]) * dx + (y - fg.a[1]) * dy) / (len * len)));
-        const px = fg.a[0] + dx * t;
-        const py = fg.a[1] + dy * t;
-        const dist = Math.hypot(x - px, y - py);
-        if (dist > fg.width / 2) continue;
-        const shade = 0.75 + 0.35 * Math.sqrt(Math.max(0, 1 - (dist / (fg.width / 2)) ** 2));
-        const k = (y * w + x) * 4;
-        img[k] = col[0] * shade;
-        img[k + 1] = col[1] * shade;
-        img[k + 2] = col[2] * shade;
-      }
-  }
+  paintFingers(img, w, h, re?.fingers ?? []);
 
   // カメラの色合い・露出（白飛び）・ぼけ
   if (re?.whiteBalance || re?.exposure) {
