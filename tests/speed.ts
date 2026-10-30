@@ -30,6 +30,7 @@ export interface SpeedOptions {
   pipeline?: Partial<PipelineConfig>;
   gap?: number;
   width?: number;
+  height?: number; // 省略時は幅の 3/4
   every?: number; // k フレームに1枚だけ処理する（処理が追いつかない端末のリアルタイム追跡の再現）
   scene?: SceneOptions; // 実物らしい条件（艶の映り込み・色合い・持つ指）。指定すると円の指の代わりに使う
   onFrame?: (t: number, img: { data: Uint8ClampedArray; width: number; height: number }, hands: [number, number][][]) => void; // 調査用
@@ -75,7 +76,7 @@ export function simulate(cv: CV, o: SpeedOptions): SpeedResult {
   const memory = { last: null };
   const eye = o.eye ?? [0.8, 4.5, 9];
   const w = o.width ?? 640;
-  const h = Math.round((w * 3) / 4);
+  const h = o.height ?? Math.round((w * 3) / 4);
   const occludersAt = (t: number) => [
     { center: [w * (0.32 + 0.06 * Math.sin(t / 150)), h * (0.62 + 0.05 * Math.cos(t / 210))] as [number, number], radius: w * 0.05, color: [215, 165, 135] as [number, number, number] },
     { center: [w * (0.68 + 0.05 * Math.cos(t / 170)), h * (0.6 + 0.06 * Math.sin(t / 190))] as [number, number], radius: w * 0.045, color: [205, 150, 125] as [number, number, number] },

@@ -3,7 +3,7 @@
 //   gray … 普通のグレースケール。青・赤のセルは暗くなり黒との差が小さい
 //   max  … max(R,G,B)（HSV の V）。色付きのセルも明るく残る
 import { type Pt, applyH, fitHomography } from "../vision/homography";
-import type { CV } from "../vision/quads";
+import { type CV, maxRgb } from "../vision/quads";
 import { type StickerScheme, codesOf, makeDictionary, markerBits, markerSize } from "./codes";
 
 export type Preprocess = "gray" | "max";
@@ -107,6 +107,24 @@ export interface DetectResult {
   ms: number; // 前処理 + 検出 + 色の測定
 }
 
+// 画像の一部（左上 x, y・幅 w・高さ h）
+export interface Region {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+
+// 画像の一部を切り出す（そのままの画素）
+export function cropRegion(img: ImageLike, r: Region): ImageLike {
+  const out = new Uint8ClampedArray(r.w * r.h * 4);
+  for (let y = 0; y < r.h; y++) {
+    const from = ((r.y + y) * img.width + r.x) * 4;
+    out.set(img.data.subarray(from, from + r.w * 4), y * r.w * 4);
+  }
+  return { data: out, width: r.w, height: r.h };
+}
+
 // 1 フレームに複数の方式を順に当てる。Mat は使い回す
 export class ArucoBench {
   private dict: any;
@@ -115,6 +133,8 @@ export class ArucoBench {
   private rgba: any = null;
   private gray: any = null;
   private max: any = null;
+  private params: Partial<ArucoParams>[];
+  private rateScale = 1; // マーカーの大きさの範囲（周の長さの割合）に掛けている倍率（切り出しのとき）
 
   constructor(
     private cv: CV,
@@ -123,20 +143,52 @@ export class ArucoBench {
   ) {
     this.dict = makeDictionary(cv, scheme);
     this.cells = markerSize(scheme) + 2;
-    this.detectors = configs.map((c) => {
-      const p = new cv.aruco_DetectorParameters();
-      const params = { ...SCHEME_PARAMS[scheme], ...c.params };
-      for (const k of PARAM_KEYS) {
-        const v = params[k];
-        if (typeof v === "number" && Number.isFinite(v)) p[k] = v;
-      }
+    this.params = configs.map((c) => ({ ...SCHEME_PARAMS[scheme], ...c.params }));
+    this.detectors = this.params.map((params) => {
+      const p = this.detectorParams(params, 1);
       const det = new cv.aruco_ArucoDetector(this.dict, p, new cv.aruco_RefineParameters(10, 3, true));
       p.delete();
       return det;
     });
   }
 
-  detect(img: ImageLike): DetectResult[] {
+  // scale: マーカーの大きさの範囲（周の長さの割合。OpenCV は画像の長辺に掛ける）に掛ける倍率
+  private detectorParams(params: Partial<ArucoParams>, scale: number): any {
+    const p = new this.cv.aruco_DetectorParameters();
+    for (const k of PARAM_KEYS) {
+      const v = params[k];
+      if (typeof v === "number" && Number.isFinite(v)) p[k] = v;
+    }
+    p.minMarkerPerimeterRate *= scale;
+    p.maxMarkerPerimeterRate *= scale;
+    return p;
+  }
+
+  private setRateScale(scale: number): void {
+    if (scale === this.rateScale) return;
+    this.rateScale = scale;
+    this.detectors.forEach((det, i) => {
+      const p = this.detectorParams(this.params[i], scale);
+      det.setDetectorParameters(p);
+      p.delete();
+    });
+  }
+
+  // region: 画像のこの部分だけで検出する（精密解析で、直前のフレームのキューブの周り）。マーカーの大きさの範囲は画像全体で
+  // 検出したときと同じ画素数にする。角の座標は画像全体の座標で返す
+  detect(img: ImageLike, region?: Region): DetectResult[] {
+    if (region) {
+      this.setRateScale(Math.max(img.width, img.height) / Math.max(region.w, region.h));
+      const out = this.detectIn(cropRegion(img, region));
+      for (const r of out)
+        for (const m of r.markers) m.corners = m.corners.map((v, i) => Math.round((v + (i % 2 ? region.y : region.x)) * 10) / 10);
+      return out;
+    }
+    this.setRateScale(1);
+    return this.detectIn(img);
+  }
+
+  private detectIn(img: ImageLike): DetectResult[] {
     const cv = this.cv;
     const { width: w, height: h } = img;
     if (!this.rgba || this.rgba.cols !== w || this.rgba.rows !== h) {
@@ -313,14 +365,8 @@ function rotCode(code: number, n: number): number {
 
 const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
 
-export function maxChannel(src: Uint8ClampedArray | Uint8Array, dst: Uint8Array): void {
-  for (let i = 0, j = 0; j < dst.length; i += 4, j++) {
-    const r = src[i];
-    const g = src[i + 1];
-    const b = src[i + 2];
-    dst[j] = r > g ? (r > b ? r : b) : g > b ? g : b;
-  }
-}
+// max(R, G, B)（HSV の V）
+export const maxChannel = maxRgb;
 
 // マーカーのセルの中心付近（3×3 点）を読み、明るいセルの色と、明るいセル − 黒いセルの差を出す
 // bits: 枠を含む cells×cells（1 = 明るい）

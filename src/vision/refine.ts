@@ -102,7 +102,7 @@ export class Refiner {
       keepObservations: true,
     }, input.orients);
     // ソルブ後の解析は時間をかけてよいので、面が見つからないフレームは溝の候補でもやり直す
-    this.config = { ...DEFAULT_PIPELINE, ...input.pipeline, grooveRetry: true, minFacing: 0.3, hingeSearch: false, altReadings: true, arucoThorough: true, quads: { ...DEFAULT_PIPELINE.quads, ...(input.pipeline?.quads ?? {}) } };
+    this.config = { ...DEFAULT_PIPELINE, ...input.pipeline, grooveRetry: true, minFacing: 0.3, hingeSearch: false, altReadings: true, arucoThorough: true, arucoRegion: true, quads: { ...DEFAULT_PIPELINE.quads, ...(input.pipeline?.quads ?? {}) } };
   }
 
   // 解析する範囲の終わりを決める（ソルブ中から解析していて、止めた時刻が分かったとき）

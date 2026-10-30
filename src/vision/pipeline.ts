@@ -7,7 +7,7 @@ import { type Mat3, type Pt, applyH, fitHomography, mulH } from "./homography";
 import { expandBlocks, largeFaceCandidates } from "./blocks";
 import { type LatticeFace, type LatticeOptions, type Quad, findFaces } from "./lattice";
 import { type PlacedFace, colAngle, faceArea, layoutFaces, slotPoint } from "./layout";
-import { type CV, type QuadOptions, DEFAULT_QUADS, findQuads } from "./quads";
+import { type CV, type QuadOptions, DEFAULT_QUADS, QuadFinder } from "./quads";
 import { type PixelSource, sampleFace } from "./sampler";
 import { stickerScore } from "./stickerness";
 import { skinLike } from "../track/colorModel";
@@ -30,6 +30,8 @@ export interface PipelineConfig {
   arucoColorFill?: boolean;
   // ArUco: ID が読めなかったマスに、直前のフレームの同じマスのステッカーを引き継ぐ（既定 true。src/aruco/idTrack.ts）
   arucoIdTrack?: boolean;
+  // ArUco: 直前のフレームのマーカーの周りだけを切り出して検出する（精密解析。src/vision/arucoFrame.ts）
+  arucoRegion?: boolean;
   guideSize: number; // ガイド枠モード: 短辺に対する枠の大きさ
   region: number; // セル内のサンプリング範囲
   maxSpread: number; // セル内のばらつきがこれ以上なら読まない
@@ -359,7 +361,7 @@ export function processFrame(
   hands: Pt[][] = [],
 ): FrameResult {
   if (config.stickers && config.stickers !== "color" && cv)
-    return processAruco(cv, img, t, memory, stickerScheme(config.stickers), !!config.arucoThorough, { reread: config.arucoReread, focus: config.focus, colorFill: config.arucoColorFill, idTrack: config.arucoIdTrack });
+    return processAruco(cv, img, t, memory, stickerScheme(config.stickers), !!config.arucoThorough, { reread: config.arucoReread, focus: config.focus, colorFill: config.arucoColorFill, idTrack: config.arucoIdTrack, region: config.arucoRegion });
   let placed: PlacedFace[] = [];
   let quadsOut: Pt[][] = [];
   if (config.mode === "guide" || !cv) {
@@ -367,13 +369,15 @@ export function processFrame(
   } else {
     const fr: FrameRef = config.frame ?? { width: img.width, height: img.height, ox: 0, oy: 0 };
     const quadOpts = { ...config.quads, refSize: { cols: fr.width, rows: fr.height } };
+    // 溝の候補でやり直すときは、エッジ・明るさ・溝の強さの画像を使い回す（QuadFinder。この下のやり直しが終わったら捨てる）
     const mat = cv.matFromImageData(img);
-    let quads;
+    let finder: QuadFinder;
     try {
-      quads = findQuads(cv, mat, quadOpts);
+      finder = new QuadFinder(cv, mat, quadOpts);
     } finally {
       mat.delete();
     }
+    let quads = finder.quads();
     quadsOut = quads.map((q) => q.corners);
     const tr = textureRadius(fr);
     const tl = textureLevels(img, tr);
@@ -400,22 +404,22 @@ export function processFrame(
           8
         : 0;
     };
-    let faces: LatticeFace[] & { strong?: number } = findCubeFaces(img, fr, expandBlocks(quads, prevFaces.map((f) => f.H)), config, scorer, faceScorer, refs, tl);
-    if (!faces.length && cv && config.grooveRetry) {
-      // 面が見つからない: ステッカーレスで同じ色がつながっている・丸いセルが溶け合って見えるとき。ピースの間の溝で
-      // セルを区切った候補も加えてやり直す（見つかるフレームでは使わない。溝の候補は他の候補と混ざると格子を乱すことがある）
-      // 溝の濃さは照明やキューブの大きさで変わるので、はっきりした溝 → 薄い溝の順に試す
-      for (const th of [config.quads.grooveThreshold, config.quads.grooveThreshold * 0.6]) {
-        const m2 = cv.matFromImageData(img);
-        try {
-          quads = findQuads(cv, m2, { ...quadOpts, grooves: true, grooveThreshold: th });
-        } finally {
-          m2.delete();
+    let faces: LatticeFace[] & { strong?: number };
+    try {
+      faces = findCubeFaces(img, fr, expandBlocks(quads, prevFaces.map((f) => f.H)), config, scorer, faceScorer, refs, tl);
+      if (!faces.length && config.grooveRetry) {
+        // 面が見つからない: ステッカーレスで同じ色がつながっている・丸いセルが溶け合って見えるとき。ピースの間の溝で
+        // セルを区切った候補も加えてやり直す（見つかるフレームでは使わない。溝の候補は他の候補と混ざると格子を乱すことがある）
+        // 溝の濃さは照明やキューブの大きさで変わるので、はっきりした溝 → 薄い溝の順に試す
+        for (const th of [config.quads.grooveThreshold, config.quads.grooveThreshold * 0.6]) {
+          quads = finder.withGrooves(th);
+          quadsOut = quads.map((q) => q.corners);
+          faces = findCubeFaces(img, fr, expandBlocks(quads, prevFaces.map((f) => f.H)), config, scorer, faceScorer, refs, tl);
+          if (faces.length) break;
         }
-        quadsOut = quads.map((q) => q.corners);
-        faces = findCubeFaces(img, fr, expandBlocks(quads, prevFaces.map((f) => f.H)), config, scorer, faceScorer, refs, tl);
-        if (faces.length) break;
       }
+    } finally {
+      finder.delete();
     }
     if (!faces.length) faces = uniformFaces(img, largeFaceCandidates(quads, fr.width * fr.height));
     if (faces.length) {
