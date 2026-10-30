@@ -154,6 +154,9 @@ try {
     await page.waitForFunction((n) => (window.__cubevision?.synthetic?.truth.length ?? 0) >= n, MOVES, { timeout: 60000 + (MOVES / TPS) * 4000, polling: 500 });
     await page.waitForTimeout(3000);
     await page.screenshot({ path: `${OUT}/seed${seed}-end.png` });
+    // 円環図（フリーの画面の下の方）
+    const ring = page.locator(".ring-view").first();
+    if (await ring.count()) await ring.screenshot({ path: `${OUT}/seed${seed}-ring.png` });
     const r = await page.evaluate(() => {
       const app = window.__cubevision;
       const t = app.store.get().track;
