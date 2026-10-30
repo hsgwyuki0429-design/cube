@@ -10,6 +10,7 @@ import type { Solve } from "../app/storage";
 import { TrackStatus } from "./FreePanel";
 import { Cube3D } from "./Cube3D";
 import { viewOrient } from "./notation";
+import { VideoAnalysis } from "./VideoAnalysis";
 
 function useTicker(active: boolean): number {
   const [now, setNow] = useState(performance.now());
@@ -27,6 +28,12 @@ function useTicker(active: boolean): number {
 }
 
 export function AnalysisBadge({ solve, progress }: { solve: Solve; progress?: number }) {
+  if (solve.video)
+    return (
+      <span class="chip analysis done" title="動画ファイル（スロー撮影など）を読み込んで、全フレームを解析した記録です">
+        動画（全フレーム解析）
+      </span>
+    );
   if (solve.analysis === "pending")
     return (
       <span class="chip analysis pending" title="録画を1フレームずつ解析しています。終わるとタイムと手順が確定します">
@@ -164,6 +171,7 @@ export function TimerPanel() {
   const orient = useStore(controller.store, (s) => s.track?.orient ?? 0);
   const settings = useStore(settingsStore, (s) => ({ notation: s.notation, viewpoint: s.viewpoint, inspection: s.inspection }));
   const now = useTicker(t.phase === "inspection" || t.phase === "solving");
+  const [video, setVideo] = useState(false);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -191,7 +199,11 @@ export function TimerPanel() {
             <button class="btn primary" onClick={() => newScramble()}>
               {t.phase === "done" ? "次のソルブ" : "スクランブルを出す"}
             </button>
+            <button class="btn" onClick={() => setVideo(true)}>
+              スロー動画から記録
+            </button>
           </div>
+          {video && <VideoAnalysis mode="timer" onClose={() => setVideo(false)} />}
           {t.message && <p class="muted small">{t.message}</p>}
           <div class="stats" style={{ marginTop: 14 }}>
             <div class="stat">

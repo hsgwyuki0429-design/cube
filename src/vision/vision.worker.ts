@@ -35,6 +35,8 @@ interface Stream {
   end?: { from: number; to: number; posted: number }; // 止めた後: 残りの解析の進み具合を知らせる
 }
 const streams = new Map<number, Stream>();
+// 中止を頼まれた動画の解析
+const videoCancels = new Set<number>();
 
 function streamFrame(id: number, s: Stream, img: ImageData, t: number): void {
   // 止まっている間は飛ばして追いつく（動き出したら直前の 1 枚も処理する）
@@ -175,6 +177,50 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
         if (!s) return;
         s.anchor = { t: msg.t, target: Uint8Array.from(msg.target) };
         doAnchor(msg.id, s);
+        return;
+      }
+      case "video-refine": {
+        // 動画ファイルの精密解析（動画の読み込みは、使うときだけ読み込む）
+        const { id, file, input, target, options } = msg;
+        videoCancels.delete(id);
+        try {
+          const { decodeVideoFile } = await import("./videoFile");
+          const refiner = new Refiner(cv, { ...input, pipeline: { ...config, ...input.pipeline } });
+          const still = new StillSkipper();
+          let total = 1;
+          let done = 0;
+          let lastPost = 0;
+          await decodeVideoFile(
+            file,
+            {
+              ...options,
+              cancelled: () => videoCancels.has(id),
+              onInfo: (info, analyzedFrames) => {
+                total = analyzedFrames;
+                post({ type: "video-info", id, info, analyzedFrames });
+              },
+            },
+            (img, t) => {
+              for (const f of still.next(img, t)) refiner.push(f.img, f.t);
+              done++;
+              if (performance.now() - lastPost > 200) {
+                lastPost = performance.now();
+                post({ type: "refine-progress", id, done, total });
+              }
+            },
+          );
+          if (videoCancels.has(id)) throw new Error("中止しました");
+          post({ type: "refine-progress", id, done: total, total });
+          post({ type: "refine-result", id, result: refiner.result(target ? Uint8Array.from(target) : null) });
+        } catch (e) {
+          post({ type: "refine-error", id, message: e instanceof Error ? e.message : String(e) });
+        } finally {
+          videoCancels.delete(id);
+        }
+        return;
+      }
+      case "video-cancel": {
+        videoCancels.add(msg.id);
         return;
       }
       case "stream-cancel": {

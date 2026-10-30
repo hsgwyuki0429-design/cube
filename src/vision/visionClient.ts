@@ -4,9 +4,10 @@ import type { DecodedMove } from "../track/types";
 import type { Lab } from "./color";
 import type { Pt } from "./homography";
 import type { PipelineConfig } from "./pipeline";
-import type { FrameMessage, FromWorker, StreamPartial, ToWorker } from "./protocol";
+import type { FrameMessage, FromWorker, StreamPartial, ToWorker, VideoRefineOptions } from "./protocol";
 import type { Recording } from "./recorder";
 import type { HandSample, RefineInput, RefineResult } from "./refine";
+import type { VideoFileInfo } from "./videoFile";
 
 export class VisionClient {
   private worker: Worker;
@@ -162,6 +163,7 @@ export class RefineClient {
         if (m.type === "ready") resolve(m.opencv);
         else if (m.type === "refine-progress") this.jobs.get(m.id)?.progress?.(m.done / Math.max(1, m.total));
         else if (m.type === "stream-partial") this.partialListeners.get(m.id)?.(m.partial);
+        else if (m.type === "video-info") this.infoListeners.get(m.id)?.(m.info, m.analyzedFrames);
         else if (m.type === "refine-result") this.settle(m.id, (j) => j.resolve(m.result));
         else if (m.type === "refine-error") this.settle(m.id, (j) => j.reject(new Error(m.message)));
         else if (m.type === "error") for (const id of [...this.jobs.keys()]) this.settle(id, (j) => j.reject(new Error(m.message)));
@@ -196,6 +198,44 @@ export class RefineClient {
       this.jobs.set(id, { resolve, reject, progress });
       this.worker!.postMessage({ type: "refine", id, recording, input } satisfies ToWorker);
     });
+  }
+
+  // ---- 動画ファイルの解析 ----
+
+  private infoListeners = new Map<number, (info: VideoFileInfo, analyzedFrames: number) => void>();
+
+  // 動画ファイル（スロー撮影など）を精密解析する。cancel() で中止（結果は「中止しました」のエラー）
+  runVideo(
+    file: Blob,
+    input: RefineInput,
+    target: ArrayLike<number> | null,
+    options: VideoRefineOptions,
+    progress?: (p: number) => void,
+    onInfo?: (info: VideoFileInfo, analyzedFrames: number) => void,
+  ): { result: Promise<RefineResult>; cancel: () => void } {
+    clearTimeout(this.idleTimer);
+    let id = -1;
+    let cancelled = false;
+    const result = (async () => {
+      const opencv = await this.ensure();
+      if (!opencv || !this.worker) throw new Error("画像認識（OpenCV）を読み込めませんでした");
+      if (cancelled) throw new Error("中止しました");
+      id = this.nextId++;
+      if (onInfo) this.infoListeners.set(id, onInfo);
+      try {
+        return await new Promise<RefineResult>((resolve, reject) => {
+          this.jobs.set(id, { resolve, reject, progress });
+          this.worker!.postMessage({ type: "video-refine", id, file, input, target: target ? Array.from(target) : null, options } satisfies ToWorker);
+        });
+      } finally {
+        this.infoListeners.delete(id);
+      }
+    })();
+    const cancel = () => {
+      cancelled = true;
+      if (id >= 0) this.worker?.postMessage({ type: "video-cancel", id } satisfies ToWorker);
+    };
+    return { result, cancel };
   }
 
   // ---- ソルブ中から進める解析 ----

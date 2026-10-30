@@ -1,5 +1,7 @@
 // キューブモードの E2E 用の合成動画: ArUco ステッカーを貼ったキューブを揃った状態から回す（240fps、約 10 手/秒、ぶれ付き）
 //   ARUCO_VIDEO=out.mp4 [ARUCO_ALG="R U R' U'"] [ARUCO_SCHEME=aruco54] npx vitest run -c vitest.debug.config.ts tests/debug/arucoCubeVideo.debug.test.ts
+//   ARUCO_START="スクランブル": 揃った状態からこれを回した状態から始める（タイマーの動画の E2E: scripts/video-e2e.mjs）
+//   ARUCO_FILE_FPS=30: ファイルの時刻をこの fps にする（スロー再生用に書き出された動画。撮影は 240fps のまま）
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { it } from "vitest";
@@ -20,10 +22,12 @@ it("合成動画を書き出す", async () => {
   const FPS = 240;
   const TURN = 18; // 1 手を回すフレーム数（75ms）
   const PAUSE = 6; // 手と手の間（25ms）
-  const ff = spawn("ffmpeg", ["-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", `${W}x${H}`, "-r", String(FPS), "-i", "-", "-c:v", "libvpx-vp9", "-b:v", "16M", "-deadline", "realtime", "-cpu-used", "8", "-row-mt", "1", "-pix_fmt", "yuv420p", out], {
+  const fileFps = Number(process.env.ARUCO_FILE_FPS ?? FPS);
+  const ff = spawn("ffmpeg", ["-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", `${W}x${H}`, "-r", String(fileFps), "-i", "-", "-c:v", "libvpx-vp9", "-b:v", "16M", "-deadline", "realtime", "-cpu-used", "8", "-row-mt", "1", "-pix_fmt", "yuv420p", out], {
     stdio: ["pipe", "inherit", "inherit"],
   });
   let st = solvedStickers();
+  for (const m of parseMoves(process.env.ARUCO_START ?? "")) st = applyMoveStickers(st, m);
   let n = 0;
   const write = async (turn?: { move: number; fraction: number; spread: number }) => {
     // 手の揺れ: 視点をゆっくり動かす

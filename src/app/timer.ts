@@ -331,6 +331,35 @@ async function analyzeRecording(live: LiveSpan, endT: number): Promise<void> {
   });
 }
 
+// 動画ファイル（スロー撮影など）の精密解析の結果を記録に足す。scramble: 揃った状態から回したスクランブル（動画の始まりの状態）。
+// 最初・最後の手が直接見えていない（時刻をフレームから決められない）・完成にたどり着かないときは足さず、理由を返す
+export function addVideoSolve(result: RefineResult, scramble: number[]): { solve: Solve } | { error: string } {
+  if (!result.solved || !result.moves.length || result.start === null || result.end === null) return { error: "完成までの手順をつなげられませんでした" };
+  if (result.forced > 0) return { error: "最後の手が動画に写っていません（完成させるために見えない手を足しました）" };
+  if (result.startUncertain) return { error: "最初の手が動画に写っていません（撮影を始めるのが遅かった・指で隠れていた）ので、タイムを決められません" };
+  if (result.endUncertain) return { error: "最後の手が動画に写っていません（指で隠れていた・撮影を止めるのが早かった）ので、タイムを決められません" };
+  const start = applyMoves(solvedState(), scramble);
+  const begin = result.start;
+  const timeMs = Math.max(0, result.end - begin);
+  const solve: Solve = {
+    id: `${Date.now()}`,
+    date: Date.now(),
+    scramble: scramble.map((m) => MOVE_NAMES[m]).join(" "),
+    timeMs,
+    penalty: "",
+    moves: solveMoves(result.moves, begin),
+    tps: result.moves.length / Math.max(0.001, timeMs / 1000),
+    splits: splitsOf(start, result.moves, begin),
+    tracked: true,
+    analysis: "done",
+    video: true,
+  };
+  const solves = [solve, ...timerStore.get().solves];
+  saveSolves(solves);
+  timerStore.set({ solves });
+  return { solve };
+}
+
 export function stopManually(): void {
   if (timerStore.get().phase !== "solving") return;
   finish(controller.store.get().track, "manual");

@@ -10,6 +10,7 @@ import { HandsClient } from "../vision/handsClient";
 import type { FrameMessage, StreamPartial } from "../vision/protocol";
 import type { RefineInput, RefineResult } from "../vision/refine";
 import { FrameRecorder } from "../vision/recorder";
+import type { VideoFileInfo } from "../vision/videoFile";
 import { RefineClient, VisionClient } from "../vision/visionClient";
 import { stickerScheme } from "../aruco/codes";
 import { ARUCO_OBSERVER, DEFAULT_OBSERVER } from "../track/observer";
@@ -79,6 +80,8 @@ export function displayColors(refs: Lab[], names: string[], scheme: Settings["sc
 
 // 認識の解像度（長辺）。ArUco マーカーは 1 セルが小さいので、少なくとも 1280 で読む
 const isAruco = (s: Settings) => s.stickers !== "color";
+// 動画ファイルを解析するフレームの間隔の上限（実際の時間で）。240fps のスロー撮影は 2 枚に 1 枚
+export const VIDEO_MAX_FPS = 120;
 const workWidthFor = (s: Settings) => (isAruco(s) ? Math.max(s.workWidth, 1280) : s.workWidth);
 
 class Controller {
@@ -108,6 +111,8 @@ class Controller {
   readonly hands = new HandsClient();
   readonly recorder = new FrameRecorder(); // タイマー計測中の録画（ソルブ後の精密解析用）
   readonly refiner = new RefineClient();
+  // 動画ファイルの解析（ソルブ中から進める解析と別の Worker。並べて動かしても追跡を止めない）
+  private readonly videoRefiner = new RefineClient();
   private capture = new FaceCapture();
   private frameListeners = new Set<(m: FrameMessage) => void>();
   private trackListeners = new Set<(u: TrackUpdate) => void>();
@@ -522,6 +527,27 @@ class Controller {
     if (!refs || !names) return this.beginScan();
     this.startTrackingFrom(solvedState(), refs, names);
     this.toast("完成状態から追跡し直します");
+  }
+
+  // 動画ファイル（スマホのカメラアプリで撮ったスロー撮影など）を精密解析する。state: 動画の始まりの状態、target: 終わりの状態
+  // （タイマーなら完成。分からなければ null）。色はスキャンで覚えた色（ArUco は代表色）。手の検出はない
+  analyzeVideo(
+    file: Blob,
+    opts: { state: ArrayLike<number>; target: ArrayLike<number> | null; captureFps?: number; maxFps?: number },
+    progress?: (p: number) => void,
+    onInfo?: (info: VideoFileInfo, analyzedFrames: number) => void,
+  ): { result: Promise<RefineResult>; cancel: () => void } {
+    const s = settingsStore.get();
+    const refs = this.videoRefs();
+    if (!refs) return { result: Promise.reject(new Error("キューブの色が分かりません。先にスキャンしてください")), cancel: () => {} };
+    const input: RefineInput = { state: Array.from(opts.state), refs, from: 0, to: Infinity, engine: this.engineOptions(), pipeline: { mode: s.detection, stickers: s.stickers } };
+    return this.videoRefiner.runVideo(file, input, opts.target, { maxSide: workWidthFor(s), captureFps: opts.captureFps, maxFps: opts.maxFps ?? VIDEO_MAX_FPS }, progress, onInfo);
+  }
+
+  // 動画の解析に使う色: ArUco は代表色、普通のステッカーはスキャンで覚えた色
+  videoRefs(): Lab[] | null {
+    if (isAruco(settingsStore.get())) return ARUCO_REFS;
+    return this.store.get().track?.refs ?? this.store.get().cube?.refs ?? this.store.get().calibration?.refs ?? null;
   }
 
   clearMoves(): void {

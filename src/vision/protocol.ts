@@ -6,6 +6,7 @@ import type { Pt } from "./homography";
 import type { DetectedFace, PipelineConfig } from "./pipeline";
 import type { Recording } from "./recorder";
 import type { HandSample, RefineInput, RefineResult } from "./refine";
+import type { VideoFileInfo } from "./videoFile";
 
 export type ToWorker =
   | { type: "init" }
@@ -26,7 +27,16 @@ export type ToWorker =
   | { type: "stream-end"; id: number; to: number; target: number[] | null }
   | { type: "stream-cancel"; id: number }
   // フリーで完成した（時刻 t に状態 target）: そこまでを前後から解き直す
-  | { type: "stream-anchor"; id: number; t: number; target: number[] };
+  | { type: "stream-anchor"; id: number; t: number; target: number[] }
+  // 動画ファイル（スロー撮影など）を精密解析する。target: 最後の状態（タイマーなら完成。分からなければ null）
+  | { type: "video-refine"; id: number; file: Blob; input: RefineInput; target: number[] | null; options: VideoRefineOptions }
+  | { type: "video-cancel"; id: number };
+
+export interface VideoRefineOptions {
+  maxSide: number; // 長辺をこれに縮める
+  captureFps?: number; // 撮影した fps（スロー再生用に書き出された動画の時刻を実際の時間に直す）
+  maxFps: number; // 解析するフレームの間隔の上限（実際の時間で）
+}
 
 export interface FrameMessage {
   type: "frame";
@@ -52,7 +62,8 @@ export type FromWorker =
   | { type: "refine-progress"; id: number; done: number; total: number }
   | { type: "refine-result"; id: number; result: RefineResult }
   | { type: "refine-error"; id: number; message: string }
-  | { type: "stream-partial"; id: number; partial: StreamPartial };
+  | { type: "stream-partial"; id: number; partial: StreamPartial }
+  | { type: "video-info"; id: number; info: VideoFileInfo; analyzedFrames: number };
 
 // ソルブ中の精密解析の途中結果（前向きに t まで解いたもの）
 export interface StreamPartial {

@@ -8,6 +8,7 @@ import { solveState } from "../cube/solver";
 import { mergeQuickRepeats, simplifyMoves } from "../track/merge";
 import { viewOrient } from "./notation";
 import { RingLegend, RingView } from "./RingView";
+import { VideoAnalysis } from "./VideoAnalysis";
 
 // カメラの実測 fps が低いと速い回転を取りこぼす（暗い場所ではカメラが露光を伸ばして fps が落ちる）
 function FpsWarning() {
@@ -154,6 +155,7 @@ export function FreePanel() {
   const elapsed = useElapsed(running, startT);
   const duration = running ? elapsed : lastT - startT;
   const tps = recent.length > 1 && lastT > startT ? (recent.length - 1) / ((lastT - startT) / 1000) : 0;
+  const [video, setVideo] = useState(false);
 
   return (
     <div>
@@ -189,7 +191,11 @@ export function FreePanel() {
           <button class="btn small" onClick={() => controller.beginScan()}>
             再スキャン
           </button>
+          <button class="btn small" onClick={() => setVideo(true)}>
+            動画を解析
+          </button>
         </div>
+        {video && <VideoAnalysis mode="free" onClose={() => setVideo(false)} />}
       </div>
     </div>
   );

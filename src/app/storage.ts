@@ -30,6 +30,7 @@ export interface Solve {
   // 録画の精密解析: pending = 解析中（表示は速報値）/ done = 全フレームから確定 / failed = 解析できず速報値のまま
   analysis?: "pending" | "done" | "failed";
   provisionalMs?: number; // 解析前の速報値
+  video?: boolean; // 動画ファイル（スロー撮影など）を読み込んで解析した記録
 }
 
 const CAL_KEY = "cubevision.calibration.v1";
