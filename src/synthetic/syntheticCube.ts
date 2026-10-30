@@ -31,7 +31,7 @@ export interface SyntheticOptions {
   fps?: number;
   hands?: boolean; // 回転中に指（肌色の物体）が一部を隠す
   wobble?: boolean;
-  aruco?: StickerScheme | null; // 各ステッカーに色付き ArUco マーカーを描く（符号の種類。src/aruco/codes.ts）
+  aruco?: StickerScheme; // 各ステッカーに描く色付き ArUco マーカーの符号の種類（src/aruco/codes.ts）
 }
 
 // ArUco ステッカー: 外側に辺の 8% の色の余白、マーカーの白いセルをステッカーの色に置き換える（印刷した PDF と同じ）。
@@ -92,7 +92,7 @@ export class SyntheticCube {
   busy = false;
 
   constructor(options: SyntheticOptions = {}) {
-    this.opts = { width: 960, height: 540, fps: 30, hands: true, wobble: true, aruco: null, ...options };
+    this.opts = { width: 960, height: 540, fps: 30, hands: true, wobble: true, aruco: "unique54", ...options };
     this.canvas = document.createElement("canvas");
     this.canvas.width = this.opts.width;
     this.canvas.height = this.opts.height;
@@ -120,7 +120,6 @@ export class SyntheticCube {
     const body = new THREE.MeshStandardMaterial({ color: 0x111111, roughness: 0.6 });
     const box = new THREE.BoxGeometry(0.98, 0.98, 0.98);
     const sticker = new THREE.PlaneGeometry(0.84, 0.84);
-    const mats = COLORS.map((c) => new THREE.MeshStandardMaterial({ color: c, roughness: 0.45 }));
     for (let x = -1; x <= 1; x++)
       for (let y = -1; y <= 1; y++)
         for (let z = -1; z <= 1; z++) {
@@ -129,14 +128,7 @@ export class SyntheticCube {
           obj.add(new THREE.Mesh(box, body));
           NORMAL.forEach((n, f) => {
             if (n[0] * x + n[1] * y + n[2] * z !== 1) return;
-            if (this.opts.aruco) {
-              obj.add(arucoSticker(sticker, this.opts.aruco, faceletAt([x, y, z], n), f));
-              return;
-            }
-            const s = new THREE.Mesh(sticker, mats[f]);
-            s.position.set(n[0] * 0.491, n[1] * 0.491, n[2] * 0.491);
-            s.lookAt(n[0] * 2, n[1] * 2, n[2] * 2);
-            obj.add(s);
+            obj.add(arucoSticker(sticker, this.opts.aruco, faceletAt([x, y, z], n), f));
           });
           obj.position.set(x, y, z);
           this.group.add(obj);

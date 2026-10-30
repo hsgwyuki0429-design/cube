@@ -8,7 +8,7 @@ import { DESIGNS } from "../../src/aruco/design";
 import { ARUCO_REFS } from "../../src/aruco/palette";
 import { applyH } from "../../src/vision/homography";
 import { processAruco } from "../../src/vision/arucoFrame";
-import { initOpenCv } from "../../src/vision/quads";
+import { initOpenCv } from "../../src/vision/image";
 import { renderArucoCube } from "../arucoCube";
 import { H, W, inPoly, makeScenes } from "../arucoScenes";
 

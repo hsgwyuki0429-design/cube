@@ -8,7 +8,7 @@ import { decode } from "../../src/aruco/codes";
 import { colorConsistent, reconstructFaces } from "../../src/aruco/cube";
 import { ArucoBench, DEFAULT_CONFIGS } from "../../src/aruco/detect";
 import { FACE_NAMES, classifyColor } from "../../src/aruco/stickers";
-import { initOpenCv } from "../../src/vision/quads";
+import { initOpenCv } from "../../src/vision/image";
 
 it("実物の映像", async () => {
   const file = process.env.ARUCO_RAW;
@@ -99,7 +99,7 @@ it("ライブの経路での 3D の向き", async () => {
     if (readSync(fd, buf, 0, buf.length, i * buf.length) < buf.length) break;
     frames++;
     const t = (i * 1000) / FPS;
-    const r = processFrame(cv, { data: buf, width: W, height: H }, t, pipeline, memory, engine.colors.refs);
+    const r = processFrame(cv, { data: buf, width: W, height: H }, t, pipeline, memory);
     const reading = { t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, ids: f.ids })) };
     engine.push(reading);
     let M: number[] | null = null;

@@ -5,7 +5,7 @@ import { beforeAll, describe, expect, it } from "vitest";
 import { type CubeFrame, decodeCube, facesOverTime, reconstructFaces } from "../src/aruco/cube";
 import { ArucoBench, DEFAULT_CONFIGS, type Marker } from "../src/aruco/detect";
 import { MOVE_NAMES, VIEW, type Vec3, parseMoves, rotateOrientation } from "../src/cube/model";
-import { type CV, initOpenCv } from "../src/vision/quads";
+import { type CV, initOpenCv } from "../src/vision/image";
 import { type Sticker, applyMoveStickers, renderArucoCube, solvedStickers, stickerAt } from "./arucoCube";
 
 let cv: CV;

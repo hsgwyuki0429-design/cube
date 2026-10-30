@@ -3,7 +3,7 @@
 //   gray … 普通のグレースケール。青・赤のセルは暗くなり黒との差が小さい
 //   max  … max(R,G,B)（HSV の V）。色付きのセルも明るく残る
 import { type Pt, applyH, fitHomography } from "../vision/homography";
-import { type CV, maxRgb } from "../vision/quads";
+import { type CV, maxRgb } from "../vision/image";
 import { type StickerScheme, codesOf, makeDictionary, markerBits, markerSize } from "./codes";
 
 export type Preprocess = "gray" | "max";

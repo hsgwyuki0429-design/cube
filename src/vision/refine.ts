@@ -8,16 +8,8 @@ import { DEFAULT_OFFLINE, decodeOffline } from "../track/offline";
 import type { DecodedMove, TrackStatus } from "../track/types";
 import type { Lab } from "./color";
 import { type PatchFrame, facePatch, refineEnd, refineStart } from "./fineTiming";
-import type { Pt } from "./homography";
-import { DEFAULT_PIPELINE, type PipelineConfig, type PipelineMemory, processFrame } from "./pipeline";
-import { processTracked } from "./roi";
-import type { CV } from "./quads";
-import type { PixelSource } from "./sampler";
-
-export interface HandSample {
-  t: number;
-  hulls: Pt[][]; // 正規化座標（0..1）
-}
+import type { CV, PixelSource } from "./image";
+import { DEFAULT_PIPELINE, type PipelineConfig, processFrame } from "./pipeline";
 
 export interface RefineInput {
   state: number[]; // 解析範囲の始まりの状態（スクランブル後）
@@ -26,11 +18,8 @@ export interface RefineInput {
   from: number; // 解析する範囲（ms）
   to: number;
   startHint?: number; // 最初の手のおおよその時刻（リアルタイムの追跡から）。タイムの両端の画素を残す範囲を絞る
-  hands?: HandSample[];
   engine?: Partial<EngineOptions>;
   pipeline?: Partial<PipelineConfig>;
-  // 直前の面の周りだけを切り出して処理する（processTracked。ソルブ中から追いつきながら解析するとき）
-  tracked?: boolean;
   // タイムを測らない解析（フリー）: 画素のパッチは直近のこれだけ残す（長く続けてもメモリが増えないように）
   keepPatchesMs?: number;
 }
@@ -81,9 +70,8 @@ export const REFINE_ENGINE: Partial<EngineOptions> = {
 
 export class Refiner {
   readonly engine: TrackerEngine;
-  private memory: { last: PipelineMemory | null; grooveT?: number } = { last: null };
+  private memory = {}; // フレームの間で引き継ぐもの（processFrame）
   private config: PipelineConfig;
-  private handIdx = 0;
   readonly patches: PatchFrame[] = [];
   readonly looks: { t: number; solved: boolean }[] = []; // フレームごとの「完成して見えるか」
   frames = 0;
@@ -91,7 +79,7 @@ export class Refiner {
   method = "";
 
   constructor(
-    private cv: CV | null,
+    private cv: CV,
     private input: RefineInput,
   ) {
     const opts = input.engine ?? {};
@@ -101,21 +89,14 @@ export class Refiner {
       logMs: Infinity,
       keepObservations: true,
     }, input.orients);
-    // ソルブ後の解析は時間をかけてよいので、面が見つからないフレームは溝の候補でもやり直す
-    this.config = { ...DEFAULT_PIPELINE, ...input.pipeline, grooveRetry: true, minFacing: 0.3, hingeSearch: false, altReadings: true, arucoThorough: true, arucoRegion: true, quads: { ...DEFAULT_PIPELINE.quads, ...(input.pipeline?.quads ?? {}) } };
+    // ソルブ後の解析は時間をかけてよいので、二値化の窓を細かく試し、読めなかったマスは全部読み直す。
+    // 直前のフレームのマーカーの周りだけで検出する（縁の近くに見つかったら全体でやり直す）
+    this.config = { ...DEFAULT_PIPELINE, ...input.pipeline, arucoThorough: true, arucoRegion: true };
   }
 
   // 解析する範囲の終わりを決める（ソルブ中から解析していて、止めた時刻が分かったとき）
   setEnd(to: number): void {
     this.input.to = to;
-  }
-
-  // 手の検出の履歴を足す（ソルブ中から解析するとき、少しずつ届く）
-  addHands(samples: HandSample[]): void {
-    if (!samples.length) return;
-    const hs = (this.input.hands ??= []);
-    const last = hs.length ? hs[hs.length - 1].t : -Infinity;
-    for (const s of samples) if (s.t > last) hs.push(s);
   }
 
   // 区切り: 時刻 t に状態 target（フリーで完成したとき）だったと分かった。前の区切りからそこまでを前後から解き直し、
@@ -142,25 +123,10 @@ export class Refiner {
     return { t: this.lastT, state: Array.from(best.state), orient: best.orient, moves: dec.bestMoves(), status: dec.status };
   }
 
-  // そのフレームの直前に検出された手（手の検出は 15Hz 程度なので、一番近い過去のもの）
-  private handsAt(t: number, w: number, h: number): Pt[][] {
-    const hs = this.input.hands;
-    if (!hs?.length) return [];
-    while (this.handIdx + 1 < hs.length && hs[this.handIdx + 1].t <= t) this.handIdx++;
-    const cur = hs[this.handIdx];
-    if (cur.t > t + 40 || t - cur.t > 250) return [];
-    // 前後の検出の両方で隠すと、動いている指の取りこぼしが減る
-    const next = hs[this.handIdx + 1];
-    const hulls = next && next.t - t < 80 ? [...cur.hulls, ...next.hulls] : cur.hulls;
-    return hulls.map((hull) => hull.map(([x, y]) => [x * w, y * h] as Pt));
-  }
-
-  // hands: 手の多角形（画像座標）を直接渡すとき。省略時は input.hands の履歴から
-  push(img: PixelSource & { mat?: unknown }, t: number, hands?: Pt[][]): void {
+  push(img: PixelSource, t: number): void {
     if (t < this.input.from || t > this.input.to) return;
-    const run = this.input.tracked ? processTracked : processFrame;
-    const r = run(this.cv, img, t, this.config, this.memory, this.engine.colors.refs, hands ?? this.handsAt(t, img.width, img.height));
-    const reading = { t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, alts: f.alts, ids: f.ids })) };
+    const r = processFrame(this.cv, img, t, this.config, this.memory);
+    const reading = { t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, ids: f.ids })) };
     this.engine.push(reading);
     this.looks.push({ t, solved: reading.faces.length > 0 && this.engine.looksSolved(reading) });
     this.patches.push({ t, faces: r.faces.map((f) => facePatch(img, { ...f, labs: f.labs })) });

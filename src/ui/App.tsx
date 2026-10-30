@@ -29,7 +29,7 @@ function Logo() {
 }
 
 function StatusChips() {
-  const s = useStore(controller.store, (x) => ({ camera: x.camera, vision: x.vision, stats: x.stats, status: x.track?.status, cube: !!x.cube, demo: x.demo, hands: x.hands, analysis: x.analysis }));
+  const s = useStore(controller.store, (x) => ({ camera: x.camera, vision: x.vision, stats: x.stats, status: x.track?.status, cube: !!x.cube, demo: x.demo, analysis: x.analysis }));
   const trackChip = !s.cube ? null : s.status === "lost" ? ["bad", "見失い"] : s.status === "uncertain" ? ["warn", "確認中"] : ["ok", "追跡中"];
   return (
     <div class="chips">
@@ -40,7 +40,7 @@ function StatusChips() {
       </span>
       <span class={`chip ${s.vision === "ready" ? "ok" : s.vision === "loading" ? "" : "warn"}`}>
         <span class="dot" />
-        認識 {s.vision === "loading" ? "読込中" : `${s.stats.procFps}fps・${s.stats.procMs.toFixed(0)}ms`}
+        認識 {s.vision === "loading" ? "読込中" : s.vision === "error" ? "使えません" : `${s.stats.procFps}fps・${s.stats.procMs.toFixed(0)}ms`}
       </span>
       {trackChip && (
         <span class={`chip ${trackChip[0]}`}>
@@ -62,9 +62,9 @@ function Main() {
   const app = useStore(controller.store, (s) => ({ panel: s.panel, scan: !!s.scan, cube: s.cube, demo: s.demo }));
   const track = useStore(controller.store, (s) => s.track);
   const base = useStore(controller.store, (s) => s.baseMoves);
-  const settings = useStore(settingsStore, (s) => ({ view: s.cube3dView, mirror: s.mirror, scheme: s.scheme }));
+  const settings = useStore(settingsStore, (s) => ({ view: s.cube3dView, mirror: s.mirror }));
   const moves = track?.moves.map((m) => m.move) ?? [];
-  // 連続的な姿勢が来ないとき（ガイド枠モードなど）の、離散的な姿勢での表示
+  // 連続的な姿勢が来ないときの、離散的な姿勢での表示
   const orient = settings.view === "fixed" || !track ? null : settings.view === "user" ? rotateOrientation(track.orient, "y", 2) : track.orient;
 
   return (
@@ -83,11 +83,11 @@ function Main() {
                 orient={orient}
                 view={settings.view}
                 mirror={settings.view === "camera" && settings.mirror && !app.demo}
-                colors={settings.scheme === "other" ? app.cube.display : null}
+                colors={null}
               />
             ) : (
               <div class="cube3d">
-                <div class="loading">スキャンすると、ここに手元のキューブが再現されます</div>
+                <div class="loading">追跡を始めると、ここに手元のキューブが再現されます</div>
               </div>
             )}
             <RecentMoves />

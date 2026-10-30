@@ -10,7 +10,7 @@ import type { DecodedMove } from "../track/types";
 import type { Mat3 } from "./homography";
 import { slotPoint } from "./layout";
 import type { Lab } from "./color";
-import type { PixelSource } from "./sampler";
+import type { PixelSource } from "./image";
 
 // キューブの色らしいか（指・手が乗ったセルは、どの色からも遠い）
 function cubeLike(lab: Lab | undefined, refs: Lab[] | undefined): boolean {

@@ -5,7 +5,7 @@ import { IdTracker, LAYER_CELLS } from "../src/aruco/idTrack";
 import { VIEW, type Vec3, parseMoves } from "../src/cube/model";
 import { applyH } from "../src/vision/homography";
 import { processAruco } from "../src/vision/arucoFrame";
-import { type CV, initOpenCv } from "../src/vision/quads";
+import { type CV, initOpenCv } from "../src/vision/image";
 import { applyMoveStickers, renderArucoCube, solvedStickers, stickerAt } from "./arucoCube";
 import type { Finger } from "./render";
 

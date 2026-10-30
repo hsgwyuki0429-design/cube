@@ -1,6 +1,5 @@
 // 6面スキャンの進行・結果の確認と修正
 import { controller, displayColors } from "../app/controller";
-import { settingsStore } from "../app/settings";
 import { useStore } from "../app/store";
 import { labCss } from "../vision/color";
 import { isUnknownLab, problemMessages } from "../scan/scan";
@@ -8,11 +7,10 @@ import { NetView } from "./NetView";
 
 export function ScanPanel() {
   const scan = useStore(controller.store, (s) => s.scan);
-  const scheme = useStore(settingsStore, (s) => s.scheme);
   if (!scan) return null;
 
   if (scan.result && scan.edited) {
-    const colors = displayColors(scan.result.refs, scan.result.names, scheme);
+    const colors = displayColors(scan.result.names);
     const problems = scan.problems ?? [];
     const problemFacelets = new Set(problems.flatMap((p) => ("facelets" in p ? p.facelets : [])));
     return (

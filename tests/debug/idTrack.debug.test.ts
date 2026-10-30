@@ -11,7 +11,7 @@ import { simplifyMoves } from "../../src/track/merge";
 import { ARUCO_OBSERVER } from "../../src/track/observer";
 import { applyH } from "../../src/vision/homography";
 import { DEFAULT_PIPELINE, processFrame } from "../../src/vision/pipeline";
-import { initOpenCv } from "../../src/vision/quads";
+import { initOpenCv } from "../../src/vision/image";
 import { applyMoveStickers, renderArucoCube, solvedStickers, stickerAt } from "../arucoCube";
 import type { Finger } from "../render";
 
@@ -29,14 +29,14 @@ it("ID なし追跡の効果（30fps・指）", async () => {
       const rnd = () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296);
       const pipeline = { ...DEFAULT_PIPELINE, stickers: "unique54" as const, arucoIdTrack: idTrack };
       const engine = new TrackerEngine(solvedState(), ARUCO_REFS, { observer: ARUCO_OBSERVER });
-      const memory = { last: null };
+      const memory = {};
       let st = solvedStickers();
       let done = 0;
       const period = 400;
       const turnMs = 170;
       const lead = 300;
       // 正面の格子（指の位置を決めるため）
-      const clean = processFrame(cv, renderArucoCube(cv, { ...SIZE, stickers: st, orient: 0, eye: EYE, noise: 2, scheme: "unique54" }), 0, { ...pipeline, arucoIdTrack: false }, { last: null }, ARUCO_REFS);
+      const clean = processFrame(cv, renderArucoCube(cv, { ...SIZE, stickers: st, orient: 0, eye: EYE, noise: 2, scheme: "unique54" }), 0, { ...pipeline, arucoIdTrack: false }, {});
       const H = clean.faces.find((f) => f.slot === 2)!.H;
       const pitch = Math.hypot(applyH(H, 1, 0)[0] - applyH(H, 0, 0)[0], applyH(H, 1, 0)[1] - applyH(H, 0, 0)[1]);
       // 親指 2 本（ゆっくり動く）と、ときどき横切る指
@@ -65,7 +65,7 @@ it("ID なし追跡の効果（30fps・指）", async () => {
           scheme: "unique54",
           fingers,
         });
-        const r = processFrame(cv, img, t, pipeline, memory, engine.colors.refs);
+        const r = processFrame(cv, img, t, pipeline, memory);
         engine.push({ t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, ids: f.ids })) });
         if (turning) continue;
         const at = stickerAt(st);

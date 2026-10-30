@@ -1,13 +1,5 @@
-// キャリブレーション（キューブの6色）とソルブ履歴の保存（localStorage）
+// ソルブ履歴の保存（localStorage）
 import { moveIndex } from "../cube/model";
-import type { Lab } from "../vision/color";
-
-export interface Calibration {
-  refs: Lab[]; // 面 U R F D L B ごとの代表色
-  names: string[]; // 面ごとの色名（W/Y/R/O/B/G）
-  scheme: "standard" | "other";
-  savedAt: number;
-}
 
 export interface SolveMove {
   m: string; // キューブ固定（センター色基準）の表記
@@ -33,7 +25,6 @@ export interface Solve {
   video?: boolean; // 動画ファイル（スロー撮影など）を読み込んで解析した記録
 }
 
-const CAL_KEY = "cubevision.calibration.v1";
 const SOLVES_KEY = "cubevision.solves.v1";
 
 function read<T>(key: string, fallback: T): T {
@@ -53,16 +44,6 @@ function write(key: string, value: unknown): boolean {
     return false;
   }
 }
-
-export const loadCalibration = () => read<Calibration | null>(CAL_KEY, null);
-export const saveCalibration = (c: Calibration) => write(CAL_KEY, c);
-export const clearCalibration = () => {
-  try {
-    localStorage.removeItem(CAL_KEY);
-  } catch {
-    // 無視
-  }
-};
 
 // 解析中に閉じたソルブは録画が残っていないので、速報値のまま
 export const loadSolves = () => read<Solve[]>(SOLVES_KEY, []).map((s) => (s.analysis === "pending" ? { ...s, analysis: "failed" as const } : s));

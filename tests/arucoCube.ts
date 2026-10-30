@@ -1,7 +1,7 @@
 // ArUco ステッカーを貼ったキューブの合成画像（テスト用）。ステッカーは駒と一緒に動くので、色だけでなく
 // どのステッカーがどの向きで貼られているか（ID と上向き）を 3D で追う。画素ごとに視線と面の交点を求めて描く。
 import { FACE_TURN, NORMAL, ORIENTATIONS, ROWDIR, type Vec3, apply, faceletAt, faceletGeometry, moveAmount, moveFace } from "../src/cube/model";
-import type { CV } from "../src/vision/quads";
+import type { CV } from "../src/vision/image";
 import { type StickerScheme, idForFacelet, markerBits, markerSize } from "../src/aruco/codes";
 import { type StickerDesign, hexRgb, inkRgb } from "../src/aruco/design";
 import { PRINT_COLORS } from "../src/aruco/palette";

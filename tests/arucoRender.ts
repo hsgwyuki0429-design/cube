@@ -1,6 +1,6 @@
 // 色付き ArUco ステッカーの合成画像（テスト用）。マーカーの白いセルをステッカーの色に置き換え、
 // 外側に辺の 8% の色の余白を付ける（印刷した PDF と同じ）。動きのぼけは位置をずらした描画の平均で作る。
-import type { CV } from "../src/vision/quads";
+import type { CV } from "../src/vision/image";
 
 export interface RenderMarker {
   id: number;

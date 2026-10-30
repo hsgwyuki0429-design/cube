@@ -4,7 +4,7 @@
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { it } from "vitest";
-import { initOpenCv } from "../../src/vision/quads";
+import { initOpenCv } from "../../src/vision/image";
 import { type RenderMarker, renderStickers } from "../arucoRender";
 
 it("合成動画を書き出す", async () => {

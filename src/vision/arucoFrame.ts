@@ -12,8 +12,8 @@ import { rereadFaces } from "../aruco/reread";
 import type { Lab } from "./color";
 import type { Pt } from "./homography";
 import type { DetectedFace, FrameResult } from "./pipeline";
-import type { CV } from "./quads";
-import type { PixelSource } from "./sampler";
+import type { CV } from "./image";
+import type { PixelSource } from "./image";
 
 let bench: { cv: CV; scheme: StickerScheme; thorough: boolean; b: ArucoBench } | null = null;
 // 再認識（切り出したマス）用。二値化の窓を細かく試す

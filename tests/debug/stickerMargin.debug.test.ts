@@ -7,7 +7,7 @@ import { decode } from "../../src/aruco/codes";
 import { reconstructFaces } from "../../src/aruco/cube";
 import { ArucoBench, DEFAULT_CONFIGS } from "../../src/aruco/detect";
 import { VIEW, type Vec3, parseMoves, rotateOrientation } from "../../src/cube/model";
-import { initOpenCv } from "../../src/vision/quads";
+import { initOpenCv } from "../../src/vision/image";
 import { applyMoveStickers, renderArucoCube, solvedStickers, stickerAt } from "../arucoCube";
 
 it("色の余白の比較", async () => {

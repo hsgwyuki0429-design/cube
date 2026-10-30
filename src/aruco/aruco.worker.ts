@@ -1,7 +1,7 @@
 // ArUco 検証ページの解析 Worker: 動画ファイルを 1 フレームずつ復号し、方式ごとに ArUco を検出する。
 // ライブではないので間引かない（stride を指定したときだけ）。映像はどこにも送らない。
 import cvModule from "@techstark/opencv-js";
-import { type CV, initOpenCv } from "../vision/quads";
+import { type CV, initOpenCv } from "../vision/image";
 import { decodeCube, facesOverTime } from "./cube";
 import { ArucoBench } from "./detect";
 import { demuxFile, readSamples } from "./demux";

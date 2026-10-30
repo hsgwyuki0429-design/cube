@@ -6,21 +6,16 @@ import { TrackerEngine, focusCells } from "../track/engine";
 import { StreamDecoder, decodeRecording } from "./decode";
 import { StillSkipper } from "./motion";
 import { estimatePose, rotationAngle } from "./pose";
-import { processTracked } from "./roi";
 import { Refiner } from "./refine";
-import type { Lab } from "./color";
-import type { Pt } from "./homography";
-import { DEFAULT_PIPELINE, type PipelineConfig, type PipelineMemory } from "./pipeline";
+import { DEFAULT_PIPELINE, type PipelineConfig, processFrame } from "./pipeline";
 import type { FrameMessage, FromWorker, StreamPartial, ToWorker } from "./protocol";
-import { type CV, initOpenCv } from "./quads";
+import { type CV, initOpenCv } from "./image";
 
 let cv: CV | null = null;
 let config: PipelineConfig = { ...DEFAULT_PIPELINE };
 let ctx: OffscreenCanvasRenderingContext2D | null = null;
-let hands: Pt[][] = [];
-let refs: Lab[] | null = null;
 let engine: TrackerEngine | null = null;
-const memory: { last: PipelineMemory | null } = { last: null };
+const memory = {}; // フレームの間で引き継ぐもの（processFrame）
 let lastPose: { t: number; M: Mat3 } | null = null; // 直前に送った 3D の向き（キューブ固定 → カメラ）
 let focus: number[] | undefined; // 追跡が未確定・推定とみているマス（ArUco で先に読み直す）
 
@@ -64,6 +59,11 @@ function doAnchor(id: number, s: Stream): void {
 
 const post = (msg: FromWorker) => (self as unknown as Worker).postMessage(msg);
 
+function needCv(): CV {
+  if (!cv) throw new Error("画像認識（OpenCV）を読み込めませんでした");
+  return cv;
+}
+
 self.onmessage = async (event: MessageEvent<ToWorker>) => {
   const msg = event.data;
   try {
@@ -74,22 +74,15 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
           cv = await initOpenCv(cvModule);
         } catch (e) {
           cv = null;
-          console.warn("OpenCV.js を読み込めませんでした。ガイド枠モードで動きます。", e);
+          console.warn("OpenCV.js を読み込めませんでした。", e);
         }
         post({ type: "ready", ms: performance.now() - t0, opencv: !!cv });
         return;
       }
       case "config":
-        config = { ...config, ...msg.config, quads: { ...config.quads, ...(msg.config.quads ?? {}) } };
-        return;
-      case "hands":
-        hands = msg.hands;
-        return;
-      case "refs":
-        refs = msg.refs;
+        config = { ...config, ...msg.config };
         return;
       case "track-start":
-        refs = msg.refs;
         engine = new TrackerEngine(Uint8Array.from(msg.state), msg.refs, msg.options, msg.orients);
         focus = undefined;
         return;
@@ -111,7 +104,7 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
         // ソルブ後の精密解析（タイマー用の別の Worker で動かす。リアルタイムの追跡は止めない）
         const { recording, input, id } = msg;
         try {
-          const refiner = new Refiner(cv, { ...input, pipeline: { ...config, ...input.pipeline } });
+          const refiner = new Refiner(needCv(), { ...input, pipeline: { ...config, ...input.pipeline } });
           const total = recording.chunks.filter((c) => c.timestamp / 1000 >= input.from && c.timestamp / 1000 <= input.to).length;
           let done = 0;
           let lastPost = 0;
@@ -138,11 +131,10 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
         let s = streams.get(msg.id);
         if (!s) {
           if (!msg.input) return;
-          s = { refiner: new Refiner(cv, { ...msg.input, pipeline: { ...config, ...msg.input.pipeline } }), decoder: null, fedUntil: 0, lastPartial: -Infinity, still: new StillSkipper() };
+          s = { refiner: new Refiner(needCv(), { ...msg.input, pipeline: { ...config, ...msg.input.pipeline } }), decoder: null, fedUntil: 0, lastPartial: -Infinity, still: new StillSkipper() };
           streams.set(msg.id, s);
         }
         const st = s;
-        st.refiner.addHands(msg.hands);
         const rec = msg.recording;
         if (!rec.chunks.length) return;
         st.decoder ??= new StreamDecoder(rec.config, rec.width, rec.height, (img, t) => streamFrame(msg.id, st, img, t));
@@ -185,7 +177,7 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
         videoCancels.delete(id);
         try {
           const { decodeVideoFile } = await import("./videoFile");
-          const refiner = new Refiner(cv, { ...input, pipeline: { ...config, ...input.pipeline } });
+          const refiner = new Refiner(needCv(), { ...input, pipeline: { ...config, ...input.pipeline } });
           const still = new StillSkipper();
           let total = 1;
           let done = 0;
@@ -237,10 +229,8 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
         ctx!.drawImage(bitmap, 0, 0);
         bitmap.close();
         const img = ctx!.getImageData(0, 0, w, h);
-        const handsPx = hands.map((hull) => hull.map(([x, y]) => [x * w, y * h] as Pt));
-        // キューブを見つけた後は、直前の位置の周りだけを縮小して処理する（速さが追従の前提）
-        const result = processTracked(cv, img, msg.t, focus?.length ? { ...config, focus } : config, memory, engine ? engine.colors.refs : refs, handsPx);
-        const reading = { t: msg.t, faces: result.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, alts: f.alts, ids: f.ids })) };
+        const result = cv ? processFrame(cv, img, msg.t, focus?.length ? { ...config, focus } : config, memory) : { faces: [], quads: [] };
+        const reading = { t: msg.t, faces: result.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, ids: f.ids })) };
         const track = engine?.push(reading) ?? undefined;
         if (track) focus = focusCells(track.cells, track.orient);
         let looksSolved: boolean | undefined;

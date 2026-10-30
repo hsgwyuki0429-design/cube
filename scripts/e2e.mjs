@@ -3,7 +3,7 @@
 //
 //   npm run build && npm run e2e            # 既定: 2面が見える位置・2TPS・30手
 //   E2E_VIEW=corner E2E_TPS=3 npm run e2e
-//   E2E_STICKERS=aruco npm run e2e        # ArUco マーカーのキューブ（E2E_MODE=timer も可）
+//   E2E_STICKERS=aruco12 npm run e2e      # ステッカーの符号（既定 unique54。aruco12・aruco = 4×4 の 54 種類。E2E_MODE=timer も可）
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { chromium } from "playwright-core";
@@ -24,7 +24,7 @@ const MOVES = Number(process.env.E2E_MOVES ?? 30);
 const SEEDS = (process.env.E2E_SEEDS ?? "11").split(",").map(Number);
 const OUT = process.env.E2E_OUT ?? "e2e-output";
 const MODE = process.env.E2E_MODE ?? "track"; // track | timer
-const STICKERS = process.env.E2E_STICKERS ?? "color"; // color | aruco（合成キューブに ArUco マーカーを描き、ArUco の認識で追う）
+const STICKERS = process.env.E2E_STICKERS ?? "unique54"; // unique54 | aruco12 | aruco（合成キューブに描くマーカーの符号）
 const CHROME = process.env.CHROME_PATH ?? (existsSync("/opt/pw-browsers/chromium") ? "/opt/pw-browsers/chromium" : undefined);
 
 if (!existsSync("dist/index.html")) {

@@ -6,7 +6,6 @@ import { useStore } from "../app/store";
 import { type Lab, NAMED_COLORS, colorDistance, nearestNamed } from "../vision/color";
 import type { Pt } from "../vision/homography";
 import { slotPoint } from "../vision/layout";
-import { guideH } from "../vision/pipeline";
 import type { FrameMessage } from "../vision/protocol";
 import { SLOT_LABEL } from "./notation";
 
@@ -23,7 +22,7 @@ function classifyColor(lab: Lab, refs: Lab[] | null, display: string[] | null): 
 
 export function CameraView() {
   const app = useStore(controller.store, (s) => ({ camera: s.camera, error: s.cameraError, demo: s.demo, scanning: !!s.scan && !s.scan.result, vision: s.vision }));
-  const settings = useStore(settingsStore, (s) => ({ mirror: s.mirror, debug: s.debug, detection: s.detection }));
+  const settings = useStore(settingsStore, (s) => ({ mirror: s.mirror, debug: s.debug }));
   const host = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const hint = useRef<HTMLDivElement>(null);
@@ -66,18 +65,6 @@ export function CameraView() {
       const display = st.cube?.display ?? null;
       const debug = settingsStore.get().debug;
 
-      if (settingsStore.get().detection === "guide") {
-        const g = { H: guideH(m.width, m.height, 0.6), rot: 0 };
-        ctx.setLineDash([8, 6]);
-        ctx.strokeStyle = "rgba(255,255,255,0.7)";
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        [map(slotPoint(g, 0, 0)), map(slotPoint(g, 3, 0)), map(slotPoint(g, 3, 3)), map(slotPoint(g, 0, 3))].forEach((p, i) => (i ? ctx.lineTo(...p) : ctx.moveTo(...p)));
-        ctx.closePath();
-        ctx.stroke();
-        ctx.setLineDash([]);
-      }
-
       if (debug) {
         ctx.strokeStyle = "rgba(255,0,255,0.7)";
         ctx.lineWidth = 1;
@@ -86,13 +73,6 @@ export function CameraView() {
           q.map(map).forEach((p, i) => (i ? ctx.lineTo(...p) : ctx.moveTo(...p)));
           ctx.closePath();
           ctx.stroke();
-        }
-        ctx.fillStyle = "rgba(255,170,80,0.18)";
-        for (const hull of controller.hands.hulls) {
-          ctx.beginPath();
-          hull.map(([x, y]) => map([x * m.width, y * m.height])).forEach((p, i) => (i ? ctx.lineTo(...p) : ctx.moveTo(...p)));
-          ctx.closePath();
-          ctx.fill();
         }
       }
 

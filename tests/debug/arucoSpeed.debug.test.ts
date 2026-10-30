@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import { it } from "vitest";
 import { ArucoBench, type DetectorConfig } from "../../src/aruco/detect";
 import { parseMoves } from "../../src/cube/model";
-import { initOpenCv } from "../../src/vision/quads";
+import { initOpenCv } from "../../src/vision/image";
 import { applyMoveStickers, renderArucoCube, solvedStickers } from "../arucoCube";
 
 it("速さ", async () => {
