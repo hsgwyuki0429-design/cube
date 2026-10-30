@@ -2,7 +2,8 @@
 // 色を読む代わりにマーカーの ID から色（センターの面）が確定するので、面の格子を探して色を読む代わりに
 // マーカーから面を組み立て（src/aruco/cube.ts）、各セルの色を代表色の Lab にして返す。追跡・スキャン・精密解析は
 // 普通のステッカーと同じ経路（FrameResult）で動く。
-import { fillByColor, frameRefs } from "../aruco/colorFill";
+import { fillByColor, frameRefs, skinFraction } from "../aruco/colorFill";
+import { IdTracker } from "../aruco/idTrack";
 import { reconstructFaces, trustedColors } from "../aruco/cube";
 import { ArucoBench, DEFAULT_CONFIGS, THOROUGH_PARAMS } from "../aruco/detect";
 import type { StickerScheme } from "../aruco/codes";
@@ -19,11 +20,14 @@ let bench: { cv: CV; scheme: StickerScheme; thorough: boolean; b: ArucoBench } |
 let rereader: { cv: CV; scheme: StickerScheme; b: ArucoBench } | null = null;
 // フレームの間で引き継ぐキューブの傾き（面が 1 つしか見えないときの向きの決定に使う）。記憶の入れ物ごと
 const tilts = new WeakMap<object, { t: number; tilt: number[] | null }>();
+// ID なし追跡（読めなくなったマスに直前のステッカーを引き継ぐ）。記憶の入れ物ごと
+const trackers = new WeakMap<object, IdTracker>();
 const TILT_MS = 1000;
 
 // thorough: 精密解析（時間をかけてよい）。二値化の窓を細かく試す（THOROUGH_PARAMS）
 // opts.reread: 読めなかったマスを読み直す数（省略時はライブ 4・精密解析は全部）、opts.focus: 先に読み直すマス（slot * 9 + cell）、
-// opts.colorFill: それでも読めなかったマスを色で補う（既定 true。src/aruco/colorFill.ts）
+// opts.colorFill: それでも読めなかったマスを色で補う（既定 true。src/aruco/colorFill.ts）、
+// opts.idTrack: ID が読めなかったマスに直前のフレームのステッカーを引き継ぐ（既定 true。src/aruco/idTrack.ts）
 export function processAruco(
   cv: CV,
   img: PixelSource,
@@ -31,7 +35,7 @@ export function processAruco(
   memory: object,
   scheme: StickerScheme = "aruco54",
   thorough = false,
-  opts: { reread?: number; focus?: number[]; colorFill?: boolean } = {},
+  opts: { reread?: number; focus?: number[]; colorFill?: boolean; idTrack?: boolean } = {},
 ): FrameResult {
   if (!bench || bench.cv !== cv || bench.scheme !== scheme || bench.thorough !== thorough) {
     bench?.b.delete();
@@ -52,6 +56,13 @@ export function processAruco(
   }
   // 色による補完: 読めたマーカー（ID から色が分かる）の写った色を、そのフレームの色の基準にする
   if (opts.colorFill !== false && r.faces.length) fillByColor(img, r.faces, frameRefs(trustedColors(markers, scheme)));
+  // ID なし追跡: 色で補ったマス（色が合えば）と読めなかったマスに、直前のフレームの同じマスのステッカーを引き継ぐ
+  if (opts.idTrack !== false) {
+    let tracker = trackers.get(memory);
+    if (!tracker) trackers.set(memory, (tracker = new IdTracker()));
+    const bySlot = new Map(r.faces.map((f) => [f.slot, f]));
+    tracker.update(t, r.faces, null, (slot, cell) => skinFraction(img, bySlot.get(slot)!.H, cell) > 0.15);
+  }
   const quads: Pt[][] = markers.map((m) => [0, 1, 2, 3].map((i) => [m.corners[i * 2], m.corners[i * 2 + 1]] as Pt));
   const faces: DetectedFace[] = r.faces.map((f) => {
     const known = f.colors.map((c) => c >= 0);
