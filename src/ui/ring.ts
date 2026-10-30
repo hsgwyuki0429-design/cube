@@ -1,74 +1,135 @@
-// 円環図（極投影の同心円）の幾何。キューブを上（U）から見下ろし、表面を U を中心に外へ広げた 2D の図。
-// 内側から U のセンター・U の周り 8・側面の上段 12・中段 12・下段 12・D の周り 8・D のセンター（外周）の 54 マス。
-// 正面（F）を下・R を右・B を上・L を左に置く（上から見下ろした向き）。U・D・E の手はリングの回転そのものになる
-// （U は U の周りが 2 マス・上段が 3 マス回る）。DOM を持たない（tests/ring.test.ts で検証）
-import { MOVE_DEST, faceletGeometry } from "../cube/model";
+// 円環図の幾何（jagarikin さんの「円でできたルービックキューブ」の図と同じ考え方）。DOM を持たない（tests/ring.test.ts で検証）。
+//
+// 層（3 軸 × 3 層 = 9 本）ごとに、その層の側面の 12 枚が 1 つの円の上に並ぶ。各ステッカーは、自分の面に垂直でない 2 軸の層の円の
+// 交わるところに置く。面を回すと、その層の円に沿ってステッカーが 3 つずつ進む（回した面そのものの 8 枚は、その面のセンターのまわりを回る）。
+//
+// 作り方: 各ステッカーを球面上に置く。面の法線の軸 c・符号 s、他の 2 軸 a・b の位置 pa・pb（-1, 0, 1）のステッカーを
+//   q[a] = K·pa、q[b] = K·pb、q[c] = s·√(1 − K²(pa² + pb²))
+// とすると、層（軸 a・位置 l）の 12 枚はどれも q[a] = K·l の平面の上 = 球面上の 1 つの円の上にある。これを立体射影（円を円に写す）で
+// 平面に写す。射影の中心は B・L・D の角の向き（U・R・F の角から見る）なので、U・R・F が真ん中に 3 つの花びらのように並び、
+// B・L・D の層の円は外側の大きな円になる。射影の中心の近く（B・L・D の角）はとても遠くに写るので、中心からの距離だけを
+// r → r / (1 + r / COMPRESS) で縮める（円はわずかにゆがむ。層の円は球面上の円をそのまま写した曲線で描くので、点は必ず線の上にある）
+import { FACES, MOVE_DEST, NORMAL, faceletGeometry, moveAmount, moveFace } from "../cube/model";
 
-export interface RingCell {
-  facelet: number;
-  ring: number; // 0: U センター, 1: U の周り, 2〜4: 側面の上・中・下段, 5: D の周り, 6: D センター
-  angle: number; // 中心の角度（ラジアン。0 = 正面 = 下、増える向きは F → R → B → L）
-  width: number; // 角度の幅（ラジアン。センターは 2π）
-}
+const K = 0.45; // 球面上の格子の間隔（大きいほど面の 9 枚が広がる）
+const COMPRESS = 2; // 中心からの距離の縮め方
+type V3 = [number, number, number];
 
-// リングの内径・外径（図の半径 = 1）
-export const RADII: [number, number][] = [
-  [0, 0.12],
-  [0.13, 0.3],
-  [0.31, 0.45],
-  [0.46, 0.6],
-  [0.61, 0.75],
-  [0.76, 0.92],
-  [0.93, 1],
-];
-
-const TAU = Math.PI * 2;
-const wrap = (a: number) => ((a % TAU) + TAU) % TAU;
-
-export const RING_CELLS: RingCell[] = Array.from({ length: 54 }, (_, f) => {
-  const face = Math.floor(f / 9);
+// 球面上の位置
+function spherePoint(f: number): V3 {
   const { pos, normal } = faceletGeometry(f);
-  const center = f % 9 === 4;
-  if (face === 0 || face === 3) {
-    // U・D: 水平面の向き (x, z) の角度。センターは真ん中（U）か外周（D）
-    if (center) return { facelet: f, ring: face === 0 ? 0 : 6, angle: 0, width: TAU };
-    return { facelet: f, ring: face === 0 ? 1 : 5, angle: wrap(Math.atan2(pos[0], pos[2])), width: TAU / 8 };
+  const c = normal.findIndex((v) => v !== 0);
+  const q: V3 = [0, 0, 0];
+  let s2 = 0;
+  for (let k = 0; k < 3; k++) {
+    if (k === c) continue;
+    q[k] = K * pos[k];
+    s2 += q[k] * q[k];
   }
-  // 側面: 面の向きの角度 + 列（F → R の向きに 30° ずつ）。段は上（y = 1）から
-  const base = Math.atan2(normal[0], normal[2]);
-  const k = pos[0] * Math.cos(base) - pos[2] * Math.sin(base);
-  return { facelet: f, ring: 3 - pos[1], angle: wrap(base + (k * Math.PI) / 6), width: TAU / 12 };
-});
-
-// 図の上の位置（中心 = 原点、半径 1。x 右・y 下）
-export function ringPoint(angle: number, r: number): [number, number] {
-  return [r * Math.sin(angle), r * Math.cos(angle)];
+  q[c] = normal[c] * Math.sqrt(1 - s2);
+  return q;
 }
 
-// マスの中心（センターは U が原点、D は外周の下）
-export function cellCenter(c: RingCell): [number, number] {
-  if (c.ring === 0) return [0, 0];
-  const [r0, r1] = RADII[c.ring];
-  return ringPoint(c.angle, (r0 + r1) / 2);
+const unit = (v: V3): V3 => {
+  const n = Math.hypot(...v);
+  return [v[0] / n, v[1] / n, v[2] / n];
+};
+const dot = (a: V3, b: V3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+const cross = (a: V3, b: V3): V3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+
+// 立体射影: 中心 POLE（B・L・D の角の向き）から、POLE に垂直な平面へ。画面の上 = U の向き、右 = R の側
+const POLE = unit([-1, -1, -1]);
+const UP = unit([0, 1, 0].map((v, i) => v - dot([0, 1, 0], POLE) * POLE[i]) as V3);
+const RIGHT = cross(POLE, UP);
+function project(q: V3): [number, number] {
+  const d = Math.max(1e-6, 1 - dot(q, POLE));
+  const x = dot(q, RIGHT) / d;
+  const y = -dot(q, UP) / d; // 画面は y が下
+  const r = Math.hypot(x, y);
+  const k = r > 0 ? 1 / (1 + r / COMPRESS) : 1;
+  return [x * k, y * k];
 }
 
-// マスの外形（SVG の path。scale 倍、中心 (cx, cy)）
-export function cellPath(c: RingCell, scale: number, cx = 0, cy = 0): string {
-  const [r0, r1] = RADII[c.ring].map((r) => r * scale);
-  const P = (a: number, r: number) => {
-    const [x, y] = ringPoint(a, r);
-    return `${(cx + x).toFixed(2)} ${(cy + y).toFixed(2)}`;
-  };
-  if (c.width >= TAU - 1e-9) {
-    // 円（U センター）か円環（D センター）: 2 つの半円で
-    const outer = `M ${P(0, r1)} A ${r1} ${r1} 0 1 0 ${P(Math.PI, r1)} A ${r1} ${r1} 0 1 0 ${P(0, r1)} Z`;
-    if (r0 <= 0) return outer;
-    return `${outer} M ${P(0, r0)} A ${r0} ${r0} 0 1 1 ${P(Math.PI, r0)} A ${r0} ${r0} 0 1 1 ${P(0, r0)} Z`;
-  }
-  const a0 = c.angle - c.width / 2;
-  const a1 = c.angle + c.width / 2;
-  // 角度が増える向きは画面では反時計回り（sweep 0）
-  return `M ${P(a0, r0)} L ${P(a0, r1)} A ${r1} ${r1} 0 0 0 ${P(a1, r1)} L ${P(a1, r0)} A ${r0} ${r0} 0 0 1 ${P(a0, r0)} Z`;
+const RAW = Array.from({ length: 54 }, (_, f) => project(spherePoint(f)));
+// 54 個の点が半径 1 の中に入るように縮める
+const SCALE = 1 / Math.max(...RAW.map(([x, y]) => Math.hypot(x, y)));
+
+// 各ステッカーの位置（図の中心 = 原点、点はすべて半径 1 以内。x 右・y 下）
+export const RING_POINTS: [number, number][] = RAW.map(([x, y]) => [x * SCALE, y * SCALE]);
+
+export interface RingCircle {
+  axis: number; // 0 x / 1 y / 2 z
+  layer: number; // -1, 0, 1
+  points: [number, number][]; // 円を写した閉じた曲線（RING_SAMPLES 点。点 i は球面上の円の角度 2πi/RING_SAMPLES）
+  facelets: number[]; // この円の上のステッカー（12 枚）
+}
+
+export const RING_SAMPLES = 180;
+
+// 9 本の層の円（球面上の円 q[axis] = K·layer を写した曲線）
+export const RING_CIRCLES: RingCircle[] = [0, 1, 2].flatMap((axis) =>
+  [-1, 0, 1].map((layer) => {
+    const facelets = Array.from({ length: 54 }, (_, f) => f).filter((f) => {
+      const { pos, normal } = faceletGeometry(f);
+      return normal[axis] === 0 && pos[axis] === layer;
+    });
+    const h = K * layer;
+    const rr = Math.sqrt(1 - h * h);
+    const [u, v] = [0, 1, 2].filter((k) => k !== axis);
+    const pt = (t: number): [number, number] => {
+      const q: V3 = [0, 0, 0];
+      q[axis] = h;
+      q[u] = rr * Math.cos(t);
+      q[v] = rr * Math.sin(t);
+      const [x, y] = project(q);
+      return [x * SCALE, y * SCALE];
+    };
+    return { axis, layer, points: Array.from({ length: RING_SAMPLES }, (_, i) => pt((2 * Math.PI * i) / RING_SAMPLES)), facelets };
+  }),
+);
+
+// 層の円の上でのステッカーの位置（球面上の円の角度、0〜2π）
+export function ringAngle(rc: RingCircle, f: number): number {
+  const q = spherePoint(f);
+  const [u, v] = [0, 1, 2].filter((k) => k !== rc.axis);
+  return (Math.atan2(q[v], q[u]) + 2 * Math.PI) % (2 * Math.PI);
+}
+
+// 層の円の角度 a0 から a1 まで（dir: 1 = 角度が増える向き）の曲線（画面の座標、scale 倍・中心 (cx, cy)）
+export function ringArc(rc: RingCircle, a0: number, a1: number, dir: number): [number, number][] {
+  let span = dir > 0 ? a1 - a0 : a0 - a1;
+  while (span < 0) span += 2 * Math.PI;
+  const n = Math.max(2, Math.ceil((span / (2 * Math.PI)) * RING_SAMPLES));
+  const [u, v] = [0, 1, 2].filter((k) => k !== rc.axis);
+  const h = K * rc.layer;
+  const rr = Math.sqrt(1 - h * h);
+  return Array.from({ length: n + 1 }, (_, i) => {
+    const t = a0 + (dir > 0 ? 1 : -1) * (span * i) / n;
+    const q: V3 = [0, 0, 0];
+    q[rc.axis] = h;
+    q[u] = rr * Math.cos(t);
+    q[v] = rr * Math.sin(t);
+    const [x, y] = project(q);
+    return [x * SCALE, y * SCALE];
+  });
+}
+
+// 手 move で、層の軸のまわりに球面上の円の角度が増える向きに回るか（1）減る向きか（-1）
+export function ringDirection(move: number): number {
+  const face = moveFace(move);
+  const n = NORMAL[face];
+  const axis = n.findIndex((v) => v !== 0);
+  // 時計回り（外から見て）= 外向きの法線のまわりに負。角度は u→v の向き（u < v の 2 軸）: x 軸（y→z）と z 軸（x→y）は軸の正の向きの
+  // まわりの右手の回転、y 軸（x→z）は逆向き
+  const sign = moveAmount(move) === 3 ? 1 : -1;
+  return sign * n[axis] * (axis === 1 ? -1 : 1);
+}
+
+// 面 face を回したとき、側面の 12 枚が進む円
+export function turnCircle(face: number): RingCircle {
+  const n = NORMAL[face];
+  const axis = n.findIndex((v) => v !== 0);
+  return RING_CIRCLES.find((c) => c.axis === axis && c.layer === n[axis])!;
 }
 
 // 手 move で動くステッカーの移動（元の facelet → 行き先）
@@ -78,3 +139,21 @@ export function moveArrows(move: number): { from: number; to: number }[] {
   for (let f = 0; f < 54; f++) if (dest[f] !== f) out.push({ from: f, to: dest[f] });
   return out;
 }
+
+// 手 move で facelet f の点が動き始める向き（図の上の小さな移動）。球面上で層の軸のまわりに少し回して写す
+export function startDirection(f: number, move: number): [number, number] {
+  const n = NORMAL[moveFace(move)] as V3;
+  const angle = (moveAmount(move) === 3 ? 1 : -1) * 0.05; // 時計回り = 外向きの法線のまわりに負
+  const q = spherePoint(f);
+  const c = Math.cos(angle);
+  const s = Math.sin(angle);
+  const kxq = cross(n, q);
+  const d = dot(n, q);
+  const r: V3 = [0, 1, 2].map((i) => q[i] * c + kxq[i] * s + n[i] * d * (1 - c)) as V3;
+  const [x0, y0] = RING_POINTS[f];
+  const [x1, y1] = project(r);
+  return [x1 * SCALE - x0, y1 * SCALE - y0];
+}
+
+export const FACE_CENTER = (face: number) => face * 9 + 4;
+export { FACES };

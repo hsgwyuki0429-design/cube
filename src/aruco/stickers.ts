@@ -42,8 +42,8 @@ export interface SheetSpec {
 const range = (n: number) => Array.from({ length: n }, (_, i) => i);
 
 export const SHEETS: SheetSpec[] = [
-  // マスごとに違う 54 種類（3×3）: 印刷用 PDF の 1・2 ページ目（18mm・15mm が 1 セットずつ）
-  { key: "u18", label: "ステッカー 18mm（54 種類・3×3）", ids: range(STICKER_IDS), sizes: [18], scheme: "unique54" },
+  // マスごとに違う 54 種類（3×3）: 印刷用 PDF の 1・2 ページ目（16mm・15mm が 1 セットずつ）
+  { key: "u16", label: "ステッカー 16mm（54 種類・3×3）", ids: range(STICKER_IDS), sizes: [16], scheme: "unique54" },
   { key: "u15", label: "ステッカー 15mm（54 種類・3×3）", ids: range(STICKER_IDS), sizes: [15], scheme: "unique54" },
   // 12 種類（3×3）: 同じ ID のステッカーが何枚もあるので、ID と大きさが 1 枚ずつのテストページだけ
   { key: "t12", label: "テストページ（12 種類 × 12/15/18mm）", ids: range(12), sizes: [12, 15, 18], scheme: "aruco12" },
