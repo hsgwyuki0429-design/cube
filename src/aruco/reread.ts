@@ -18,20 +18,29 @@ function crop(img: ImageLike, x0: number, y0: number, w: number, h: number, s: n
   const out = new Uint8ClampedArray(cw * ch * 4);
   const W = img.width;
   const Hh = img.height;
+  const src = img.data;
+  // 列ごとの位置と重みは行によらないので先に求める
+  const colAt = new Int32Array(cw);
+  const colF = new Float64Array(cw);
+  for (let x = 0; x < cw; x++) {
+    const sx = Math.min(W - 1.001, Math.max(0, x0 + (x + 0.5) / s - 0.5));
+    const ix = Math.floor(sx);
+    colAt[x] = ix * 4;
+    colF[x] = sx - ix;
+  }
   for (let y = 0; y < ch; y++) {
     const sy = Math.min(Hh - 1.001, Math.max(0, y0 + (y + 0.5) / s - 0.5));
     const iy = Math.floor(sy);
     const fy = sy - iy;
+    const row = iy * W * 4;
     for (let x = 0; x < cw; x++) {
-      const sx = Math.min(W - 1.001, Math.max(0, x0 + (x + 0.5) / s - 0.5));
-      const ix = Math.floor(sx);
-      const fx = sx - ix;
-      const a = (iy * W + ix) * 4;
+      const fx = colF[x];
+      const a = row + colAt[x];
       const b = a + 4;
       const c = a + W * 4;
       const d = c + 4;
       const o = (y * cw + x) * 4;
-      for (let k = 0; k < 3; k++) out[o + k] = (img.data[a + k] * (1 - fx) + img.data[b + k] * fx) * (1 - fy) + (img.data[c + k] * (1 - fx) + img.data[d + k] * fx) * fy;
+      for (let k = 0; k < 3; k++) out[o + k] = (src[a + k] * (1 - fx) + src[b + k] * fx) * (1 - fy) + (src[c + k] * (1 - fx) + src[d + k] * fx) * fy;
       out[o + 3] = 255;
     }
   }

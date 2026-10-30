@@ -137,7 +137,7 @@ export function SettingsPage() {
           <Field label="手の検出" desc={`指で隠れたステッカーを読まないようにします（MediaPipe）。状態: ${hands === "ready" ? "動作中" : hands === "loading" ? "読み込み中" : hands === "error" ? "使えません" : "オフ"}`}>
             <Toggle k="handMask" />
           </Field>
-          <Field label="処理の解像度（横幅 px）" desc="大きいほど小さく映ったキューブも検出できますが重くなります">
+          <Field label="処理の解像度（長辺 px）" desc="映像の長辺をこの大きさに縮めて認識・精密解析します。大きいほど小さく映ったキューブも検出できますが重くなります">
             <NumberInput k="workWidth" min={480} max={1280} step={80} />
           </Field>
           <Field label="安定判定の時間（ms）" desc="層がそろって見える時間がこれ以上あれば読み取ります。短いほど速い回転に追従しますが、誤読が増えます（30fpsのカメラでは33で1フレーム）">

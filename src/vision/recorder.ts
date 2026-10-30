@@ -43,13 +43,15 @@ export class FrameRecorder {
     return typeof VideoEncoder !== "undefined" && typeof VideoDecoder !== "undefined" && typeof VideoFrame !== "undefined" && typeof OffscreenCanvas !== "undefined";
   }
 
-  // 録画を始める（width は解析に使う幅。カメラ映像はこの幅に縮めて圧縮する）
-  async start(video: HTMLVideoElement, width = 800, keepMs = 120000): Promise<boolean> {
+  // 録画を始める（size は解析に使う大きさ。カメラ映像は長辺をこれに縮めて圧縮する。リアルタイムの認識と同じ大きさ:
+  // 幅を基準にすると、縦向きの映像では画素が 3 倍近くになり、精密解析がその分遅かった）
+  async start(video: HTMLVideoElement, size = 800, keepMs = 120000): Promise<boolean> {
     if (!FrameRecorder.available() || !video.videoWidth) return false;
     this.stop();
     this.keepMs = keepMs;
-    const w = Math.min(width, video.videoWidth) & ~1;
-    const h = Math.round((video.videoHeight * w) / video.videoWidth) & ~1;
+    const s = Math.min(1, size / Math.max(video.videoWidth, video.videoHeight));
+    const w = Math.round(video.videoWidth * s) & ~1;
+    const h = Math.round(video.videoHeight * s) & ~1;
     for (const { codec, hw } of CODECS) {
       // realtime: ソフトウェアの圧縮でも速い設定（quality は数倍遅い）。それでも詰まったら add() で間引く
       const config: VideoEncoderConfig = {

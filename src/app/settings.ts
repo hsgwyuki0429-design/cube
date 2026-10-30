@@ -20,7 +20,7 @@ export interface Settings {
   inspection: boolean;
   sound: boolean;
   analyzeSolves: boolean; // 録画を追跡の開始から精密解析し、追跡に反映する（タイマーでは止めたときにタイムと手順を確定する）
-  workWidth: number;
+  workWidth: number; // 認識・精密解析で映像の長辺を縮める大きさ（px）
   beamWidth: number;
   maxMovesPerStep: number;
   stableMs: number;
