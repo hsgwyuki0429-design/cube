@@ -215,6 +215,16 @@ function supportedByFrame(ms: { m: Marker; face: number }[]): Set<Marker> {
   return out;
 }
 
+// 色の基準に使えるマーカー（ID から色が分かり、写った色が ID の色と食い違わないもの）の写った色と面（色による補完の基準: colorFill.ts）
+export function trustedColors(markers: Marker[], scheme: StickerScheme): { rgb: [number, number, number]; face: number }[] {
+  const dec = markers.flatMap((m) => {
+    const d = decode(scheme, m.id);
+    return d ? [{ ...m, face: d.face }] : [];
+  });
+  const kept = scheme === "unique54" ? frameColorFilter(dec) : dec.filter((m) => colorConsistent(scheme, m.id, m.rgb));
+  return kept.map((m) => ({ rgb: m.rgb, face: m.face }));
+}
+
 interface Coded extends Marker {
   dec: Decoded;
 }

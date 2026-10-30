@@ -2,7 +2,8 @@
 // 色を読む代わりにマーカーの ID から色（センターの面）が確定するので、面の格子を探して色を読む代わりに
 // マーカーから面を組み立て（src/aruco/cube.ts）、各セルの色を代表色の Lab にして返す。追跡・スキャン・精密解析は
 // 普通のステッカーと同じ経路（FrameResult）で動く。
-import { reconstructFaces } from "../aruco/cube";
+import { fillByColor, frameRefs } from "../aruco/colorFill";
+import { reconstructFaces, trustedColors } from "../aruco/cube";
 import { ArucoBench, DEFAULT_CONFIGS, THOROUGH_PARAMS } from "../aruco/detect";
 import type { StickerScheme } from "../aruco/codes";
 import { ARUCO_REFS } from "../aruco/palette";
@@ -21,8 +22,17 @@ const tilts = new WeakMap<object, { t: number; tilt: number[] | null }>();
 const TILT_MS = 1000;
 
 // thorough: 精密解析（時間をかけてよい）。二値化の窓を細かく試す（THOROUGH_PARAMS）
-// opts.reread: 読めなかったマスを読み直す数（省略時はライブ 4・精密解析は全部）、opts.focus: 先に読み直すマス（slot * 9 + cell）
-export function processAruco(cv: CV, img: PixelSource, t: number, memory: object, scheme: StickerScheme = "aruco54", thorough = false, opts: { reread?: number; focus?: number[] } = {}): FrameResult {
+// opts.reread: 読めなかったマスを読み直す数（省略時はライブ 4・精密解析は全部）、opts.focus: 先に読み直すマス（slot * 9 + cell）、
+// opts.colorFill: それでも読めなかったマスを色で補う（既定 true。src/aruco/colorFill.ts）
+export function processAruco(
+  cv: CV,
+  img: PixelSource,
+  t: number,
+  memory: object,
+  scheme: StickerScheme = "aruco54",
+  thorough = false,
+  opts: { reread?: number; focus?: number[]; colorFill?: boolean } = {},
+): FrameResult {
   if (!bench || bench.cv !== cv || bench.scheme !== scheme || bench.thorough !== thorough) {
     bench?.b.delete();
     const config = thorough ? { ...DEFAULT_CONFIGS[1], params: THOROUGH_PARAMS } : DEFAULT_CONFIGS[1]; // max(RGB)
@@ -40,6 +50,8 @@ export function processAruco(cv: CV, img: PixelSource, t: number, memory: object
     }
     rereadFaces(rereader.b, img, r.faces, scheme, budget, new Set(opts.focus ?? []));
   }
+  // 色による補完: 読めたマーカー（ID から色が分かる）の写った色を、そのフレームの色の基準にする
+  if (opts.colorFill !== false && r.faces.length) fillByColor(img, r.faces, frameRefs(trustedColors(markers, scheme)));
   const quads: Pt[][] = markers.map((m) => [0, 1, 2, 3].map((i) => [m.corners[i * 2], m.corners[i * 2 + 1]] as Pt));
   const faces: DetectedFace[] = r.faces.map((f) => {
     const known = f.colors.map((c) => c >= 0);
