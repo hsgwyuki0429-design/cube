@@ -26,6 +26,8 @@ export interface PipelineConfig {
   arucoReread?: number;
   // ArUco: 先に読み直すマス（カメラフレームの slot * 9 + cell）。追跡が未確定・推定とみているマス（TrackerEngine.cellBelief）
   focus?: number[];
+  // ArUco: それでも読めなかったマスを色で補う（既定 true。src/aruco/colorFill.ts）
+  arucoColorFill?: boolean;
   guideSize: number; // ガイド枠モード: 短辺に対する枠の大きさ
   region: number; // セル内のサンプリング範囲
   maxSpread: number; // セル内のばらつきがこれ以上なら読まない
@@ -355,7 +357,7 @@ export function processFrame(
   hands: Pt[][] = [],
 ): FrameResult {
   if (config.stickers && config.stickers !== "color" && cv)
-    return processAruco(cv, img, t, memory, stickerScheme(config.stickers), !!config.arucoThorough, { reread: config.arucoReread, focus: config.focus });
+    return processAruco(cv, img, t, memory, stickerScheme(config.stickers), !!config.arucoThorough, { reread: config.arucoReread, focus: config.focus, colorFill: config.arucoColorFill });
   let placed: PlacedFace[] = [];
   let quadsOut: Pt[][] = [];
   if (config.mode === "guide" || !cv) {
