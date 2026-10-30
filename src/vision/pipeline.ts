@@ -22,7 +22,7 @@ export interface PipelineConfig {
   arucoColorFill?: boolean;
   // ID が読めなかったマスに、直前のフレームの同じマスのステッカーを引き継ぐ（既定 true。src/aruco/idTrack.ts）
   arucoIdTrack?: boolean;
-  // 直前のフレームのマーカーの周りだけを切り出して検出する（精密解析。src/vision/arucoFrame.ts）
+  // 直前のフレームのマーカーの周りだけを切り出して検出する（本体のライブと精密解析。src/vision/arucoFrame.ts）
   arucoRegion?: boolean;
   // ステッカーの中のマーカーの配置（src/aruco/design.ts の key。standard = 今の 1 個、quad-half = 4 個・幅 1/2）
   arucoDesign?: string;

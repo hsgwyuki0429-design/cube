@@ -2,12 +2,17 @@
 // 場面ごとに 1 フレームあたりの時間と、再構成した手順が正しいかを出す。PROFILE=1 で関数ごとの時間（node:inspector の CPU プロファイル）も。
 //   npx vitest run -c vitest.debug.config.ts tests/debug/refineProfile.debug.test.ts --silent=false
 //   SCENES=場面の名前（, 区切り。既定 すべて）・PROFILE=1・TOP=関数の数（既定 25）・SAVE=フォルダ（場面の途中の 1 枚を PNG で）
+//   LIVE=1: 精密解析の代わりにライブの認識と追跡（本体のライブと同じ設定 + TrackerEngine。NOREGION=1 で切り出しなし）・DESIGN=マーカーの配置（既定は本体の STICKERS）
 // 場面（unique54・指つき）: aruco / aruco-far（キューブが大きい / 小さめ。1280×960）・
 // aruco-tall / aruco-tall-old（縦向き 720×1280 / 1080×1920 = 幅を合わせていた以前の録画）
 import { Session } from "node:inspector";
 import { createRequire } from "node:module";
 import { it } from "vitest";
+import { STICKERS, designOf } from "../../src/aruco/design";
 import { ARUCO_REFS } from "../../src/aruco/palette";
+import { TrackerEngine } from "../../src/track/engine";
+import { ARUCO_OBSERVER } from "../../src/track/observer";
+import { processFrame } from "../../src/vision/pipeline";
 import { type CubeState, MOVE_NAMES, type Vec3, applyMoves, parseMoves, solvedState } from "../../src/cube/model";
 import { initOpenCv } from "../../src/vision/image";
 import { Refiner } from "../../src/vision/refine";
@@ -90,7 +95,7 @@ function arucoScene(cv: unknown, name: string, width: number, height: number, ey
       const tip: [number, number] = [width * (x + 0.03 * Math.sin(t / 400 + i)), height * 0.5 + pitch * (2.6 + 0.3 * Math.sin(t / 300 + i))];
       return { a: [tip[0], tip[1] + pitch * 3.5], b: tip, width: pitch * 0.85 };
     });
-    const img = renderArucoCube(cv as never, { width, height, stickers: st, orient: 0, eye: [eye[0] + 0.1 * Math.sin(t / 300), eye[1], eye[2]], turn: turning ? { move: truth[done], fraction: (t - start) / turnMs, spread: 0.15 } : undefined, noise: 2, seed: Math.round(t), scheme: "unique54", fingers });
+    const img = renderArucoCube(cv as never, { width, height, stickers: st, orient: 0, eye: [eye[0] + 0.1 * Math.sin(t / 300), eye[1], eye[2]], turn: turning ? { move: truth[done], fraction: (t - start) / turnMs, spread: 0.15 } : undefined, noise: 2, seed: Math.round(t), scheme: "unique54", fingers, design: designOf(DESIGN) });
     frames.push({ t, img });
   }
   return {
@@ -98,7 +103,22 @@ function arucoScene(cv: unknown, name: string, width: number, height: number, ey
     frames,
     target: applyMoves(solvedState(), truth),
     truth: alg,
-    refiner: () => new Refiner(cv as never, { state: Array.from(solvedState()), refs: ARUCO_REFS, from: 0, to: Infinity, startHint: lead, pipeline: { stickers: "unique54" } }),
+    refiner: () => new Refiner(cv as never, { state: Array.from(solvedState()), refs: ARUCO_REFS, from: 0, to: Infinity, startHint: lead, pipeline: { stickers: "unique54", arucoDesign: DESIGN } }),
+  };
+}
+
+const DESIGN = process.env.DESIGN ?? STICKERS.arucoDesign;
+
+// ライブの認識と追跡（Refiner と同じ形で使う）
+function liveRunner(cv: unknown) {
+  const engine = new TrackerEngine(solvedState(), ARUCO_REFS, { observer: ARUCO_OBSERVER });
+  const memory = {};
+  return {
+    push(img: Img, t: number) {
+      const r = processFrame(cv as never, img, t, { stickers: "unique54", arucoDesign: DESIGN, arucoRegion: !process.env.NOREGION }, memory);
+      engine.push({ t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, ids: f.ids })), turn: r.turn });
+    },
+    result: (_: CubeState) => ({ moves: engine.decoder.bestMoves(), solved: false, inferred: 0, method: "live" }),
   };
 }
 
@@ -120,9 +140,10 @@ it("精密解析の処理時間", async () => {
       writePng(`${process.env.SAVE}/${name}.png`, f);
     }
     // 1 回目は JIT のため捨てる（短く）
-    const warm = scene.refiner();
+    const make = () => (process.env.LIVE ? liveRunner(cv) : scene.refiner());
+    const warm = make();
     for (const f of scene.frames.slice(0, 20)) warm.push(f.img, f.t);
-    const r = scene.refiner();
+    const r = make();
     const t0 = performance.now();
     let prof = "";
     if (process.env.PROFILE) {
