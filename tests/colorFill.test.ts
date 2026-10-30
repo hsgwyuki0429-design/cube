@@ -56,4 +56,32 @@ describe("色による補完", () => {
     expect(withFill.weight[0]).toBe(COLOR_CONF);
     expect(withFill.ids?.[0] ?? -1).toBe(-1);
   });
+
+  // 暖かい照明の指は肌らしい色の範囲から外れて、橙のステッカーに近い色に写ることがある（実物で、指の色が橙・赤・黄に読まれた）。
+  // 色はマーカーの黒い枠のすぐ外側で、内側の枠が黒く見えている所だけから測るので、指の色は拾わない
+  it("橙に近い色の指がマスを覆っても、指の色では補わない。角にかかっただけならステッカーの色で補う", () => {
+    let st = solvedStickers();
+    for (const m of parseMoves("R U F' D2 L")) st = applyMoveStickers(st, m);
+    const size = { width: 960, height: 720 };
+    const eye: Vec3 = [2.4, 2.4, 5.5];
+    const at = stickerAt(st);
+    const orangeFinger: [number, number, number] = [240, 160, 70];
+    const front = processAruco(cv, renderArucoCube(cv, { ...size, stickers: st, orient: 0, eye, noise: 2, scheme: "unique54" }), 0, {}, "unique54", false, { reread: 0 }).faces.find((f) => f.slot === 2)!;
+    const pitch = Math.hypot(...([0, 1].map((k) => applyH(front.H, 1, 0)[k] - applyH(front.H, 0, 0)[k]) as [number, number]));
+    const read = (fingers: { a: [number, number]; b: [number, number]; width: number; color: [number, number, number] }[]) =>
+      processAruco(cv, renderArucoCube(cv, { ...size, stickers: st, orient: 0, eye, noise: 2, scheme: "unique54", fingers }), 0, {}, "unique54", false, { reread: 0 }).faces.find((f) => f.slot === 2)!;
+    for (const cell of [0, 1, 3]) {
+      const want = Math.floor(at[VIEW[2 * 9 + cell]] / 9);
+      if (want === 4) continue; // 橙のマスは指の色と見分けられない
+      const [cx, cy] = [(cell % 3) + 0.5, Math.floor(cell / 3) + 0.5];
+      // マス全体を覆う指（上から下へ、幅はマスの 1.2 倍）
+      const tip = applyH(front.H, cx, cy + 0.6);
+      const whole = read([{ a: [tip[0], tip[1] - pitch * 4], b: [tip[0], tip[1]], width: pitch * 1.2, color: orangeFinger }]);
+      expect(!whole.valid[cell] || whole.labs[cell].join() === ARUCO_REFS[want].join()).toBe(true);
+      // マスの角にかかった指
+      const corner = applyH(front.H, cx - 0.4, cy - 0.4);
+      const part = read([{ a: [corner[0] - pitch * 3, corner[1] - pitch * 2], b: corner, width: pitch * 0.6, color: orangeFinger }]);
+      if (part.valid[cell]) expect(part.labs[cell]).toEqual(ARUCO_REFS[want]);
+    }
+  });
 });

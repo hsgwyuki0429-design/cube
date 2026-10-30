@@ -24,6 +24,7 @@ export interface VisibleFace {
   outline: Pt[]; // 3×3 の外枠（画像座標、左上から時計回り）
   H: Mat3; // 面の座標（x = 列・y = 行、0〜3）→ 画像。本体の認識の DetectedFace（rot = 0）と同じ
   partial?: boolean; // 1 列（1×3・1×2）か 1 枚だけの面（外枠は推定。3D の傾きの計算には使わない）
+  marker?: number; // マーカー（今の配置の 1 個。4 個の配置は仮想のマーカー）の辺（マスの間隔 = 1）
 }
 
 export interface FaceOptions {
@@ -668,7 +669,7 @@ function layout(face: NonNullable<ReturnType<typeof toFace>>, slot: number, E: n
     outline,
   );
   if (!H) return null;
-  return { colors, ids, conf, outline, H };
+  return { colors, ids, conf, outline, H, marker: 1 / g.pitch };
 }
 
 // 読みの確からしさ: マスの中心の明暗が符号どおりの割合（fit）から。合成画像（54 種類・指・ぶれ・180 場面）で、誤読 22 枚のうち

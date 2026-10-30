@@ -2,14 +2,14 @@
 // 色を読む代わりにマーカーの ID から色（センターの面）が確定するので、面の格子を探して色を読む代わりに
 // マーカーから面を組み立て（src/aruco/cube.ts）、各セルの色を代表色の Lab にして返す。追跡・スキャン・精密解析は
 // 普通のステッカーと同じ経路（FrameResult）で動く。
-import { fillByColor, frameRefs, skinFraction } from "../aruco/colorFill";
+import { fillByColor, frameRefs, ringGeometry, skinFraction } from "../aruco/colorFill";
 import { IdTracker } from "../aruco/idTrack";
 import { type VisibleFace, reconstructFaces, trustedColors, turnMarkers } from "../aruco/cube";
 import { DEFAULT_TURN, type TurnTrack, recognizeTurn, unwrapTurn } from "../aruco/turn";
 import type { TurnSnapshot } from "../track/types";
 import type { Pose } from "./pose";
 import { ArucoBench, DEFAULT_CONFIGS, type Marker, THOROUGH_PARAMS } from "../aruco/detect";
-import type { StickerScheme } from "../aruco/codes";
+import { type StickerScheme, markerSize } from "../aruco/codes";
 import { STANDARD_DESIGN, type StickerDesign, designOf } from "../aruco/design";
 import { ARUCO_REFS } from "../aruco/palette";
 import { rereadFaces } from "../aruco/reread";
@@ -104,7 +104,7 @@ export function processAruco(
     rereadFaces(rereader.b, img, r.faces, scheme, budget, new Set(opts.focus ?? []));
   }
   // 色による補完: 読めたマーカー（ID から色が分かる）の写った色を、そのフレームの色の基準にする
-  if (opts.colorFill !== false && r.faces.length) fillByColor(img, r.faces, frameRefs(trustedColors(markers, scheme)));
+  if (opts.colorFill !== false && r.faces.length) fillByColor(img, r.faces, frameRefs(trustedColors(markers, scheme)), ringGeometry(design, markerSize(scheme)));
   // ID なし追跡: 色で補ったマス（色が合えば）と読めなかったマスに、直前のフレームの同じマスのステッカーを引き継ぐ
   if (opts.idTrack !== false) {
     let tracker = trackers.get(memory);
