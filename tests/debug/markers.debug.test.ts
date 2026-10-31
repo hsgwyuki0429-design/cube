@@ -2,11 +2,10 @@
 // 自作の 3×3（12 個）を、同じ大きさ・傾き・ぶれ・配色の合成画像で読ませて、正しく読めた・別の ID に読んだ・見逃しを数える。
 //   npx vitest run -c vitest.debug.config.ts tests/debug/markers.debug.test.ts
 //   SCHEMES="3×3"（名前で絞る）・PERID=1（ID ごとの検出率）・RESCUE=1（捨てた四角の読み直し）・PARAMS='{"adaptiveThreshWinSizeStep":5}'・DIAG2=1（取りこぼしに候補があったか）
-import { createRequire } from "node:module";
 import { it } from "vitest";
 import { ARUCO12_CODES, UNIQUE54_CODES } from "../../src/aruco/codes";
 import { maxChannel, measureCells, rescueRejected } from "../../src/aruco/detect";
-import { initOpenCv } from "../../src/vision/image";
+import { loadTestOpenCv } from "../cv";
 
 type CV = any;
 const pop = (x: number) => {
@@ -208,7 +207,7 @@ function render(scheme: Scheme, ids: number[], palette: [number, number, number]
 }
 
 it("辞書の比較", async () => {
-  const cv: CV = await initOpenCv(createRequire(import.meta.url)("@techstark/opencv-js"));
+  const cv: CV = await loadTestOpenCv();
   const range = (k: number) => Array.from({ length: k }, (_, i) => i);
   const aruco54 = codesOf(cv, cv.DICT_4X4_100, range(54), 4);
   const april30 = codesOf(cv, cv.DICT_APRILTAG_16h5, range(30), 4);

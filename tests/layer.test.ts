@@ -1,17 +1,17 @@
 // 回している途中の層の組み立て: 面の外側の 1 列が本体（残りの 2 列）からずれていれば、その列を別の格子（VisibleFace.layer）にする。
 // 形状認識（src/aruco/turn.ts）で層が分かれば、層が通る面の列を層の格子で置き、面から外れた層のマーカーもその列に入れる
-import { createRequire } from "node:module";
 import { beforeAll, describe, expect, it } from "vitest";
 import { designOf } from "../src/aruco/design";
 import { ARUCO_REFS } from "../src/aruco/palette";
 import { VIEW, type Vec3, parseMoves } from "../src/cube/model";
 import { processAruco } from "../src/vision/arucoFrame";
-import { type CV, initOpenCv } from "../src/vision/image";
+import type { CV } from "../src/vision/image";
 import { applyMoveStickers, renderArucoCube, solvedStickers, stickerAt } from "./arucoCube";
+import { loadTestOpenCv } from "./cv";
 
 let cv: CV;
 beforeAll(async () => {
-  cv = await initOpenCv(createRequire(import.meta.url)("@techstark/opencv-js"));
+  cv = await loadTestOpenCv();
 }, 120000);
 
 describe("回している途中の層", () => {

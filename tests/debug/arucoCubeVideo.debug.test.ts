@@ -4,20 +4,19 @@
 //   ARUCO_FILE_FPS=30: ファイルの時刻をこの fps にする（スロー再生用に書き出された動画。撮影は 240fps のまま）
 //   ARUCO_DESIGN=quad-half: ステッカーの中のマーカーの配置（本体のアプリは quad-half だけ。既定 standard）
 import { spawn } from "node:child_process";
-import { createRequire } from "node:module";
 import { it } from "vitest";
 import type { StickerScheme } from "../../src/aruco/codes";
 import { designOf } from "../../src/aruco/design";
 import { parseMoves } from "../../src/cube/model";
-import { initOpenCv } from "../../src/vision/image";
 import { applyMoveStickers, renderArucoCube, solvedStickers } from "../arucoCube";
+import { loadTestOpenCv } from "../cv";
 
 it("合成動画を書き出す", async () => {
   const out = process.env.ARUCO_VIDEO;
   if (!out) return;
   const tperm = "R U R' U' R' F R2 U' R' U' R U R' F'";
   const alg = process.env.ARUCO_ALG ?? `${tperm} ${tperm}`;
-  const cv = await initOpenCv(createRequire(import.meta.url)("@techstark/opencv-js"));
+  const cv = await loadTestOpenCv();
   const scheme = (process.env.ARUCO_SCHEME ?? "aruco12") as StickerScheme;
   const design = designOf(process.env.ARUCO_DESIGN ?? "standard");
   const W = Number(process.env.ARUCO_W ?? 1280);

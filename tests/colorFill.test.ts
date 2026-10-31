@@ -1,6 +1,5 @@
 // 色による補完（src/aruco/colorFill.ts）: 同じフレームのマーカーの色で分け、肌・どっちつかずの色は不明のまま。
 // 指が一部にかかって読めなくなったマーカーのマスを、色で補う
-import { createRequire } from "node:module";
 import { beforeAll, describe, expect, it } from "vitest";
 import { COLOR_CONF, classifyByFrame, frameRefs } from "../src/aruco/colorFill";
 import { hexRgb } from "../src/aruco/design";
@@ -8,12 +7,13 @@ import { ARUCO_REFS, PRINT_COLORS } from "../src/aruco/palette";
 import { VIEW, type Vec3, parseMoves } from "../src/cube/model";
 import { applyH } from "../src/vision/homography";
 import { processAruco } from "../src/vision/arucoFrame";
-import { type CV, initOpenCv } from "../src/vision/image";
+import type { CV } from "../src/vision/image";
 import { applyMoveStickers, renderArucoCube, solvedStickers, stickerAt } from "./arucoCube";
+import { loadTestOpenCv } from "./cv";
 
 let cv: CV;
 beforeAll(async () => {
-  cv = await initOpenCv(createRequire(import.meta.url)("@techstark/opencv-js"));
+  cv = await loadTestOpenCv();
 }, 120000);
 
 describe("色による補完", () => {

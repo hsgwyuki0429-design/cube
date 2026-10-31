@@ -12,11 +12,17 @@ export interface PixelSource {
 
 // OpenCV.js モジュールの初期化（ビルドによって Promise / onRuntimeInitialized / 即時 のいずれか）
 export async function initOpenCv(mod: CV): Promise<CV> {
-  if (mod?.Mat) return mod;
+  // 読み込めたモジュールが then を持っていると、async 関数から返すときにまた展開されて終わらない（Emscripten のモジュールは
+  // 読み込み前は then を持つ: 自分でビルドした src/vendor/opencv/）。then を外して返す
+  const ready = (m: CV): CV => {
+    if (typeof m.then === "function") delete m.then;
+    return m;
+  };
+  if (mod?.Mat) return ready(mod);
   if (typeof mod?.then === "function") {
     // then を持つオブジェクトをそのまま resolve すると再度展開されるので包んで受け取る
     const wrapped = await new Promise<{ m: CV }>((resolve) => mod.then((m: CV) => resolve({ m })));
-    return wrapped.m?.Mat ? wrapped.m : initOpenCv(wrapped.m);
+    return wrapped.m?.Mat ? ready(wrapped.m) : initOpenCv(wrapped.m);
   }
   await new Promise<void>((resolve) => (mod.onRuntimeInitialized = () => resolve()));
   return mod;

@@ -3,18 +3,17 @@
 //   npx vitest run -c vitest.debug.config.ts tests/debug/colorFill.debug.test.ts --silent=false
 //   N=場面の数（距離ごと、既定 20）・DESIGNS=standard,quad-half・FINGER=r,g,b（指の色。既定は肌らしい色。実物では暖かい照明で
 //   肌らしい色の範囲から外れた指が橙・赤・黄に読まれた: 例 FINGER=235,150,105）
-import { createRequire } from "node:module";
 import { it } from "vitest";
 import { DESIGNS } from "../../src/aruco/design";
 import { ARUCO_REFS } from "../../src/aruco/palette";
 import { applyH } from "../../src/vision/homography";
 import { processAruco } from "../../src/vision/arucoFrame";
-import { initOpenCv } from "../../src/vision/image";
 import { renderArucoCube } from "../arucoCube";
 import { H, W, inPoly, makeScenes } from "../arucoScenes";
+import { loadTestOpenCv } from "../cv";
 
 it("色による補完の効果", async () => {
-  const cv = await initOpenCv(createRequire(import.meta.url)("@techstark/opencv-js"));
+  const cv = await loadTestOpenCv();
   const scenes = makeScenes(Number(process.env.N ?? 20));
   const keys = (process.env.DESIGNS ?? "standard,quad-half").split(",");
   const finger = process.env.FINGER ? (process.env.FINGER.split(",").map(Number) as [number, number, number]) : undefined;

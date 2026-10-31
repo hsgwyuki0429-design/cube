@@ -117,7 +117,7 @@ R と R' が見分けられない場面で効きます。露光中に層が大�
 | プロジェクト | 内容 | このアプリでの扱い |
 |---|---|---|
 | [cubing.js](https://github.com/cubing/cubing.js)（MPL-2.0/GPL-3.0） | 3D キューブ表示・記法・状態計算・ソルバー・WCA スクランブル | **そのまま採用**（3D表示・解法・スクランブル・状態の検証） |
-| [OpenCV.js](https://docs.opencv.org/)（`@techstark/opencv-js`, Apache-2.0） | 画像処理・ArUco | **採用**（ArUco マーカーの検出） |
+| [OpenCV.js](https://docs.opencv.org/)（4.10、ArUco に要るものだけを SIMD つきでビルド。`src/vendor/opencv/`, Apache-2.0） | 画像処理・ArUco | **採用**（ArUco マーカーの検出） |
 | [AllefDouglasDev/rubik-cube](https://github.com/AllefDouglasDev/rubik-cube)（MIT） | ブラウザのキューブトレーナー。カメラで正面1面を見て手順を復号する実験機能 | **設計を参考**: ビームサーチ復号・ハンガリアン法の色割り当て。これを「最大3面」「24姿勢を仮説に含める（持ち替え対応）」「ソフトなコスト」「見失い検出と復帰」に拡張 |
 | [kkoomen/qbr](https://github.com/kkoomen/qbr), [RubikVision](https://github.com/Charles-AM/RubikVison), [cube-cv](https://github.com/HANS-2002/cube-cv), [RubikClear](https://github.com/steelburn/RubikClear) | カメラで面を読むソルバー・タイマー（静止スキャン） | 手法を参考。いずれも手順の追跡はしない |
 

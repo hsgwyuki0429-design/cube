@@ -1,7 +1,7 @@
 // ArUco 検証ページの解析 Worker: 動画ファイルを 1 フレームずつ復号し、方式ごとに ArUco を検出する。
 // ライブではないので間引かない（stride を指定したときだけ）。映像はどこにも送らない。
-import cvModule from "@techstark/opencv-js";
-import { type CV, initOpenCv } from "../vision/image";
+import type { CV } from "../vision/image";
+import { loadOpenCv } from "../vision/opencv";
 import { decodeCube, facesOverTime } from "./cube";
 import { type StickerDesign, designOf } from "./design";
 import { ArucoBench } from "./detect";
@@ -18,7 +18,7 @@ let last: { frames: FrameRecord[]; width: number; height: number; scheme: Analyz
 const post = (msg: FromArucoWorker) => (self as unknown as Worker).postMessage(msg);
 
 async function ensureCv(): Promise<CV> {
-  if (!cv) cv = await initOpenCv(cvModule);
+  if (!cv) cv = await loadOpenCv();
   return cv;
 }
 

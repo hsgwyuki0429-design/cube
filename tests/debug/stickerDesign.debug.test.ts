@@ -4,14 +4,13 @@
 //   npx vitest run -c vitest.debug.config.ts tests/debug/stickerDesign.debug.test.ts
 //   N=場面の数（距離ごと、既定 24）・DESIGNS=standard,half（key で絞る）・SAVE=1（案ごとの見本の画像も）・OUT=出力先（既定 e2e-output/sticker-design）
 import { mkdirSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { it } from "vitest";
 import { DESIGNS, designLook } from "../../src/aruco/design";
 import { ArucoBench, DEFAULT_CONFIGS } from "../../src/aruco/detect";
-import { initOpenCv } from "../../src/vision/image";
 import { renderArucoCube } from "../arucoCube";
 import { H, PITCHES, SHAKES, W, inPoly, makeScenes } from "../arucoScenes";
 import { writePng } from "./png";
+import { loadTestOpenCv } from "../cv";
 
 const BINS = [0, 0.25, 0.5, 0.75, 1.0001]; // 隠れた割合: 0 / 〜25% / 〜50% / 〜75% / それ以上
 
@@ -23,7 +22,7 @@ const tally = (): Tally => ({ n: 0, ok: 0 });
 const pct = (t: Tally) => (t.n ? `${((t.ok / t.n) * 100).toFixed(1)}%` : "-");
 
 it("ステッカーの中のマーカーの配置の比較", async () => {
-  const cv = await initOpenCv(createRequire(import.meta.url)("@techstark/opencv-js"));
+  const cv = await loadTestOpenCv();
   const bench = new ArucoBench(cv, [DEFAULT_CONFIGS[1]], "unique54");
   const perPitch = Number(process.env.N ?? 24);
   const only = process.env.DESIGNS?.split(",");

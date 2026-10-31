@@ -1,17 +1,16 @@
 // ステッカーの色の余白（マーカーの黒い枠の外側）の有無で、キューブの上のマーカーがどれだけ読めるか。
 // 黒い本体のキューブと、ステッカーレス（マスが色の板・ピースの間に黒い溝）のキューブで比べる。
 //   npx vitest run -c vitest.debug.config.ts tests/debug/stickerMargin.debug.test.ts
-import { createRequire } from "node:module";
 import { it } from "vitest";
 import { decode } from "../../src/aruco/codes";
 import { reconstructFaces } from "../../src/aruco/cube";
 import { ArucoBench, DEFAULT_CONFIGS } from "../../src/aruco/detect";
 import { VIEW, type Vec3, parseMoves, rotateOrientation } from "../../src/cube/model";
-import { initOpenCv } from "../../src/vision/image";
 import { applyMoveStickers, renderArucoCube, solvedStickers, stickerAt } from "../arucoCube";
+import { loadTestOpenCv } from "../cv";
 
 it("色の余白の比較", async () => {
-  const cv = await initOpenCv(createRequire(import.meta.url)("@techstark/opencv-js"));
+  const cv = await loadTestOpenCv();
   const bench = new ArucoBench(cv, [DEFAULT_CONFIGS[1]], "aruco12");
   const states = ["R U F' D2 L", "F R' U B2", "L' D R2 U' F"].map((a) => {
     let st = solvedStickers();

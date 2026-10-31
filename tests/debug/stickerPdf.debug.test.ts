@@ -3,17 +3,17 @@
 // pdftoppm（poppler-utils）が必要
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, expect, it } from "vitest";
 import { colorConsistent } from "../../src/aruco/cube";
 import { ArucoBench, DEFAULT_CONFIGS } from "../../src/aruco/detect";
-import { type CV, initOpenCv } from "../../src/vision/image";
+import type { CV } from "../../src/vision/image";
+import { loadTestOpenCv } from "../cv";
 
 let cv: CV;
 beforeAll(async () => {
-  cv = await initOpenCv(createRequire(import.meta.url)("@techstark/opencv-js"));
+  cv = await loadTestOpenCv();
 }, 120000);
 
 const PDF = "docs/stickers/cubevision_aruco12_stickers.pdf";

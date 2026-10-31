@@ -2,20 +2,19 @@
 //   ffmpeg -i rec.mov -vf "crop=…,fps=20" -f rawvideo -pix_fmt rgba frames.rgba
 //   ARUCO_RAW=frames.rgba ARUCO_W=700 ARUCO_H=1248 npx vitest run -c vitest.debug.config.ts tests/debug/realAruco.debug.test.ts
 import { openSync, readSync } from "node:fs";
-import { createRequire } from "node:module";
 import { it } from "vitest";
 import { decode } from "../../src/aruco/codes";
 import { colorConsistent, reconstructFaces } from "../../src/aruco/cube";
 import { ArucoBench, DEFAULT_CONFIGS } from "../../src/aruco/detect";
 import { FACE_NAMES, classifyColor } from "../../src/aruco/stickers";
-import { initOpenCv } from "../../src/vision/image";
+import { loadTestOpenCv } from "../cv";
 
 it("実物の映像", async () => {
   const file = process.env.ARUCO_RAW;
   if (!file) return;
   const W = Number(process.env.ARUCO_W);
   const H = Number(process.env.ARUCO_H);
-  const cv = await initOpenCv(createRequire(import.meta.url)("@techstark/opencv-js"));
+  const cv = await loadTestOpenCv();
   const configs = process.env.ARUCO_ALL ? DEFAULT_CONFIGS : process.env.PARAMS ? [{ name: "指定", preprocess: "max" as const, params: JSON.parse(process.env.PARAMS) }] : [DEFAULT_CONFIGS[1]];
   const bench = new ArucoBench(cv, configs, "aruco12");
   const fd = openSync(file, "r");
@@ -65,7 +64,7 @@ it("ライブの経路での 3D の向き", async () => {
   const W = Number(process.env.ARUCO_W);
   const H = Number(process.env.ARUCO_H);
   const FPS = Number(process.env.ARUCO_FPS ?? 20);
-  const cv = await initOpenCv(createRequire(import.meta.url)("@techstark/opencv-js"));
+  const cv = await loadTestOpenCv();
   const { DEFAULT_PIPELINE, processFrame } = await import("../../src/vision/pipeline");
   const { TrackerEngine } = await import("../../src/track/engine");
   const { estimatePose, rotationAngle } = await import("../../src/vision/pose");

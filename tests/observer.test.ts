@@ -30,4 +30,14 @@ describe("ArUco の観測", () => {
     aruco.push({ t: 0, faces: [front, top1] });
     expect(aruco.push({ t: 16, faces: [front] })!.faces.map((f) => f.slot)).toEqual([2]);
   });
+
+  it("色が同じでも、色だけだったマスの ID が 2 つ以上読めるようになったら観測を出し直す", () => {
+    const ids = [18, 19, 20, 21, 22, 23, 24, 25, 26];
+    const colorOnly = { ...front, ids: ids.map((id, i) => (i < 3 ? -1 : id)), weight: [0.5, 0.5, 0.5, 1, 1, 1, 1, 1, 1] };
+    const o = new FaceObserver(new ColorModel(ARUCO_REFS), { ...ARUCO_OBSERVER, stableFrames: 1 });
+    expect(o.push({ t: 0, faces: [colorOnly] })).not.toBeNull();
+    expect(o.push({ t: 33, faces: [colorOnly] })).toBeNull();
+    expect(o.push({ t: 67, faces: [{ ...colorOnly, ids: ids.map((id, i) => (i < 1 ? -1 : id)) }] })!.faces[0].ids![1]).toBe(19);
+    expect(o.push({ t: 100, faces: [{ ...front, ids }] })).toBeNull(); // 1 つだけ増えた
+  });
 });

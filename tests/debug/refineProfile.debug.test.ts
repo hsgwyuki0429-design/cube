@@ -6,7 +6,6 @@
 // 場面（unique54・指つき）: aruco / aruco-far（キューブが大きい / 小さめ。1280×960）・
 // aruco-tall / aruco-tall-old（縦向き 720×1280 / 1080×1920 = 幅を合わせていた以前の録画）
 import { Session } from "node:inspector";
-import { createRequire } from "node:module";
 import { it } from "vitest";
 import { STICKERS, designOf } from "../../src/aruco/design";
 import { ARUCO_REFS } from "../../src/aruco/palette";
@@ -14,11 +13,11 @@ import { TrackerEngine } from "../../src/track/engine";
 import { ARUCO_OBSERVER } from "../../src/track/observer";
 import { processFrame } from "../../src/vision/pipeline";
 import { type CubeState, MOVE_NAMES, type Vec3, applyMoves, parseMoves, solvedState } from "../../src/cube/model";
-import { initOpenCv } from "../../src/vision/image";
 import { Refiner } from "../../src/vision/refine";
 import { applyMoveStickers, renderArucoCube, solvedStickers } from "../arucoCube";
 import type { Finger } from "../render";
 import { writePng } from "./png";
+import { loadTestOpenCv } from "../cv";
 
 type Img = { data: Uint8ClampedArray; width: number; height: number };
 interface Scene {
@@ -130,7 +129,7 @@ const SCENES: Record<string, (cv: unknown) => Scene> = {
 };
 
 it("精密解析の処理時間", async () => {
-  const cv = await initOpenCv(createRequire(import.meta.url)("@techstark/opencv-js"));
+  const cv = await loadTestOpenCv();
   const names = process.env.SCENES ? process.env.SCENES.split(",") : Object.keys(SCENES);
   const top = Number(process.env.TOP ?? 25);
   for (const name of names) {

@@ -2,7 +2,6 @@
 // 追跡なし・ありで、見えている 3 面のマスのうち ID が正しく分かったマス・誤ったマスと、ライブの追跡の手順を比べる。
 //   npx vitest run -c vitest.debug.config.ts tests/debug/idTrack.debug.test.ts --silent=false
 //   SEEDS=場面の数（既定 4）
-import { createRequire } from "node:module";
 import { it } from "vitest";
 import { ARUCO_REFS } from "../../src/aruco/palette";
 import { MOVE_NAMES, VIEW, type Vec3, parseMoves, solvedState } from "../../src/cube/model";
@@ -11,12 +10,12 @@ import { simplifyMoves } from "../../src/track/merge";
 import { ARUCO_OBSERVER } from "../../src/track/observer";
 import { applyH } from "../../src/vision/homography";
 import { DEFAULT_PIPELINE, processFrame } from "../../src/vision/pipeline";
-import { initOpenCv } from "../../src/vision/image";
 import { applyMoveStickers, renderArucoCube, solvedStickers, stickerAt } from "../arucoCube";
 import type { Finger } from "../render";
+import { loadTestOpenCv } from "../cv";
 
 it("ID なし追跡の効果（30fps・指）", async () => {
-  const cv = await initOpenCv(createRequire(import.meta.url)("@techstark/opencv-js"));
+  const cv = await loadTestOpenCv();
   const SIZE = { width: 960, height: 720 };
   const EYE: Vec3 = [2.4, 2.4, 5.5];
   const alg = "R U R' U' F2 D L' B";

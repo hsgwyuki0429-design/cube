@@ -1,17 +1,17 @@
 // ID なし追跡（src/aruco/idTrack.ts）: 指が動いて読めなくなったマスに、直前に読めていたステッカーを引き継ぐ。層を回したときは引き継がない
-import { createRequire } from "node:module";
 import { beforeAll, describe, expect, it } from "vitest";
 import { IdTracker, LAYER_CELLS } from "../src/aruco/idTrack";
 import { VIEW, type Vec3, parseMoves } from "../src/cube/model";
 import { applyH } from "../src/vision/homography";
 import { processAruco } from "../src/vision/arucoFrame";
-import { type CV, initOpenCv } from "../src/vision/image";
+import type { CV } from "../src/vision/image";
 import { applyMoveStickers, renderArucoCube, solvedStickers, stickerAt } from "./arucoCube";
 import type { Finger } from "./render";
+import { loadTestOpenCv } from "./cv";
 
 let cv: CV;
 beforeAll(async () => {
-  cv = await initOpenCv(createRequire(import.meta.url)("@techstark/opencv-js"));
+  cv = await loadTestOpenCv();
 }, 120000);
 
 const SIZE = { width: 960, height: 720 };
