@@ -197,9 +197,11 @@ export class FaceObserver {
         faces.every((f) => {
           const prev = this.last!.faces.get(f.slot)!;
           if (conflicts(prev, f.labels) || idConflicts(this.last!.ids.get(f.slot), f.ids)) return false;
-          // 新しく読めるようになったセルが2枚以上あれば情報が増えたので出す
+          // 新しく読めるようになったセルが2枚以上あれば情報が増えたので出す。色だけだったセルの ID が読めるようになったのも
+          // 同じ（色で補ったマスは重みが低い。そのままでは、色だけの弱い観測で手を足さなかった後、ID の読めた観測が出なかった）
+          const prevIds = this.last!.ids.get(f.slot);
           let gained = 0;
-          for (let i = 0; i < 9; i++) if (prev[i] < 0 && f.labels[i] >= 0) gained++;
+          for (let i = 0; i < 9; i++) if ((prev[i] < 0 && f.labels[i] >= 0) || (f.ids && f.ids[i] >= 0 && (!prevIds || prevIds[i] < 0))) gained++;
           return gained < 2;
         });
       if (same) {
