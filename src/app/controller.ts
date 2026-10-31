@@ -467,6 +467,11 @@ class Controller {
   }
 
   // いまの追跡の続きから、フリーの解析を始め直す（タイマーの計測が終わった後など）
+  // 解析を進めている途中か（タイマーを止めた後の解析の結果を待つ間に、次のソルブが解析を始めたか）
+  get analyzing(): boolean {
+    return !!this.session;
+  }
+
   restartFreeAnalysis(): void {
     const track = this.store.get().track;
     const cube = this.store.get().cube;

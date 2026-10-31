@@ -1,7 +1,7 @@
 // 手順の総合評価（ライブと精密解析、機能ごとに外したもの）。ランダムな 10 手を、視点・距離・縦横・持つ指・手ぶれ・回す速さを
 // 変えた 30fps の合成映像で回し、どの設定でも同じフレームを処理して比べる（描くのが重いので 1 回だけ描く）。
 //   npx vitest run -c vitest.debug.config.ts tests/debug/seqBench.debug.test.ts
-//   CACHE=描いた画像を置くディレクトリ（2 回目から描かない）・SEEDS=1-20（範囲）・SPEED=fast（約 6 手/秒）・FPS=60・ROT=1（持ち替え）・LIVE=base,notrack,…・REFINE=base,nogate,…（"" で使わない）・OUT=結果の JSON Lines の書き出し先
+//   CACHE=描いた画像を置くディレクトリ（2 回目から描かない）・LIVEK=2（実機のライブのように処理中のフレームを捨てる。処理時間の倍率。LIVE=base@2 のように設定ごとにも）・SEEDS=1-20（範囲）・SPEED=fast（約 6 手/秒）・FPS=60・ROT=1（持ち替え）・LIVE=base,notrack,…・REFINE=base,nogate,…（"" で使わない）・OUT=結果の JSON Lines の書き出し先
 // 1 行 = 1 つの手順と 1 つの設定: { seed, kind, cfg, ok, got, truth, dist, start, end, ms }
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { gunzipSync, gzipSync } from "node:zlib";
@@ -113,12 +113,16 @@ it("手順の総合評価", async () => {
   for (let seed = from; seed <= (to ?? from); seed++) {
     const sc = scene(seed);
     const { w, h, eye } = sc.view;
+    // 名前@k: 実機のライブのように、Worker が処理している間（処理時間 × k）に来たフレームは捨てる（k はスマホが Node より遅い分）
     const lives = liveNames.map((name) => ({
       name,
-      cfg: { ...LIVE_BASE, ...LIVE[name] },
+      k: Number(name.split("@")[1] ?? process.env.LIVEK ?? 0),
+      cfg: { ...LIVE_BASE, ...LIVE[name.split("@")[0]] },
       memory: {},
       engine: new TrackerEngine(solvedState(), ARUCO_REFS, { observer: ARUCO_OBSERVER }),
       ms: 0,
+      busyUntil: -Infinity,
+      processed: 0,
     }));
     const refines = refineNames.map((name) => ({
       name,
@@ -164,10 +168,14 @@ it("手順の総合評価", async () => {
       if (cacheFile && !existsSync(cacheFile)) writeFileSync(cacheFile, gzipSync(img.data, { level: 1 }));
       renderMs += performance.now() - t0;
       for (const l of lives) {
+        if (l.k && t < l.busyUntil) continue;
         const a = performance.now();
         const res = processFrame(cv as never, img, t, l.cfg, l.memory);
         l.engine.push(frameReading(t, res));
-        l.ms += performance.now() - a;
+        const spent = performance.now() - a;
+        l.ms += spent;
+        l.processed++;
+        l.busyUntil = t + spent * l.k - 1;
         if (process.env.LIVEDUMP && t >= Number(process.env.LIVEDUMP)) process.stdout.write(`# live ${t.toFixed(0)} ${l.engine.decoder.status} ${l.engine.decoder.bestMoves().map((m) => MOVE_NAMES[m.move]).join(" ")} | obs ${l.engine.decoder.observations} cost ${l.engine.decoder.lastObservationCost.toFixed(2)} | ${res.faces.map((f) => `${f.slot}:${(f.ids ?? []).map((id) => (id < 0 ? "." : id)).join(",")}`).join(" ")}\n`);
       }
       if (process.env.SHIFTS && t <= Number(process.env.SHIFTS)) {
@@ -189,13 +197,15 @@ it("手順の総合評価", async () => {
     const rows: object[] = [];
     for (const l of lives) {
       const got = simplifyMoves(l.engine.decoder.bestMoves()).map((m) => MOVE_NAMES[m.move]);
-      rows.push({ seed, view: sc.view.name, kind: "live", cfg: l.name, ok: correct(got), dist: dist(got, truth), got: got.join(" "), truth: truthAlg, ms: l.ms / frames });
+      rows.push({ seed, view: sc.view.name, kind: "live", cfg: l.name, ok: correct(got), dist: dist(got, truth), got: got.join(" "), truth: truthAlg, ms: l.ms / l.processed, fps: (l.processed * 1000) / sc.endT });
     }
     const target = applyMoves(solvedState(), sc.alg);
     const tStart = sc.timing[0].start;
     const tEnd = sc.timing[sc.moves.length - 1].start + sc.timing[sc.moves.length - 1].dur;
     for (const rf of refines) {
+      const r0 = performance.now();
       const res = rf.refiner.result(target);
+      const resultMs = performance.now() - r0;
       const got = res.moves.map((m) => MOVE_NAMES[m.move]);
       if (process.env.DUMP) {
         process.stdout.write(`# 手順 ${sc.alg}\n# 正解の時刻 ${sc.timing.map((x) => `${x.start.toFixed(0)}-${(x.start + x.dur).toFixed(0)}`).join(" ")}\n`);
@@ -242,6 +252,8 @@ it("手順の総合評価", async () => {
         endUncertain: res.endUncertain,
         method: res.method,
         ms: rf.ms / frames,
+        resultMs,
+        processed: rf.refiner.frames,
       });
     }
     for (const row of rows) {

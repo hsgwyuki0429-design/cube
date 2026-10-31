@@ -110,10 +110,12 @@ function rememberBox(memory: object, t: number, markers: Marker[]): void {
   boxes.set(memory, { t, x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys), side: sides[Math.floor(sides.length / 2)], small: sides[Math.floor(sides.length * 0.1)] });
 }
 
-// 精密解析を並列にするとき: 次に検出するフレームの手がかり（最後に処理し終えたフレームのマーカーの範囲から）
+// 精密解析を並列にするとき: 次に検出するフレームの手がかり（最後に処理し終えたフレームのマーカーの範囲から）。
+// 処理し終えたフレームは数枚遅れるので、少し古い範囲まで使う（キューブが大きく動いていれば、縁の近くに見つかって全体でやり直す）
+const PARALLEL_REGION_MS = 400;
 export function detectHint(memory: object, img: { width: number; height: number }, t: number): DetectHint | null {
   const prev = boxes.get(memory);
-  return prev && t - prev.t < REGION_MS && t > prev.t ? regionOf(prev, img, Infinity) : null;
+  return prev && t - prev.t < PARALLEL_REGION_MS && t > prev.t ? regionOf(prev, img, Infinity) : null;
 }
 
 // 検出器（精密解析の設定）。別の Worker で検出だけするとき

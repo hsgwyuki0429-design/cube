@@ -69,6 +69,17 @@ function cellColors(img: PixelSource, H: Mat3, layer: FaceLayer | undefined): Fl
   return out;
 }
 
+// 基準の格子のまま、マスの色を img で測り直す（並列のとき: 格子は最後に処理し終えたフレーム、色は最後に処理に回したフレーム）
+function resample(img: PixelSource, sig: CellSignature): CellSignature | null {
+  const faces: CellSignature["faces"] = [];
+  for (const f of sig.faces) {
+    const rgb = cellColors(img, f.H, f.layer);
+    if (!rgb) return null;
+    faces.push({ ...f, rgb });
+  }
+  return { faces };
+}
+
 // 精密に処理したフレームの面（3×3 の面だけ）の、マスの色の手がかり
 function signatureOf(img: PixelSource, faces: { H: Mat3; held?: boolean; layer?: FaceLayer }[]): CellSignature | null {
   const out: CellSignature = { faces: [] };
@@ -144,6 +155,7 @@ export class Refiner {
   private lastGateT = -Infinity; // 最後に精密に処理すると決めたフレーム
   private held: { img: PixelSource; t: number } | null = null; // 飛ばした直前のフレーム
   private tail = 0;
+  private picked: { img: PixelSource; t: number } | null = null; // 最後に精密な処理に回したフレーム
   gated = 0; // 軽い検査で飛ばしたフレームの数
   readonly patches: PatchFrame[] = [];
   readonly looks: { t: number; solved: boolean }[] = []; // フレームごとの「完成して見えるか」
@@ -219,6 +231,10 @@ export class Refiner {
     out.push({ img, t });
     this.tail = changed ? GATE_TAIL : Math.max(0, this.tail - 1);
     this.lastGateT = t;
+    // 検出を並列にすると、処理し終える前に次のフレームが来る。基準の色を、処理に回したこのフレームのものにしておく
+    // （古いフレームの色と比べると、変わった後の数枚が「変わった」と出続けて、止まっていても飛ばせなかった）
+    this.picked = { img, t };
+    if (this.ref) this.ref = resample(img, this.ref);
     return out;
   }
 
@@ -234,7 +250,9 @@ export class Refiner {
   // 精密に処理する。detected: 別の Worker で検出しておいたマーカー
   full(img: PixelSource, t: number, detected?: Marker[]): void {
     const r = processFrame(this.cv, img, t, this.config, this.memory, detected);
-    this.ref = signatureOf(img, r.faces);
+    // 基準: この格子で、処理に回したいちばん新しいフレームの色（1 か所で処理するときは、このフレーム）
+    const latest = this.picked && this.picked.t > t ? this.picked.img : img;
+    this.ref = signatureOf(latest, r.faces);
     const reading = frameReading(t, r);
     this.engine.push(reading);
     this.looks.push({ t, solved: reading.faces.length > 0 && this.engine.looksSolved(reading) });

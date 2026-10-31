@@ -31,14 +31,21 @@ interface Stream {
   still: StillSkipper;
   anchor?: { t: number; target: Uint8Array };
   end?: { from: number; to: number; posted: number }; // 止めた後: 残りの解析の進み具合を知らせる
+  // 検出を別の Worker に分ける。OpenCV の読み込みに時間がかかるので、解析を始めたときに起こしておく。コアが少ない端末では
+  // ソルブ中はライブの認識と CPU を取り合うので使わず、止めた後（ライブが要らなくなった後）の残りだけに使う
+  pool: { pool: DetectPool; feeder: ParallelFeeder } | null;
+  parallel: boolean;
 }
 const streams = new Map<number, Stream>();
 // 中止を頼まれた動画の解析
 const videoCancels = new Set<number>();
 
-function streamFrame(id: number, s: Stream, img: ImageData, t: number): void {
+async function streamFrame(id: number, s: Stream, img: ImageData, t: number): Promise<void> {
   // 止まっている間は飛ばして追いつく（動き出したら直前の 1 枚も処理する）
-  for (const f of s.still.next(img, t)) s.refiner.push(f.img, f.t);
+  for (const f of s.still.next(img, t)) {
+    if (s.parallel && s.pool) await s.pool.feeder.push(f.img, f.t);
+    else s.refiner.push(f.img, f.t);
+  }
   doAnchor(id, s);
   if (s.end && performance.now() - s.end.posted > 200) {
     s.end.posted = performance.now();
@@ -60,11 +67,14 @@ function doAnchor(id: number, s: Stream): void {
   if (cp) post({ type: "stream-partial", id, partial: { ...cp, frames: s.refiner.frames, behindMs: Math.max(0, s.fedUntil - s.refiner.lastT), anchored: true } });
 }
 
+// コアがこれだけあれば、ソルブ中から精密解析の検出を並列にする（メイン・ライブの認識・解析の分を残しても空いている）
+const PARALLEL_LIVE_CORES = 6;
+const coreCount = () => (globalThis.navigator as { hardwareConcurrency?: number } | undefined)?.hardwareConcurrency ?? 4;
+
 const post = (msg: FromWorker) => (self as unknown as Worker).postMessage(msg);
 
 // 精密解析の検出を別の Worker に分ける（src/vision/detectPool.ts）。作れない・OpenCV を読み込めないときは null（この Worker だけで）
-async function parallelFeeder(refiner: Refiner): Promise<{ pool: DetectPool; feeder: ParallelFeeder } | null> {
-  const n = poolSize();
+async function parallelFeeder(refiner: Refiner, n = poolSize()): Promise<{ pool: DetectPool; feeder: ParallelFeeder } | null> {
   if (!n || typeof Worker === "undefined") return null;
   const cfg = refiner.pipelineConfig;
   let pool: DetectPool | null = null;
@@ -152,8 +162,16 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
         let s = streams.get(msg.id);
         if (!s) {
           if (!msg.input) return;
-          s = { refiner: new Refiner(needCv(), { ...msg.input, pipeline: { ...config, ...msg.input.pipeline } }), decoder: null, fedUntil: 0, lastPartial: -Infinity, still: new StillSkipper() };
+          s = { refiner: new Refiner(needCv(), { ...msg.input, pipeline: { ...config, ...msg.input.pipeline } }), decoder: null, fedUntil: 0, lastPartial: -Infinity, still: new StillSkipper(), pool: null, parallel: coreCount() >= PARALLEL_LIVE_CORES };
           streams.set(msg.id, s);
+          // タイマー（止めると残りを解析して確定する）だけ。フリー（keepPatchesMs）は止めないので起こさない
+          const made = s;
+          if (msg.input.keepPatchesMs === undefined)
+            // ソルブ中から使うなら、メイン・ライブの認識・解析・もう 1 コアを残す
+            parallelFeeder(made.refiner, made.parallel ? Math.min(poolSize(), coreCount() - 4) : poolSize()).then((pf) => {
+              if (streams.get(msg.id) === made) made.pool = pf;
+              else pf?.pool.close();
+            });
         }
         const st = s;
         const rec = msg.recording;
@@ -174,13 +192,17 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
         }
         s.refiner.setEnd(msg.to);
         s.end = { from: s.refiner.lastT, to: msg.to, posted: 0 };
+        // 止めた後はライブの認識が要らないので、残りの検出を並列にして早く確定する（起こしておいた Worker が読み込み終えていれば）
+        s.parallel = true;
         try {
           await s.decoder?.flush();
+          await s.pool?.feeder.flush();
           post({ type: "refine-result", id: msg.id, result: s.refiner.result(msg.target ? Uint8Array.from(msg.target) : null) });
         } catch (e) {
           post({ type: "refine-error", id: msg.id, message: e instanceof Error ? e.message : String(e) });
         } finally {
           s.decoder?.close();
+          s.pool?.pool.close();
           streams.delete(msg.id);
         }
         return;
@@ -251,6 +273,7 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
       }
       case "stream-cancel": {
         streams.get(msg.id)?.decoder?.close();
+        streams.get(msg.id)?.pool?.pool.close();
         streams.delete(msg.id);
         return;
       }
