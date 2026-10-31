@@ -30,6 +30,8 @@ const LIVE: Record<string, Partial<PipelineConfig>> = {
   noidtrack: { arucoIdTrack: false },
   noturn: { arucoTurn: false },
   reread9: { arucoReread: 54 },
+  reread0: { arucoReread: 0 },
+  reread2: { arucoReread: 2 },
 };
 const REFINE: Record<string, { pipeline?: Partial<PipelineConfig>; gate?: boolean; still?: boolean }> = {
   base: {},

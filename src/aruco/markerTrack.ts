@@ -31,21 +31,60 @@ function moduleCenters(corners: number[], cells: number, sub = false): Pt[] | nu
   return out;
 }
 
-// pts を (dx, dy) ずらしたときの、符号どおりの明暗の割合と明暗の差
-function score(img: ImageLike, pts: Pt[], bits: Uint8Array, dx: number, dy: number, per = 1): { fit: number; contrast: number } {
-  const v = new Float32Array(pts.length);
+// 点の画素（四捨五入）を先に求めておく。ずらす量は整数なので、ずらした点の画素は丸めた画素を同じだけずらしたもの
+// （Math.round(x + n) = Math.round(x) + n）。範囲の判定も、点の画素の範囲をずらして 1 回で済む
+interface Probe {
+  base: Int32Array; // 画素の番号（y * 幅 + x）
+  light: Uint8Array; // 符号で明るいはずの点か
+  x0: number;
+  x1: number;
+  y0: number;
+  y1: number;
+  v: Float32Array; // 読んだ明るさ（使い回す）
+}
+
+function probeOf(img: ImageLike, pts: Pt[], bits: Uint8Array, per: number): Probe {
+  const n = pts.length;
+  const base = new Int32Array(n);
+  const light = new Uint8Array(n);
+  let x0 = Infinity;
+  let x1 = -Infinity;
+  let y0 = Infinity;
+  let y1 = -Infinity;
+  for (let k = 0; k < n; k++) {
+    const xi = Math.round(pts[k][0]);
+    const yi = Math.round(pts[k][1]);
+    base[k] = yi * img.width + xi;
+    light[k] = bits[Math.floor(k / per)] ? 1 : 0;
+    if (xi < x0) x0 = xi;
+    if (xi > x1) x1 = xi;
+    if (yi < y0) y0 = yi;
+    if (yi > y1) y1 = yi;
+  }
+  return { base, light, x0, x1, y0, y1, v: new Float32Array(n) };
+}
+
+const inside = (img: ImageLike, p: Probe, dx: number, dy: number) => p.x0 + dx >= 0 && p.y0 + dy >= 0 && p.x1 + dx < img.width && p.y1 + dy < img.height;
+
+// (dx, dy) ずらしたときの、符号どおりの明暗の割合と明暗の差
+function score(img: ImageLike, p: Probe, dx: number, dy: number): { fit: number; contrast: number } {
+  if (!inside(img, p, dx, dy)) return { fit: 0, contrast: 0 };
+  const d = img.data;
+  const off = dy * img.width + dx;
+  const v = p.v;
+  const n = v.length;
   let sl = 0;
   let sd = 0;
   let nl = 0;
   let nd = 0;
-  for (let k = 0; k < pts.length; k++) {
-    const xi = Math.round(pts[k][0] + dx);
-    const yi = Math.round(pts[k][1] + dy);
-    if (xi < 0 || yi < 0 || xi >= img.width || yi >= img.height) return { fit: 0, contrast: 0 };
-    const i = (yi * img.width + xi) * 4;
-    const m = Math.max(img.data[i], img.data[i + 1], img.data[i + 2]);
+  for (let k = 0; k < n; k++) {
+    const i = (p.base[k] + off) * 4;
+    const r = d[i];
+    const g = d[i + 1];
+    const b = d[i + 2];
+    const m = r > g ? (r > b ? r : b) : g > b ? g : b;
     v[k] = m;
-    if (bits[Math.floor(k / per)]) {
+    if (p.light[k]) {
       sl += m;
       nl++;
     } else {
@@ -57,24 +96,28 @@ function score(img: ImageLike, pts: Pt[], bits: Uint8Array, dx: number, dy: numb
   const D = sd / Math.max(1, nd);
   const mid = (L + D) / 2;
   let ok = 0;
-  for (let k = 0; k < pts.length; k++) if (v[k] > mid === bits[Math.floor(k / per)] > 0) ok++;
-  return { fit: ok / pts.length, contrast: L - D };
+  for (let k = 0; k < n; k++) if (v[k] > mid === p.light[k] > 0) ok++;
+  return { fit: ok / n, contrast: L - D };
 }
 
 // 符号の明暗との相関（明るいはずの点の明るさ − 暗いはずの点の明るさ の平均）。マスの縁の近くの点も使うので、位置が合うほど大きい
 // （明暗が合う割合はマスの真ん中が入っていれば 1 になり、数画素ずれても変わらなかった）
-function correlation(img: ImageLike, pts: Pt[], bits: Uint8Array, dx: number, dy: number, per: number): number {
+function correlation(img: ImageLike, p: Probe, dx: number, dy: number): number {
+  if (!inside(img, p, dx, dy)) return -Infinity;
+  const d = img.data;
+  const off = dy * img.width + dx;
+  const n = p.base.length;
   let sl = 0;
   let sd = 0;
   let nl = 0;
   let nd = 0;
-  for (let k = 0; k < pts.length; k++) {
-    const xi = Math.round(pts[k][0] + dx);
-    const yi = Math.round(pts[k][1] + dy);
-    if (xi < 0 || yi < 0 || xi >= img.width || yi >= img.height) return -Infinity;
-    const i = (yi * img.width + xi) * 4;
-    const m = Math.max(img.data[i], img.data[i + 1], img.data[i + 2]);
-    if (bits[Math.floor(k / per)]) {
+  for (let k = 0; k < n; k++) {
+    const i = (p.base[k] + off) * 4;
+    const r = d[i];
+    const g = d[i + 1];
+    const b = d[i + 2];
+    const m = r > g ? (r > b ? r : b) : g > b ? g : b;
+    if (p.light[k]) {
       sl += m;
       nl++;
     } else {
@@ -100,12 +143,14 @@ export function trackMarkers(
     const pts = moduleCenters(m.corners, cells);
     if (!pts) continue;
     const bits = bitsOf(m.id);
-    const [px, py] = shift(m, from);
+    const probe = probeOf(img, pts, bits, 1);
+    // ずらす量は整数画素（点の画素を先に丸めているので）
+    const [px, py] = shift(m, from).map(Math.round);
     const reach = Math.max(3, Math.round(m.side * o.reach));
     // 予測した位置から山登り（2 画素おき → 1 画素）。合わなければ範囲全体を 2 画素おきに探してから山登り
     let best = { dx: px, dy: py, fit: -1, contrast: 0 };
     const consider = (dx: number, dy: number) => {
-      const s = score(img, pts, bits, dx, dy);
+      const s = score(img, probe, dx, dy);
       if (s.fit > best.fit || (s.fit === best.fit && s.contrast > best.contrast)) {
         best = { dx, dy, ...s };
         return true;
@@ -130,15 +175,16 @@ export function trackMarkers(
     }
     if (best.fit < o.minFit || best.contrast < o.minContrast) continue;
     // 位置を詰める: マスの縁の近くの点も使って、明暗の相関がいちばん大きい所へ 1 画素ずつ（マスの真ん中だけでは、数画素ずれても合ってしまう）
-    const fine = moduleCenters(m.corners, cells, true);
-    if (fine) {
-      let at = { dx: best.dx, dy: best.dy, c: correlation(img, fine, bits, best.dx, best.dy, 9) };
+    const finePts = moduleCenters(m.corners, cells, true);
+    if (finePts) {
+      const fine = probeOf(img, finePts, bits, 9);
+      let at = { dx: best.dx, dy: best.dy, c: correlation(img, fine, best.dx, best.dy) };
       for (let it = 0; it < 6; it++) {
         const c = at;
         for (let dy = -1; dy <= 1; dy++)
           for (let dx = -1; dx <= 1; dx++) {
             if (!dx && !dy) continue;
-            const v = correlation(img, fine, bits, c.dx + dx, c.dy + dy, 9);
+            const v = correlation(img, fine, c.dx + dx, c.dy + dy);
             if (v > at.c) at = { dx: c.dx + dx, dy: c.dy + dy, c: v };
           }
         if (at === c) break;
