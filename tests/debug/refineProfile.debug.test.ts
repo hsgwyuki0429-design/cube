@@ -2,7 +2,7 @@
 // 場面ごとに 1 フレームあたりの時間と、再構成した手順が正しいかを出す。PROFILE=1 で関数ごとの時間（node:inspector の CPU プロファイル）も。
 //   npx vitest run -c vitest.debug.config.ts tests/debug/refineProfile.debug.test.ts --silent=false
 //   SCENES=場面の名前（, 区切り。既定 すべて）・PROFILE=1・TOP=関数の数（既定 25）・SAVE=フォルダ（場面の途中の 1 枚を PNG で）
-//   LIVE=1: 精密解析の代わりにライブの認識と追跡（本体のライブと同じ設定 + TrackerEngine。NOREGION=1 で切り出しなし）・DESIGN=マーカーの配置（既定は本体の STICKERS）
+//   NOGATE=1: 精密解析の軽い検査なし（全フレームを精密に）・LIVE=1: 精密解析の代わりにライブの認識と追跡（本体のライブと同じ設定 + TrackerEngine。NOREGION=1 で切り出しなし）・DESIGN=マーカーの配置（既定は本体の STICKERS）
 // 場面（unique54・指つき）: aruco / aruco-far（キューブが大きい / 小さめ。1280×960）・
 // aruco-tall / aruco-tall-old（縦向き 720×1280 / 1080×1920 = 幅を合わせていた以前の録画）
 import { Session } from "node:inspector";
@@ -103,7 +103,7 @@ function arucoScene(cv: unknown, name: string, width: number, height: number, ey
     frames,
     target: applyMoves(solvedState(), truth),
     truth: alg,
-    refiner: () => new Refiner(cv as never, { state: Array.from(solvedState()), refs: ARUCO_REFS, from: 0, to: Infinity, startHint: lead, pipeline: { stickers: "unique54", arucoDesign: DESIGN } }),
+    refiner: () => new Refiner(cv as never, { state: Array.from(solvedState()), refs: ARUCO_REFS, from: 0, to: Infinity, startHint: lead, pipeline: { stickers: "unique54", arucoDesign: DESIGN }, gate: !process.env.NOGATE }),
   };
 }
 
@@ -158,8 +158,8 @@ it("精密解析の処理時間", async () => {
     const resultMs = performance.now() - t1;
     const moves = res.moves.map((m) => MOVE_NAMES[m.move]).join(" ");
     process.stdout.write(
-      `=== ${scene.name}: ${(pushMs / scene.frames.length).toFixed(1)}ms/フレーム（${scene.frames.length} フレーム・計 ${(pushMs / 1000).toFixed(1)}s）・解き直し ${resultMs.toFixed(0)}ms・` +
-        `${moves === scene.truth ? "手順 正しい" : `手順 違う: ${moves}`}（${res.method}）${prof}\n`,
+      `=== ${scene.name}: ${(pushMs / scene.frames.length).toFixed(1)}ms/フレーム（${scene.frames.length} フレーム・計 ${(pushMs / 1000).toFixed(1)}s${"gated" in r ? `・軽い検査で飛ばした ${(r as Refiner).gated}` : ""}）・解き直し ${resultMs.toFixed(0)}ms・` +
+        `${moves === scene.truth ? "手順 正しい" : `手順 違う: ${moves}`}（${res.method}）${"start" in res ? ` 開始 ${(res as { start: number | null }).start?.toFixed(1)} 終了 ${(res as { end: number | null }).end?.toFixed(1)}` : ""}${prof}\n`,
     );
   }
 }, 7200000);

@@ -22,6 +22,47 @@ export interface RefineInput {
   pipeline?: Partial<PipelineConfig>;
   // タイムを測らない解析（フリー）: 画素のパッチは直近のこれだけ残す（長く続けてもメモリが増えないように）
   keepPatchesMs?: number;
+  // 軽い検査で、前に精密に処理したフレームと読みが同じフレームを飛ばす（既定 true。下の「軽い検査」）
+  gate?: boolean;
+}
+
+// 軽い検査: 全フレームを精密に処理する代わりに、まずライブ並みの軽い設定（二値化の窓が少ない・読み直し・色の補完・ID なし追跡なし）で
+// 読み、前に精密に処理したフレームと同じ読み（見えている面・読めたマスの色と ID が同じ、回している途中の形がない）なら飛ばす。
+// 変わっていたら、取っておいた直前のフレーム（変わる前の最後の 1 枚。回し始めの時刻に要る）と、そのフレームを精密に処理し、
+// その後 GATE_TAIL 枚も精密に処理する（回し終わりの時刻は、止まった後のフレームでも止まっていることを確かめる）。
+// 軽い検査が読めたマスが前の精密な読みの半分に満たない（確かめられない）・GATE_KEEP_MS たった、ときも精密に処理する
+const GATE_KEEP_MS = 200;
+const GATE_TAIL = 2;
+const GATE_COVER = 0.5;
+type Reading = { faces: { slot: number; labs: Lab[]; valid: boolean[]; ids?: number[] }[]; turn?: unknown };
+
+// 軽い検査の読み light が、精密に処理したフレームの読み ref と同じか
+export function sameReading(light: Reading, ref: Reading): boolean {
+  if (light.turn) return false;
+  const known = (f: Reading["faces"][number]) => f.valid.filter(Boolean).length;
+  let refCells = 0;
+  let seen = 0;
+  for (const f of ref.faces) {
+    const n = known(f);
+    refCells += n;
+    const g = light.faces.find((x) => x.slot === f.slot);
+    if (!g) {
+      if (n >= 3) return false;
+      continue;
+    }
+    for (let cell = 0; cell < 9; cell++) {
+      if (!g.valid[cell]) continue;
+      seen++;
+      if (!f.valid[cell]) continue;
+      if (g.labs[cell].join() !== f.labs[cell].join()) return false;
+      const a = g.ids?.[cell] ?? -1;
+      const b = f.ids?.[cell] ?? -1;
+      if (a >= 0 && b >= 0 && a !== b) return false;
+    }
+  }
+  // 前の精密な読みになかった面が見えた
+  if (light.faces.some((g) => known(g) >= 3 && !ref.faces.some((f) => f.slot === g.slot))) return false;
+  return seen >= refCells * GATE_COVER;
 }
 
 export interface RefinedMove {
@@ -72,6 +113,14 @@ export class Refiner {
   readonly engine: TrackerEngine;
   private memory = {}; // フレームの間で引き継ぐもの（processFrame）
   private config: PipelineConfig;
+  // 軽い検査
+  private lightConfig: PipelineConfig;
+  private lightMemory = {};
+  private ref: Reading | null = null; // 最後に精密に処理したフレームの読み
+  private lastFullT = -Infinity;
+  private held: { img: PixelSource; t: number } | null = null; // 飛ばした直前のフレーム
+  private tail = 0;
+  gated = 0; // 軽い検査で飛ばしたフレームの数
   readonly patches: PatchFrame[] = [];
   readonly looks: { t: number; solved: boolean }[] = []; // フレームごとの「完成して見えるか」
   frames = 0;
@@ -92,6 +141,7 @@ export class Refiner {
     // ソルブ後の解析は時間をかけてよいので、二値化の窓を細かく試し、読めなかったマスは全部読み直す。
     // 直前のフレームのマーカーの周りだけで検出する（縁の近くに見つかったら全体でやり直す）
     this.config = { ...DEFAULT_PIPELINE, ...input.pipeline, arucoThorough: true, arucoRegion: true };
+    this.lightConfig = { ...DEFAULT_PIPELINE, ...input.pipeline, arucoThorough: false, arucoRegion: true, arucoReread: 0, arucoColorFill: false, arucoIdTrack: false };
   }
 
   // 解析する範囲の終わりを決める（ソルブ中から解析していて、止めた時刻が分かったとき）
@@ -125,7 +175,26 @@ export class Refiner {
 
   push(img: PixelSource, t: number): void {
     if (t < this.input.from || t > this.input.to) return;
+    if (this.input.gate === false) return this.full(img, t);
+    const light = processFrame(this.cv, img, t, this.lightConfig, this.lightMemory);
+    const forced = !this.ref || this.tail > 0 || t - this.lastFullT >= GATE_KEEP_MS;
+    const changed = !this.ref || !sameReading(light, this.ref);
+    if (!forced && !changed) {
+      this.held = { img: copyImage(img, this.held?.img), t };
+      this.gated++;
+      return;
+    }
+    // 変わった: 変わる前の最後の 1 枚から精密に処理する
+    if (changed && this.held) this.full(this.held.img, this.held.t);
+    this.held = null;
+    this.full(img, t);
+    this.tail = changed ? GATE_TAIL : Math.max(0, this.tail - 1);
+  }
+
+  private full(img: PixelSource, t: number): void {
     const r = processFrame(this.cv, img, t, this.config, this.memory);
+    this.ref = r;
+    this.lastFullT = t;
     const reading = { t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, ids: f.ids })), turn: r.turn };
     this.engine.push(reading);
     this.looks.push({ t, solved: reading.faces.length > 0 && this.engine.looksSolved(reading) });
@@ -250,4 +319,11 @@ export class Refiner {
       raw: timed.map((m) => ({ move: m.move, t0: m.t0, t: m.t, start: m.start, end: m.end, inferred: m.inferred })),
     };
   }
+}
+
+// 画素を写す（飛ばしたフレームを取っておく。古いものの入れ物を使い回す）
+function copyImage(img: PixelSource, reuse?: PixelSource): PixelSource {
+  const data = reuse && reuse.data.length === img.data.length ? (reuse.data as Uint8ClampedArray) : new Uint8ClampedArray(img.data.length);
+  data.set(img.data);
+  return { data, width: img.width, height: img.height } as PixelSource;
 }
