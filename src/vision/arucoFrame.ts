@@ -35,15 +35,18 @@ const TURN_GAP_MS = 80; // 回している層がこれより長く見えなけ�
 const boxes = new WeakMap<object, { t: number; x0: number; y0: number; x1: number; y1: number; side: number }>();
 const REGION_MS = 200; // これより前のフレームの範囲は使わない
 const REGION_MARGIN = 2.5; // 範囲を広げる量（マーカーの辺の倍数。キューブが少し動いても、回している層がはみ出しても入る）
+// 範囲を広げる量の下限（画像の長辺に対する割合）。4 個の配置はマーカーが小さく、ライブ（1 秒 10〜20 枚）ではフレームの間に
+// キューブがマーカーの辺の 2.5 倍より大きく動いて、全体でやり直すことが多かった
+const REGION_MARGIN_MIN = 0.06;
 const REGION_EDGE = 1; // 切り出しの縁からこれ（マーカーの辺の倍数）以内にマーカーがあれば、外にもあるかもしれないので全体でやり直す
 
-// マーカーを検出する。region: 直前のフレームのマーカーの周りだけを切り出して検出する（精密解析。画像全体の何割かで済む）。
+// マーカーを検出する。region: 直前のフレームのマーカーの周りだけを切り出して検出する（ライブ・精密解析。画像全体の何割かで済む）。
 // 切り出しの縁の近くにマーカーがある（キューブが大きく動いた）・何も見つからないときは全体でやり直す
 function detectMarkers(b: ArucoBench, img: PixelSource, t: number, memory: object, region: boolean): Marker[] {
   const prev = region ? boxes.get(memory) : undefined;
   let markers: Marker[] | null = null;
   if (prev && t - prev.t < REGION_MS && t > prev.t) {
-    const m = REGION_MARGIN * prev.side;
+    const m = Math.max(REGION_MARGIN * prev.side, REGION_MARGIN_MIN * Math.max(img.width, img.height));
     const x0 = Math.max(0, Math.floor(prev.x0 - m));
     const y0 = Math.max(0, Math.floor(prev.y0 - m));
     const x1 = Math.min(img.width, Math.ceil(prev.x1 + m));
@@ -73,7 +76,7 @@ function detectMarkers(b: ArucoBench, img: PixelSource, t: number, memory: objec
 // opts.reread: 読めなかったマスを読み直す数（省略時はライブ 4・精密解析は全部）、opts.focus: 先に読み直すマス（slot * 9 + cell）、
 // opts.colorFill: それでも読めなかったマスを色で補う（既定 true。src/aruco/colorFill.ts）、
 // opts.idTrack: ID が読めなかったマスに直前のフレームのステッカーを引き継ぐ（既定 true。src/aruco/idTrack.ts）、
-// opts.region: 直前のフレームのマーカーの周りだけで検出する（精密解析。既定 false）、
+// opts.region: 直前のフレームのマーカーの周りだけで検出する（本体のライブと精密解析。既定 false）、
 // opts.design: ステッカーの中のマーカーの配置（src/aruco/design.ts の key。既定は今の配置 standard）、
 // opts.turn: 回転途中の形状認識で、回している層と回し始めからの角度を出す（既定 true。src/aruco/turn.ts）
 export function processAruco(

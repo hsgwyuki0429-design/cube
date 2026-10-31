@@ -71,6 +71,11 @@ export const TUNED_PARAMS: Partial<ArucoParams> = {
 const WINDOWS3: Partial<ArucoParams> = { adaptiveThreshWinSizeStep: 5, adaptiveThreshWinSizeMax: 23 };
 const SCHEME_PARAMS: Record<StickerScheme, Partial<ArucoParams>> = { aruco54: {}, aruco12: WINDOWS3, unique54: WINDOWS3 };
 export const THOROUGH_PARAMS: Partial<ArucoParams> = { adaptiveThreshWinSizeStep: 5, adaptiveThreshWinSizeMax: 33 };
+// 4 個・幅 1/2 の配置（マーカーが小さい）の窓。合成の 60 場面（tests/debug/arucoEval.debug.test.ts の A）で、ライブ 3〜23（5 回）→ 5〜15（3 回）、
+// 精密解析 3〜33（7 回）→ 5〜20（4 回）にしても色が正しく分かるマスは同じ（ライブ 64.2 → 64.3%・精密解析 64.9 → 65.1%、誤りは 0.7 → 0.3%）。
+// 1 フレームは 1280×960 でライブ 135 → 106ms
+const SMALL_WINDOWS: Partial<ArucoParams> = { adaptiveThreshWinSizeMin: 5, adaptiveThreshWinSizeStep: 5, adaptiveThreshWinSizeMax: 15 };
+const SMALL_THOROUGH: Partial<ArucoParams> = { adaptiveThreshWinSizeMin: 5, adaptiveThreshWinSizeStep: 5, adaptiveThreshWinSizeMax: 20 };
 const MIN_FIT = Number((globalThis as { process?: { env: Record<string, string | undefined> } }).process?.env.ARUCO_MIN_FIT ?? 0.85);
 
 export interface DetectorConfig {
@@ -145,7 +150,9 @@ export class ArucoBench {
   ) {
     this.dict = makeDictionary(cv, scheme);
     this.cells = markerSize(scheme) + 2;
-    this.params = configs.map((c) => ({ ...SCHEME_PARAMS[scheme], ...c.params }));
+    // 小さいマーカー（4 個の配置）は、二値化の窓を 5 から 5 刻みに（窓 3 は雑音の輪郭が多く遅い・大きい窓は要らない）
+    const small = design.side < 0.5;
+    this.params = configs.map((c) => ({ ...SCHEME_PARAMS[scheme], ...c.params, ...(small ? (c.params === THOROUGH_PARAMS ? SMALL_THOROUGH : SMALL_WINDOWS) : {}) }));
     this.detectors = this.params.map((params) => {
       const p = this.detectorParams(params, 1);
       const det = new cv.aruco_ArucoDetector(this.dict, p, new cv.aruco_RefineParameters(10, 3, true));

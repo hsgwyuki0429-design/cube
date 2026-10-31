@@ -1,9 +1,10 @@
 // 動画の上に、解析したフレームの検出結果を重ねる。動画の表示時刻にいちばん近い解析フレームを使う。
 // テストモード: マーカーごとの読めた・読めない。キューブモード: 組み立てた面と推定した手
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { MOVE_NAMES } from "../cube/model";
 import { applyH } from "../vision/homography";
 import { estimatePose } from "../vision/pose";
+import { smoothedPose } from "../ui/gyro";
 import { TimedCube3D } from "./timedCube";
 import type { CubeFrame, CubeResult, VisibleFace } from "./cube";
 import { FaceNet, SLOT_NAMES, heldName } from "./cubePanel";
@@ -240,8 +241,14 @@ export function Viewer({ url, frames, info, timeScale, configNames, scheme, summ
   };
   const doneMoves = moves.filter((m) => m.t <= nowReal);
   const turning = moves.find((m) => (m.t0 ?? m.t) <= nowReal && nowReal < m.t);
-  // カメラに映ったキューブの傾き（組み立てた面の格子から。src/vision/pose.ts）
-  const tilt = info && faces.length ? (estimatePose(faces.map((f) => ({ slot: f.slot, H: f.H, rot: 0, held: !!f.partial })), info.analyzedWidth, info.analyzedHeight)?.R ?? null) : null;
+  // カメラに映ったキューブの傾き（組み立てた面の格子から。src/vision/pose.ts）。1 フレームごとに数度揺れるので、前後のフレームで
+  // 時間の重みを付けて平均する（src/ui/gyro.ts）
+  const poses = useMemo(
+    () => (cube && info ? cube.faces.map((fs) => (fs.length ? (estimatePose(fs.map((f) => ({ slot: f.slot, H: f.H, rot: 0, held: !!f.partial })), info.analyzedWidth, info.analyzedHeight)?.R ?? null) : null)) : []),
+    [cube, info],
+  );
+  const poseTimes = useMemo(() => frames.map((fr) => fr.t), [frames, cube]);
+  const tilt = poses.length ? smoothedPose(poses, poseTimes, index) : null;
   const missedHere = slots.filter((s) => s.track[index] === 1);
   const f = frames[index];
 

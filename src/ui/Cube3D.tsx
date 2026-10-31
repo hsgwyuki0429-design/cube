@@ -1,10 +1,11 @@
 // 3D キューブ（cubing.js の <twisty-player>）。追跡した手を順にアニメーションし、
 // キューブの姿勢（カメラに映っている傾き）に合わせて全体を回す。
 import { useEffect, useRef } from "preact/hooks";
-import { Color, Matrix4, Quaternion, Vector3, type Object3D } from "three";
+import { Color, Matrix4, Quaternion, type Object3D } from "three";
 import type { TwistyPlayer } from "cubing/twisty";
 import { controller } from "../app/controller";
 import { MOVE_NAMES, ORIENTATIONS, ROTATION, mul } from "../cube/model";
+import { DEFAULT_GYRO, GyroFilter, follow } from "./gyro";
 
 export interface Cube3DProps {
   epoch: number; // 変わったら setup からやり直す
@@ -19,14 +20,12 @@ export interface Cube3DProps {
   alg?: string;
 }
 
-const EXTRAPOLATE_MS = 250;
 // 手のアニメーション: 1 手ずつ、前の手を回し終えてから次を回す（cubing.js は回している途中に次の手を足すと、前の手を一瞬で
 // 終わらせるので、速く回すと回転が描かれない手があった）。ふだんは 1 手 約 170ms（tempoScale 3）、たまっていれば速めるが、
 // 人が回るのを見て取れる 1 手 約 85ms（tempoScale 6）より速くしない
 const BASE_TEMPO = 3;
 const MAX_TEMPO = 6;
 const CATCH_UP_MS = 500; // cubing.js の 1 手の長さ（tempoScale 1 のとき）
-const SPIN_MIN = (40 * Math.PI) / 180 / 1000; // rad/ms
 
 // cubing.js の Cube3D は面ごとの素材を共有している（U L F R B D の順の色）
 const DEFAULT_HEX: Record<number, number> = { 0: 0xffffff, 4: 0xff8800, 2: 0x00ff00, 1: 0xff0000, 5: 0x2266ff, 3: 0xffff00 };
@@ -64,8 +63,8 @@ export function Cube3D(props: Cube3DProps) {
   const targetQ = useRef(new Quaternion());
   const raf = useRef(0);
   const lastPoseAt = useRef(0);
-  // 毎フレームの姿勢から求めた回転の速さ（ワールドの軸・rad/ms）。ぶれで数フレーム読めない間も、この速さで少し先まで回し続ける
-  const spin = useRef<{ axis: Vector3; rate: number } | null>(null);
+  // 毎フレームの姿勢をならし、回る速さで次の姿勢までつなぐ（src/ui/gyro.ts）
+  const gyro = useRef(new GyroFilter());
   const following = () => !props.controls && (props.view === "camera" || props.view === "user");
 
   useEffect(() => {
@@ -117,25 +116,20 @@ export function Cube3D(props: Cube3DProps) {
     for (const v of await p.experimentalCurrentVantages()) v.scheduleRender();
   };
 
-  // 直前の姿勢から、回転の速さで先へ進めた向き（EXTRAPOLATE_MS まで進めてそこで止める・最大 60°。次の姿勢が届けばそちらへ寄せる）
-  const predicted = (): { q: Quaternion; moving: boolean } => {
-    const v = spin.current;
-    if (!following() || !v) return { q: targetQ.current, moving: false };
-    const elapsed = performance.now() - lastPoseAt.current;
-    const angle = Math.min(v.rate * Math.min(elapsed, EXTRAPOLATE_MS), Math.PI / 3);
-    return { q: new Quaternion().setFromAxisAngle(v.axis, angle).multiply(targetQ.current), moving: elapsed < EXTRAPOLATE_MS };
-  };
-
-  // 姿勢を滑らかに追従
+  // 向きをなめらかに追う: カメラの傾きに追従するときは、ならした姿勢を回る速さで先へ進めた向き（src/ui/gyro.ts）を、
+  // 時間でなめらかに追う（姿勢の届く間隔によらない）。追従しないときは持ち方の向きへ
   const animateOrientation = () => {
     cancelAnimationFrame(raf.current);
-    const step = () => {
+    let last = performance.now();
+    const step = (now: number) => {
       const obj = puzzleObj.current;
       if (!obj) return;
-      const { q: target, moving } = predicted();
-      obj.quaternion.slerp(target, following() ? 0.3 : 0.18);
+      const dt = now - last;
+      last = now;
+      const target = (following() && gyro.current.target(now)) || targetQ.current;
+      follow(obj.quaternion, target, dt, following() ? DEFAULT_GYRO.renderTauMs : 120);
       scheduleRender();
-      if (moving || obj.quaternion.angleTo(target) > 0.002) raf.current = requestAnimationFrame(step);
+      if ((following() && gyro.current.moving(now)) || obj.quaternion.angleTo(target) > 0.002) raf.current = requestAnimationFrame(step);
       else {
         obj.quaternion.copy(target);
         scheduleRender();
@@ -205,7 +199,7 @@ export function Cube3D(props: Cube3DProps) {
   useEffect(() => {
     // 連続的な姿勢が届いている間は、それに任せる
     if (following() && performance.now() - lastPoseAt.current < 600) return;
-    spin.current = null;
+    gyro.current.reset();
     targetQ.current = props.orient === null ? new Quaternion() : matToQuat(ORIENTATIONS[props.orient]);
     animateOrientation();
   }, [props.orient]);
@@ -239,16 +233,9 @@ export function Cube3D(props: Cube3DProps) {
       const M = mul(m.pose.R, ORIENTATIONS[o]);
       const q = matToQuat(props.view === "user" ? mul(mul(ROTATION.y, ROTATION.y), M) : M);
       const now = performance.now();
-      const dt = now - lastPoseAt.current;
-      // 回転の速さ: 直前の姿勢からの差（q = dq · 前）。速いとき（40°/秒以上）だけ使う（止まっているときの揺れを先へ進めない）
-      spin.current = null;
-      if (dt > 0 && dt < 200) {
-        const dq = q.clone().multiply(targetQ.current.clone().invert());
-        if (dq.w < 0) dq.set(-dq.x, -dq.y, -dq.z, -dq.w);
-        const angle = 2 * Math.acos(Math.min(1, dq.w));
-        const s = Math.sin(angle / 2);
-        if (angle / dt > SPIN_MIN && angle < Math.PI / 2 && s > 1e-6) spin.current = { axis: new Vector3(dq.x / s, dq.y / s, dq.z / s), rate: angle / dt };
-      }
+      // 0.6 秒以上あいたら（見失っていた）ならさずに合わせ直す
+      if (now - lastPoseAt.current > 600) gyro.current.reset();
+      gyro.current.push(q, now);
       targetQ.current = q;
       lastPoseAt.current = now;
       animateOrientation();

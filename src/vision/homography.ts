@@ -65,6 +65,35 @@ function smallestEigenvector(M: number[][]): number[] {
   return V.map((r) => r[min]);
 }
 
+// |A h| を h の 9 番目 = 1 として最小にする（8 元の正規方程式をガウスの消去法で解く）。正規化した座標では 9 番目が 0 に近くなる
+// ことはまずないので、ヤコビ法で最小固有ベクトルを求めるより 1 桁速い（1 フレームに数百回呼ぶ）。解けなければ null（ヤコビ法に任せる）
+function solveNormalized(AtA: number[][]): number[] | null {
+  const n = 8;
+  const M = Array.from({ length: n }, (_, r) => [...AtA[r].slice(0, n), -AtA[r][8]]);
+  let scale = 0;
+  for (let r = 0; r < n; r++) scale = Math.max(scale, Math.abs(M[r][r]));
+  for (let c = 0; c < n; c++) {
+    let piv = c;
+    for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[piv][c])) piv = r;
+    if (Math.abs(M[piv][c]) < 1e-10 * (scale || 1)) return null;
+    if (piv !== c) [M[c], M[piv]] = [M[piv], M[c]];
+    const d = M[c][c];
+    for (let r = c + 1; r < n; r++) {
+      const f = M[r][c] / d;
+      if (f === 0) continue;
+      for (let k = c; k <= n; k++) M[r][k] -= f * M[c][k];
+    }
+  }
+  const h = new Array(9).fill(0);
+  h[8] = 1;
+  for (let r = n - 1; r >= 0; r--) {
+    let v = M[r][n];
+    for (let k = r + 1; k < n; k++) v -= M[r][k] * h[k];
+    h[r] = v / M[r][r];
+  }
+  return h;
+}
+
 function normalizer(pts: Pt[]): { T: Mat3; apply: (p: Pt) => Pt } {
   const cx = pts.reduce((s, p) => s + p[0], 0) / pts.length;
   const cy = pts.reduce((s, p) => s + p[1], 0) / pts.length;
@@ -89,7 +118,7 @@ export function fitHomography(src: Pt[], dst: Pt[], weights?: number[]): Mat3 | 
     ];
     for (const r of rows) for (let a = 0; a < 9; a++) for (let b = 0; b < 9; b++) AtA[a][b] += w * r[a] * r[b];
   });
-  const h = smallestEigenvector(AtA);
+  const h = solveNormalized(AtA) ?? smallestEigenvector(AtA);
   if (h.some((v) => !Number.isFinite(v))) return null;
   // H = Td⁻¹ · Hn · Ts
   const H = mulH(mulH(invertH(nd.T), h), ns.T);
