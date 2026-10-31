@@ -65,7 +65,7 @@ it("ライブの経路での 3D の向き", async () => {
   const H = Number(process.env.ARUCO_H);
   const FPS = Number(process.env.ARUCO_FPS ?? 20);
   const cv = await loadTestOpenCv();
-  const { DEFAULT_PIPELINE, processFrame } = await import("../../src/vision/pipeline");
+  const { DEFAULT_PIPELINE, frameReading, processFrame } = await import("../../src/vision/pipeline");
   const { TrackerEngine } = await import("../../src/track/engine");
   const { estimatePose, rotationAngle } = await import("../../src/vision/pose");
   const { ORIENTATIONS, mul, solvedState } = await import("../../src/cube/model");
@@ -99,7 +99,7 @@ it("ライブの経路での 3D の向き", async () => {
     frames++;
     const t = (i * 1000) / FPS;
     const r = processFrame(cv, { data: buf, width: W, height: H }, t, pipeline, memory);
-    const reading = { t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, ids: f.ids })) };
+    const reading = { ...frameReading(t, r), turn: undefined };
     engine.push(reading);
     let M: number[] | null = null;
     if (reading.faces.length) {

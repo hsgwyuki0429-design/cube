@@ -14,6 +14,7 @@ export interface FaceReading {
   masked?: boolean[]; // 9（手で隠れている）
   alts?: { labs: Lab[]; valid: boolean[] }[]; // 窓の位置が曖昧なとき、ずらした格子での読み
   ids?: number[]; // 9（マスごとに違う ArUco ステッカーの ID = 揃った状態での facelet 番号。-1 = 読めない）
+  shift?: ([number, number] | null)[]; // 9（読んだマーカーの本体の格子からのずれ。開始・終了時刻の判定に使う）
 }
 
 export interface FrameReading {

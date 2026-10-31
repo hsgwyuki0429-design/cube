@@ -167,7 +167,7 @@ export class TrackerEngine {
   }
 
   push(frame: FrameReading): TrackUpdate | null {
-    this.frames.push({ t: frame.t, faces: frame.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, spread: f.spread, masked: f.masked })) });
+    this.frames.push({ t: frame.t, faces: frame.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, spread: f.spread, masked: f.masked, shift: f.shift, ids: f.ids })) });
     while (this.frames.length && frame.t - this.frames[0].t > this.logMs) this.frames.shift();
     this.collectTurn(frame);
     const obs = this.observer.push(frame);

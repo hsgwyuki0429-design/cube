@@ -7,6 +7,7 @@ import { processAruco } from "./arucoFrame";
 import type { Lab } from "./color";
 import type { Mat3, Pt } from "./homography";
 import type { CV, PixelSource } from "./image";
+import type { FrameReading } from "../track/observer";
 import type { TurnSnapshot } from "../track/types";
 
 export interface PipelineConfig {
@@ -37,6 +38,11 @@ export interface PipelineConfig {
 
 export const DEFAULT_PIPELINE: PipelineConfig = { stickers: "unique54" };
 
+// 1 フレームの結果を、追跡エンジン（TrackerEngine.push）に渡す読みにする
+export function frameReading(t: number, r: FrameResult): FrameReading {
+  return { t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, ids: f.ids, shift: f.shift })), turn: r.turn };
+}
+
 export interface DetectedFace {
   slot: number; // カメラフレームの面（0 上 / 1 右 / 2 正面 / 3 下 / 4 左）
   rot: number; // 格子の回転（組み立てた面は常に 0）
@@ -50,6 +56,7 @@ export interface DetectedFace {
   masked: boolean[];
   ids?: number[]; // 読んだステッカーの ID（揃った状態での facelet 番号。-1 = 不明。54 種類の符号のとき）
   layer?: FaceLayer; // 回している途中の層（外側の 1 列）の格子。H は残りの 2 列（本体）の格子
+  shift?: ([number, number] | null)[]; // 読んだマーカーの本体の格子からのずれ（マスの間隔 = 1。手の時刻の判定: src/track/timing.ts）
 }
 
 export interface FrameResult {

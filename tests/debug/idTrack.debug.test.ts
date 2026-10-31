@@ -9,7 +9,7 @@ import { TrackerEngine } from "../../src/track/engine";
 import { simplifyMoves } from "../../src/track/merge";
 import { ARUCO_OBSERVER } from "../../src/track/observer";
 import { applyH } from "../../src/vision/homography";
-import { DEFAULT_PIPELINE, processFrame } from "../../src/vision/pipeline";
+import { DEFAULT_PIPELINE, frameReading, processFrame } from "../../src/vision/pipeline";
 import { applyMoveStickers, renderArucoCube, solvedStickers, stickerAt } from "../arucoCube";
 import type { Finger } from "../render";
 import { loadTestOpenCv } from "../cv";
@@ -65,7 +65,7 @@ it("ID なし追跡の効果（30fps・指）", async () => {
           fingers,
         });
         const r = processFrame(cv, img, t, pipeline, memory);
-        engine.push({ t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, ids: f.ids })), turn: r.turn });
+        engine.push(frameReading(t, r));
         if (turning) continue;
         const at = stickerAt(st);
         for (const f of r.faces) {

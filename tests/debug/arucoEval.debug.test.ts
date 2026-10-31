@@ -13,7 +13,7 @@ import { TrackerEngine } from "../../src/track/engine";
 import { simplifyMoves } from "../../src/track/merge";
 import { ARUCO_OBSERVER } from "../../src/track/observer";
 import { cellCenter } from "../../src/vision/layout";
-import { DEFAULT_PIPELINE, processFrame } from "../../src/vision/pipeline";
+import { DEFAULT_PIPELINE, frameReading, processFrame } from "../../src/vision/pipeline";
 import { Refiner } from "../../src/vision/refine";
 import { applyMoveStickers, renderArucoCube, solvedStickers } from "../arucoCube";
 import { H, W, inPoly, makeScenes } from "../arucoScenes";
@@ -121,7 +121,7 @@ it("ArUco の総合評価", async () => {
       });
       if (engine) {
         const r = processFrame(cv, img, t, pipeline, memory);
-        engine.push({ t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, ids: f.ids })), turn: r.turn });
+        engine.push(frameReading(t, r));
       }
       refiner.push(img, t);
     }
