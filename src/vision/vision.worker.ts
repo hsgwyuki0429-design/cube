@@ -1,6 +1,5 @@
 // 認識 Worker: OpenCV.js（約13MB）の読み込み、1フレームの処理、追跡エンジンの実行。
 // メインスレッドは描画と UI だけを受け持つ。
-import cvModule from "@techstark/opencv-js";
 import { type Mat3, ORIENTATIONS, mul } from "../cube/model";
 import { TrackerEngine, focusCells } from "../track/engine";
 import { StreamDecoder, decodeRecording } from "./decode";
@@ -12,7 +11,8 @@ import { stickerScheme } from "../aruco/codes";
 import { detectWithHint, detectorFor } from "./arucoFrame";
 import { DEFAULT_PIPELINE, type PipelineConfig, processFrame } from "./pipeline";
 import type { FrameMessage, FromWorker, StreamPartial, ToWorker } from "./protocol";
-import { type CV, initOpenCv } from "./image";
+import type { CV } from "./image";
+import { loadOpenCv } from "./opencv";
 
 let cv: CV | null = null;
 let config: PipelineConfig = { ...DEFAULT_PIPELINE };
@@ -92,7 +92,7 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
       case "init": {
         const t0 = performance.now();
         try {
-          cv = await initOpenCv(cvModule);
+          cv = await loadOpenCv();
         } catch (e) {
           cv = null;
           console.warn("OpenCV.js を読み込めませんでした。", e);

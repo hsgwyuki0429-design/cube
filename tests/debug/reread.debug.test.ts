@@ -1,15 +1,14 @@
 // 再認識（src/aruco/reread.ts）の効果: 組み立てた面の読めなかったマスを切り出して読み直すと、正しく読めるマスがどれだけ増えるか・
 // 誤ったマスが増えないか。遠い（マスが小さい）・キューブ全体のぶれで比べる。
 //   npx vitest run -c vitest.debug.config.ts tests/debug/reread.debug.test.ts --silent=false
-import { createRequire } from "node:module";
 import { it } from "vitest";
 import { VIEW, type Vec3, parseMoves } from "../../src/cube/model";
 import { processAruco } from "../../src/vision/arucoFrame";
-import { initOpenCv } from "../../src/vision/image";
 import { applyMoveStickers, renderArucoCube, solvedStickers, stickerAt } from "../arucoCube";
+import { loadTestOpenCv } from "../cv";
 
 it("再認識の効果", async () => {
-  const cv = await initOpenCv(createRequire(import.meta.url)("@techstark/opencv-js"));
+  const cv = await loadTestOpenCv();
   const W = 1280;
   const H = 720;
   const algs = ["R U F' D2 L", "F R' U B2", "L' D R2 U' F", "B U2 R' D F2", "U' L F2 R B'"];

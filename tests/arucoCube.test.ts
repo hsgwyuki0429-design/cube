@@ -1,6 +1,5 @@
 // キューブモード（src/aruco/cube.ts）: ArUco ステッカーを貼ったキューブの合成画像から、見えている面を組み立て、
 // 回している動画（240fps 相当）から手順を復元する。
-import { createRequire } from "node:module";
 import { beforeAll, describe, expect, it } from "vitest";
 import { type CubeFrame, decodeCube, facesOverTime, reconstructFaces, turnMarkers } from "../src/aruco/cube";
 import { designOf } from "../src/aruco/design";
@@ -8,15 +7,16 @@ import { DEFAULT_TURN, recognizeTurn } from "../src/aruco/turn";
 import { cellCenter } from "../src/vision/layout";
 import { ArucoBench, DEFAULT_CONFIGS, type Marker } from "../src/aruco/detect";
 import { MOVE_NAMES, VIEW, type Vec3, parseMoves, rotateOrientation } from "../src/cube/model";
-import { type CV, initOpenCv } from "../src/vision/image";
+import type { CV } from "../src/vision/image";
 import { type Sticker, applyMoveStickers, renderArucoCube, solvedStickers, stickerAt } from "./arucoCube";
 import type { Finger } from "./render";
+import { loadTestOpenCv } from "./cv";
 
 let cv: CV;
 let bench: ArucoBench;
 let benchU1: ArucoBench; // 54 種類（マスごとに違う）・今の配置
 beforeAll(async () => {
-  cv = await initOpenCv(createRequire(import.meta.url)("@techstark/opencv-js"));
+  cv = await loadTestOpenCv();
   bench = new ArucoBench(cv, [DEFAULT_CONFIGS[1]]); // max(RGB)
   benchU1 = new ArucoBench(cv, [DEFAULT_CONFIGS[1]], "unique54");
 }, 120000);

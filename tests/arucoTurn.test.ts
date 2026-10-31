@@ -1,18 +1,18 @@
 // 回転途中の形状認識（src/aruco/turn.ts）: 層を回している途中のフレームで、回している層と角度、各マーカーの位置を求める
-import { createRequire } from "node:module";
 import { beforeAll, describe, expect, it } from "vitest";
 import { decodeCube, facesOverTime, reconstructFaces } from "../src/aruco/cube";
 import { ArucoBench, DEFAULT_CONFIGS, type Marker } from "../src/aruco/detect";
 import { type TurnShape, recognizeTurn, unwrapTurn } from "../src/aruco/turn";
 import type { Pose } from "../src/vision/pose";
 import { MOVE_NAMES, NORMAL, type Vec3, inverseMove, moveAmount, moveFace, parseMoves } from "../src/cube/model";
-import { type CV, initOpenCv } from "../src/vision/image";
+import type { CV } from "../src/vision/image";
 import { applyMoveStickers, renderArucoCube, solvedStickers } from "./arucoCube";
+import { loadTestOpenCv } from "./cv";
 
 let cv: CV;
 let bench: ArucoBench;
 beforeAll(async () => {
-  cv = await initOpenCv(createRequire(import.meta.url)("@techstark/opencv-js"));
+  cv = await loadTestOpenCv();
   bench = new ArucoBench(cv, [DEFAULT_CONFIGS[1]], "unique54");
 }, 120000);
 

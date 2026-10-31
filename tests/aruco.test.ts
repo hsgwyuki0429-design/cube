@@ -1,7 +1,6 @@
 // 色付き ArUco ステッカーの検出と集計（フェーズ0追加検証のテストモード、src/aruco）。
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { beforeAll, describe, expect, it } from "vitest";
@@ -15,12 +14,13 @@ import { markerBits } from "../src/aruco/dict4x4";
 import { PRINT_COLORS } from "../src/aruco/palette";
 import { type FrameRecord, summarize, toCsv, toMarkdown } from "../src/aruco/stats";
 import { SHEETS, classifyColor, stickerOf } from "../src/aruco/stickers";
-import { type CV, initOpenCv } from "../src/vision/image";
+import type { CV } from "../src/vision/image";
 import { type RenderMarker, renderStickers } from "./arucoRender";
+import { loadTestOpenCv } from "./cv";
 
 let cv: CV;
 beforeAll(async () => {
-  cv = await initOpenCv(createRequire(import.meta.url)("@techstark/opencv-js"));
+  cv = await loadTestOpenCv();
 }, 120000);
 
 const RGB = {

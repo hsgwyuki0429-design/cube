@@ -1,6 +1,5 @@
 // ArUco ステッカーで普通にプレイする: 本体の認識（processFrame の ArUco の分岐）→ 追跡エンジン（ライブ）と、
 // 精密解析（Refiner）で、カメラの速さ（30fps）の映像から手順を追えること。
-import { createRequire } from "node:module";
 import { beforeAll, describe, expect, it } from "vitest";
 import { stickerScheme } from "../src/aruco/codes";
 import { ARUCO_REFS } from "../src/aruco/palette";
@@ -9,13 +8,14 @@ import { CERTAIN, TrackerEngine, doubtfulCells } from "../src/track/engine";
 import { ARUCO_OBSERVER } from "../src/track/observer";
 import { simplifyMoves } from "../src/track/merge";
 import { DEFAULT_PIPELINE, processFrame } from "../src/vision/pipeline";
-import { type CV, initOpenCv } from "../src/vision/image";
+import type { CV } from "../src/vision/image";
 import { Refiner } from "../src/vision/refine";
 import { applyMoveStickers, renderArucoCube, solvedStickers, stickerAt } from "./arucoCube";
+import { loadTestOpenCv } from "./cv";
 
 let cv: CV;
 beforeAll(async () => {
-  cv = await initOpenCv(createRequire(import.meta.url)("@techstark/opencv-js"));
+  cv = await loadTestOpenCv();
 }, 120000);
 
 const SIZE = { width: 960, height: 720 };

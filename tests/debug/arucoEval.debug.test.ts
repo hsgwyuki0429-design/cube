@@ -5,7 +5,6 @@
 //   C: 速い回転（120fps・約 8 手/秒・回している層のぶれ。スロー撮影の動画の解析）。精密解析の手順が正しいか
 //   npx vitest run -c vitest.debug.config.ts tests/debug/arucoEval.debug.test.ts --silent=false
 //   DESIGNS=standard,quad-half・PARTS=A,B,C・N=場面の数（距離ごと、既定 20）・SEEDS=手順の数（既定 4）
-import { createRequire } from "node:module";
 import { it } from "vitest";
 import { designOf } from "../../src/aruco/design";
 import { ARUCO_REFS } from "../../src/aruco/palette";
@@ -13,19 +12,19 @@ import { MOVE_NAMES, type Vec3, applyMoves, parseMoves, solvedState } from "../.
 import { TrackerEngine } from "../../src/track/engine";
 import { simplifyMoves } from "../../src/track/merge";
 import { ARUCO_OBSERVER } from "../../src/track/observer";
-import { initOpenCv } from "../../src/vision/image";
 import { cellCenter } from "../../src/vision/layout";
 import { DEFAULT_PIPELINE, processFrame } from "../../src/vision/pipeline";
 import { Refiner } from "../../src/vision/refine";
 import { applyMoveStickers, renderArucoCube, solvedStickers } from "../arucoCube";
 import { H, W, inPoly, makeScenes } from "../arucoScenes";
 import type { Finger } from "../render";
+import { loadTestOpenCv } from "../cv";
 
 const colorOf = (lab: number[]) => ARUCO_REFS.findIndex((r) => r[0] === lab[0] && r[1] === lab[1] && r[2] === lab[2]);
 const pct = (a: number, b: number) => `${((a / Math.max(1, b)) * 100).toFixed(1)}%`;
 
 it("ArUco の総合評価", async () => {
-  const cv = await initOpenCv(createRequire(import.meta.url)("@techstark/opencv-js"));
+  const cv = await loadTestOpenCv();
   const designs = (process.env.DESIGNS ?? "standard,quad-half").split(",");
   const parts = process.env.PARTS ?? "A,B,C";
   const out: string[] = [];

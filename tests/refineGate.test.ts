@@ -1,17 +1,17 @@
 // 精密解析の軽い検査（src/vision/refine.ts）: 前に精密に処理したフレームとマスの色が同じフレームは飛ばし、変わったフレームと
 // その前後は精密に処理する。飛ばしても手順と手の時刻は変わらない
-import { createRequire } from "node:module";
 import { beforeAll, describe, expect, it } from "vitest";
 import { designOf } from "../src/aruco/design";
 import { ARUCO_REFS } from "../src/aruco/palette";
 import { MOVE_NAMES, type Vec3, applyMoves, parseMoves, solvedState } from "../src/cube/model";
-import { type CV, initOpenCv } from "../src/vision/image";
+import type { CV } from "../src/vision/image";
 import { Refiner } from "../src/vision/refine";
 import { applyMoveStickers, renderArucoCube, solvedStickers } from "./arucoCube";
+import { loadTestOpenCv } from "./cv";
 
 let cv: CV;
 beforeAll(async () => {
-  cv = await initOpenCv(createRequire(import.meta.url)("@techstark/opencv-js"));
+  cv = await loadTestOpenCv();
 }, 120000);
 
 describe("精密解析の軽い検査", () => {

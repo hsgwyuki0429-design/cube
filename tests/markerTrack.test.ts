@@ -1,17 +1,17 @@
 // 検出せずにマーカーを追う（src/aruco/markerTrack.ts）: 前のフレームで読めたマーカーを、少し動いた次のフレームで同じ位置に見つける。
 // 回している層のマーカーのように形が変わったものは外れる
-import { createRequire } from "node:module";
 import { beforeAll, describe, expect, it } from "vitest";
 import { designOf } from "../src/aruco/design";
 import { ArucoBench, DEFAULT_CONFIGS } from "../src/aruco/detect";
 import { trackMarkers } from "../src/aruco/markerTrack";
 import { parseMoves } from "../src/cube/model";
-import { type CV, initOpenCv } from "../src/vision/image";
+import type { CV } from "../src/vision/image";
 import { renderArucoCube, solvedStickers } from "./arucoCube";
+import { loadTestOpenCv } from "./cv";
 
 let cv: CV;
 beforeAll(async () => {
-  cv = await initOpenCv(createRequire(import.meta.url)("@techstark/opencv-js"));
+  cv = await loadTestOpenCv();
 }, 120000);
 
 describe("マーカーを追う", () => {

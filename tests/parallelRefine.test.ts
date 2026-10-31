@@ -1,19 +1,19 @@
 // 精密解析の並列化（src/vision/detectPool.ts の ParallelFeeder）: 検出を別の Worker に頼んで終わる順がばらばらでも、時刻順に処理して、
 // 手順と手の時刻は 1 か所で処理したときと同じ。ここでは Worker の代わりに、同じ検出を遅れて返す関数を使う
-import { createRequire } from "node:module";
 import { beforeAll, describe, expect, it } from "vitest";
 import { designOf } from "../src/aruco/design";
 import { ARUCO_REFS } from "../src/aruco/palette";
 import { MOVE_NAMES, type Vec3, applyMoves, parseMoves, solvedState } from "../src/cube/model";
 import { type DetectHint, detectWithHint, detectorFor } from "../src/vision/arucoFrame";
 import { ParallelFeeder } from "../src/vision/detectPool";
-import { type CV, type PixelSource, initOpenCv } from "../src/vision/image";
+import type { CV, PixelSource } from "../src/vision/image";
 import { Refiner } from "../src/vision/refine";
 import { applyMoveStickers, renderArucoCube, solvedStickers } from "./arucoCube";
+import { loadTestOpenCv } from "./cv";
 
 let cv: CV;
 beforeAll(async () => {
-  cv = await initOpenCv(createRequire(import.meta.url)("@techstark/opencv-js"));
+  cv = await loadTestOpenCv();
 }, 120000);
 
 describe("精密解析の並列化", () => {

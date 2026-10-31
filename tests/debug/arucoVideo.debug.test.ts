@@ -2,17 +2,16 @@
 //   ARUCO_VIDEO=out.mp4 [ARUCO_CODEC=vp9|h264] [ARUCO_ROTATE=90] npx vitest run -c vitest.debug.config.ts tests/debug/arucoVideo.debug.test.ts
 // 0.5 秒止まる → 1.5 秒かけて振り幅 120px・1〜4Hz で振る（露光 1/480 秒のぶれ付き）→ 0.5 秒止まる
 import { spawn } from "node:child_process";
-import { createRequire } from "node:module";
 import { it } from "vitest";
-import { initOpenCv } from "../../src/vision/image";
 import { type RenderMarker, renderStickers } from "../arucoRender";
+import { loadTestOpenCv } from "../cv";
 
 it("合成動画を書き出す", async () => {
   const out = process.env.ARUCO_VIDEO;
   if (!out) return;
   const codec = process.env.ARUCO_CODEC ?? "vp9";
   const rotate = process.env.ARUCO_ROTATE;
-  const cv = await initOpenCv(createRequire(import.meta.url)("@techstark/opencv-js"));
+  const cv = await loadTestOpenCv();
   const W = 1280;
   const H = 720;
   const FPS = 240;
