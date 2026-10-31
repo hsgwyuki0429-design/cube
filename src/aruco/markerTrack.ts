@@ -12,8 +12,9 @@ export interface TrackOptions {
 
 export const DEFAULT_TRACK: TrackOptions = { minFit: 0.96, minContrast: 40, reach: 0.3 };
 
-// マーカーの各マス（枠を含む cells × cells）の真ん中の画像上の位置
-function moduleCenters(corners: number[], cells: number): Pt[] | null {
+// マーカーの各マス（枠を含む cells × cells）の画像上の位置。sub: マスの中で真ん中から ±0.35 マス（マスの縁の近く）ずらした 3×3 点も
+// （位置を詰めるとき）
+function moduleCenters(corners: number[], cells: number, sub = false): Pt[] | null {
   const H: Mat3 | null = fitHomography(
     [
       [0, 0],
@@ -25,12 +26,13 @@ function moduleCenters(corners: number[], cells: number): Pt[] | null {
   );
   if (!H) return null;
   const out: Pt[] = [];
-  for (let r = 0; r < cells; r++) for (let c = 0; c < cells; c++) out.push(applyH(H, c + 0.5, r + 0.5));
+  const offs = sub ? [-0.35, 0, 0.35] : [0];
+  for (let r = 0; r < cells; r++) for (let c = 0; c < cells; c++) for (const dy of offs) for (const dx of offs) out.push(applyH(H, c + 0.5 + dx, r + 0.5 + dy));
   return out;
 }
 
 // pts を (dx, dy) ずらしたときの、符号どおりの明暗の割合と明暗の差
-function score(img: ImageLike, pts: Pt[], bits: Uint8Array, dx: number, dy: number): { fit: number; contrast: number } {
+function score(img: ImageLike, pts: Pt[], bits: Uint8Array, dx: number, dy: number, per = 1): { fit: number; contrast: number } {
   const v = new Float32Array(pts.length);
   let sl = 0;
   let sd = 0;
@@ -43,7 +45,7 @@ function score(img: ImageLike, pts: Pt[], bits: Uint8Array, dx: number, dy: numb
     const i = (yi * img.width + xi) * 4;
     const m = Math.max(img.data[i], img.data[i + 1], img.data[i + 2]);
     v[k] = m;
-    if (bits[k]) {
+    if (bits[Math.floor(k / per)]) {
       sl += m;
       nl++;
     } else {
@@ -55,8 +57,32 @@ function score(img: ImageLike, pts: Pt[], bits: Uint8Array, dx: number, dy: numb
   const D = sd / Math.max(1, nd);
   const mid = (L + D) / 2;
   let ok = 0;
-  for (let k = 0; k < pts.length; k++) if (v[k] > mid === bits[k] > 0) ok++;
+  for (let k = 0; k < pts.length; k++) if (v[k] > mid === bits[Math.floor(k / per)] > 0) ok++;
   return { fit: ok / pts.length, contrast: L - D };
+}
+
+// 符号の明暗との相関（明るいはずの点の明るさ − 暗いはずの点の明るさ の平均）。マスの縁の近くの点も使うので、位置が合うほど大きい
+// （明暗が合う割合はマスの真ん中が入っていれば 1 になり、数画素ずれても変わらなかった）
+function correlation(img: ImageLike, pts: Pt[], bits: Uint8Array, dx: number, dy: number, per: number): number {
+  let sl = 0;
+  let sd = 0;
+  let nl = 0;
+  let nd = 0;
+  for (let k = 0; k < pts.length; k++) {
+    const xi = Math.round(pts[k][0] + dx);
+    const yi = Math.round(pts[k][1] + dy);
+    if (xi < 0 || yi < 0 || xi >= img.width || yi >= img.height) return -Infinity;
+    const i = (yi * img.width + xi) * 4;
+    const m = Math.max(img.data[i], img.data[i + 1], img.data[i + 2]);
+    if (bits[Math.floor(k / per)]) {
+      sl += m;
+      nl++;
+    } else {
+      sd += m;
+      nd++;
+    }
+  }
+  return sl / Math.max(1, nl) - sd / Math.max(1, nd);
 }
 
 // 前のフレームのマーカー prev を img の中で追う。shift: マーカーごとに予測したずれ（前のフレームの動き）。
@@ -103,6 +129,22 @@ export function trackMarkers(
       climb();
     }
     if (best.fit < o.minFit || best.contrast < o.minContrast) continue;
+    // 位置を詰める: マスの縁の近くの点も使って、明暗の相関がいちばん大きい所へ 1 画素ずつ（マスの真ん中だけでは、数画素ずれても合ってしまう）
+    const fine = moduleCenters(m.corners, cells, true);
+    if (fine) {
+      let at = { dx: best.dx, dy: best.dy, c: correlation(img, fine, bits, best.dx, best.dy, 9) };
+      for (let it = 0; it < 6; it++) {
+        const c = at;
+        for (let dy = -1; dy <= 1; dy++)
+          for (let dx = -1; dx <= 1; dx++) {
+            if (!dx && !dy) continue;
+            const v = correlation(img, fine, bits, c.dx + dx, c.dy + dy, 9);
+            if (v > at.c) at = { dx: c.dx + dx, dy: c.dy + dy, c: v };
+          }
+        if (at === c) break;
+      }
+      best = { ...best, dx: at.dx, dy: at.dy };
+    }
     out.push({ from, id: m.id, corners: m.corners.map((v, i) => Math.round((v + (i % 2 ? best.dy : best.dx)) * 10) / 10), shift: [best.dx, best.dy] });
   }
   return out;

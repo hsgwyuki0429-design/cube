@@ -69,18 +69,13 @@ function detectMarkers(b: ArucoBench, img: PixelSource, t: number, memory: objec
   let tracked = false;
   let shifts: Pt[] = [];
   if (tr && t > tr.t && t - tr.t < TRACK_GAP_MS && t - tr.detectT < TRACK_REDETECT_MS && tr.markers.length >= TRACK_MIN) {
-    const T0 = performance.now(); // TMP
     const got = trackMarkers(img, tr.markers, (id) => b.bitsOf(id), b.cellCount, (_, k) => tr.shifts[k] ?? [0, 0]);
-    const G = globalThis as { __trk?: { n: number; ok: number; ms: number; ratio: number } }; // TMP
-    G.__trk ??= { n: 0, ok: 0, ms: 0, ratio: 0 }; // TMP
-    G.__trk.n++; G.__trk.ms += performance.now() - T0; G.__trk.ratio += got.length / tr.markers.length; // TMP
     if (got.length >= tr.detected * TRACK_KEEP) {
       const ms = got.map((g) => b.describeMarker(img, g.id, g.corners));
       const keep = ms.map((m) => m.fit >= TRACK_MIN_FIT);
       markers = ms.filter((_, k) => keep[k]);
       shifts = got.filter((_, k) => keep[k]).map((g) => g.shift);
       tracked = markers.length >= tr.detected * TRACK_KEEP;
-      if (tracked) (globalThis as { __trk?: { ok: number } }).__trk!.ok++; // TMP
       if (!tracked) markers = null;
     }
   }

@@ -154,8 +154,6 @@ it("精密解析の処理時間", async () => {
     } else for (const f of scene.frames) r.push(f.img, f.t);
     const pushMs = performance.now() - t0;
     const t1 = performance.now();
-    console.log('trk', JSON.stringify((globalThis as { __trk?: unknown }).__trk)); // TMP
-    (globalThis as { __trk?: unknown }).__trk = undefined; // TMP
     const res = r.result(scene.target);
     const resultMs = performance.now() - t1;
     const moves = res.moves.map((m) => MOVE_NAMES[m.move]).join(" ");
