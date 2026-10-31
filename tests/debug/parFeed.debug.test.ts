@@ -5,13 +5,14 @@ import { gunzipSync } from "node:zlib";
 import { it } from "vitest";
 import { STICKERS } from "../../src/aruco/design";
 import { ARUCO_REFS } from "../../src/aruco/palette";
-import { MOVE_NAMES, solvedState } from "../../src/cube/model";
+import { MOVE_NAMES, applyMoves, solvedState } from "../../src/cube/model";
 import { type DetectHint, detectWithHint, detectorFor } from "../../src/vision/arucoFrame";
 import { ParallelFeeder } from "../../src/vision/detectPool";
 import type { PixelSource } from "../../src/vision/image";
 import { StillSkipper } from "../../src/vision/motion";
 import { Refiner } from "../../src/vision/refine";
 import { loadTestOpenCv } from "../cv";
+import { profile, summarize } from "./prof";
 
 const VIEWS: Record<number, [number, number]> = { 0: [1280, 720], 1: [1280, 960], 2: [720, 1280], 3: [1280, 720], 4: [1280, 720] };
 
@@ -44,7 +45,11 @@ it("並列の精密解析", async () => {
     for (const f of frames) for (const g of still.next(f.img, f.t)) mode === "seq" ? r.push(g.img, g.t) : await feeder.push(g.img, g.t);
     await feeder.flush();
     const ms = performance.now() - t0;
-    const res = r.result(null);
-    process.stdout.write(`${mode}: ${frames.length} 枚 → 精密 ${r.frames}・検査で飛ばした ${r.gated}・手がかりなし ${fullImage}/${detects} ${ms.toFixed(0)}ms ${res.moves.map((m) => MOVE_NAMES[m.move]).join(" ")}\n`);
+    const target = process.env.ALG ? applyMoves(solvedState(), process.env.ALG) : null;
+    const p0 = performance.now();
+    const { value: res, nodes, interval } = await profile(() => r.result(target));
+    const resMs = performance.now() - p0;
+    if (process.env.PROFILE && mode === "seq") process.stdout.write(`解き直し ${resMs.toFixed(0)}ms 観測 ${r.engine.observationLog.length}\n${summarize(nodes, interval, 1, 25)}\n`);
+    process.stdout.write(`${mode}: ${frames.length} 枚 → 精密 ${r.frames}・検査で飛ばした ${r.gated}・手がかりなし ${fullImage}/${detects} ${ms.toFixed(0)}ms 解き直し ${resMs.toFixed(0)}ms ${res.moves.map((m) => MOVE_NAMES[m.move]).join(" ")}\n`);
   }
 }, 600000);

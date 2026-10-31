@@ -96,6 +96,7 @@ export class FrameRecorder {
     this.frames = 0;
     this.dropped = 0;
     this.lastKey = -Infinity;
+    this.added = [];
     return true;
   }
 
@@ -127,18 +128,32 @@ export class FrameRecorder {
     const keyFrame = t - this.lastKey > 1000;
     if (keyFrame) this.lastKey = t;
     this.encoder.encode(frame, { keyFrame });
+    this.added.push(frame.timestamp);
+    if (this.added.length > 16) this.added.shift();
     frame.close();
     this.frames++;
   }
 
-  async finish(): Promise<void> {
+  // untilMs: 解析に使うのはこの時刻まで。そこまでに圧縮に回したフレームが出てきたら、残りの圧縮（flush）を待たずに返す
+  // （ソフトウェアの圧縮では flush に 1 秒ほどかかり、止めてから確定するまでがその分遅れていた）
+  async finish(untilMs = Infinity): Promise<void> {
     if (!this.encoder || this.encoder.state !== "configured") return;
+    const needUs = this.added.filter((us) => us <= untilMs * 1000).pop();
+    if (needUs !== undefined && Number.isFinite(untilMs)) {
+      const t0 = performance.now();
+      while (performance.now() - t0 < 3000 && this.encoder.state === "configured") {
+        const last = this.chunks[this.chunks.length - 1];
+        if (last && last.timestamp >= needUs) return;
+        await new Promise((r) => setTimeout(r, 10));
+      }
+    }
     try {
       await this.encoder.flush();
     } catch {
       // 失敗しても、それまでの分は使える
     }
   }
+  private added: number[] = []; // 最近圧縮に回したフレームの時刻（µs。finish で待つ所を決める）
 
   private takenUs = -Infinity;
 

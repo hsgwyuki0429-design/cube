@@ -118,7 +118,7 @@ try {
       const ok = r.result && r.result.tracked && r.solved && r.result.timeMs > 0 && n > 5;
       const analysisOk = r.result?.analysis === "done" || process.env.E2E_ALLOW_NO_ANALYSIS;
       console.log(
-        `seed ${seed} timer: ${ok ? "OK" : "NG"} live ${(live?.timeMs / 1000).toFixed(3)}s → ${r.result?.analysis} ${(r.result?.timeMs / 1000).toFixed(3)}s (truth ≈ ${(truthMs / 1000).toFixed(3)}s, ${sol.length} moves) moves ${n} tps ${r.result?.tps.toFixed(2)} splits ${JSON.stringify(r.result?.splits?.map((x) => [x.name, x.moves]))} analysis-wait ${((Date.now() - waitFrom) / 1000).toFixed(1)}s`,
+        `seed ${seed} timer: ${ok ? "OK" : "NG"} live ${(live?.timeMs / 1000).toFixed(3)}s → ${r.result?.analysis} ${(r.result?.timeMs / 1000).toFixed(3)}s (truth ≈ ${(truthMs / 1000).toFixed(3)}s, ${sol.length} moves) moves ${n} tps ${r.result?.tps.toFixed(2)} splits ${JSON.stringify(r.result?.splits?.map((x) => [x.name, x.moves]))} analysis-wait ${((Date.now() - waitFrom) / 1000).toFixed(1)}s ${logs.filter((l) => l.includes("[analysis]")).map((l) => l.replace(/^.*\[analysis\] /, "")).join(" / ")}`,
       );
       if (process.env.E2E_VERBOSE) {
         const t0 = sol[0]?.start ?? 0;

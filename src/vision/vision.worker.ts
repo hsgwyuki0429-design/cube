@@ -195,9 +195,15 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
         // 止めた後はライブの認識が要らないので、残りの検出を並列にして早く確定する（起こしておいた Worker が読み込み終えていれば）
         s.parallel = true;
         try {
+          const t0 = performance.now();
+          const behind = s.fedUntil - s.refiner.lastT;
           await s.decoder?.flush();
           await s.pool?.feeder.flush();
-          post({ type: "refine-result", id: msg.id, result: s.refiner.result(msg.target ? Uint8Array.from(msg.target) : null) });
+          const t1 = performance.now();
+          const result = s.refiner.result(msg.target ? Uint8Array.from(msg.target) : null);
+          // 調査用: 止めた時点の遅れ・残りの処理・解き直しの時間
+          console.info(`[analysis] behind ${behind.toFixed(0)}ms rest ${(t1 - t0).toFixed(0)}ms result ${(performance.now() - t1).toFixed(0)}ms frames ${s.refiner.frames} gated ${s.refiner.gated} pool ${s.pool?.pool.size ?? 0}`);
+          post({ type: "refine-result", id: msg.id, result });
         } catch (e) {
           post({ type: "refine-error", id: msg.id, message: e instanceof Error ? e.message : String(e) });
         } finally {

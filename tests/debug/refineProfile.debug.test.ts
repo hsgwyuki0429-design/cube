@@ -5,7 +5,7 @@
 //   NOGATE=1: 精密解析の軽い検査なし（全フレームを精密に）・LIVE=1: 精密解析の代わりにライブの認識と追跡（本体のライブと同じ設定 + TrackerEngine。NOREGION=1 で切り出しなし）・DESIGN=マーカーの配置（既定は本体の STICKERS）
 // 場面（unique54・指つき）: aruco / aruco-far（キューブが大きい / 小さめ。1280×960）・
 // aruco-tall / aruco-tall-old（縦向き 720×1280 / 1080×1920 = 幅を合わせていた以前の録画）
-import { Session } from "node:inspector";
+import { profile, summarize } from "./prof";
 import { it } from "vitest";
 import { STICKERS, designOf } from "../../src/aruco/design";
 import { ARUCO_REFS } from "../../src/aruco/palette";
@@ -26,53 +26,6 @@ interface Scene {
   refiner: () => Refiner;
   target: CubeState; // 最後の状態
   truth: string; // 正しい手順
-}
-
-interface ProfNode {
-  id: number;
-  callFrame: { functionName: string; url: string; lineNumber: number };
-  hitCount: number;
-  children?: number[];
-}
-
-async function profile<T>(f: () => T): Promise<{ value: T; nodes: ProfNode[]; interval: number }> {
-  const s = new Session();
-  s.connect();
-  const post = (m: string, p?: object) => new Promise<unknown>((res, rej) => s.post(m, p ?? {}, (e, r) => (e ? rej(e) : res(r))));
-  await post("Profiler.enable");
-  await post("Profiler.setSamplingInterval", { interval: 500 });
-  await post("Profiler.start");
-  const value = f();
-  const { profile: p } = (await post("Profiler.stop")) as { profile: { nodes: ProfNode[]; startTime: number; endTime: number; samples: number[] } };
-  s.disconnect();
-  return { value, nodes: p.nodes, interval: (p.endTime - p.startTime) / 1000 / p.samples.length };
-}
-
-// 関数ごとの自分の時間と、呼んだ先を含めた時間（再帰は 1 回だけ数える）
-function summarize(nodes: ProfNode[], interval: number, frames: number, top: number): string {
-  const byId = new Map(nodes.map((n) => [n.id, n]));
-  const key = (n: ProfNode) => `${n.callFrame.functionName || "(anon)"} ${n.callFrame.url.split("/").slice(-2).join("/")}:${n.callFrame.lineNumber + 1}`;
-  const self = new Map<string, number>();
-  const total = new Map<string, number>();
-  const walk = (id: number, stack: Set<string>): number => {
-    const n = byId.get(id)!;
-    const k = key(n);
-    let sum = n.hitCount;
-    for (const c of n.children ?? []) sum += walk(c, new Set([...stack, k]));
-    self.set(k, (self.get(k) ?? 0) + n.hitCount);
-    if (!stack.has(k)) total.set(k, (total.get(k) ?? 0) + sum);
-    return sum;
-  };
-  walk(nodes[0].id, new Set());
-  const ms = (h: number) => ((h * interval) / frames).toFixed(1).padStart(6);
-  const rows = (m: Map<string, number>) =>
-    [...m.entries()]
-      .filter(([k]) => !k.startsWith("(root)") && !k.startsWith("(program)") && !k.startsWith("(idle)"))
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, top)
-      .map(([k, v]) => `${ms(v)}ms  ${k}`)
-      .join("\n");
-  return `--- 呼んだ先を含めた時間（1 フレームあたり）\n${rows(total)}\n--- 自分の時間\n${rows(self)}`;
 }
 
 function arucoScene(cv: unknown, name: string, width: number, height: number, eye: Vec3): Scene {

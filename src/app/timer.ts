@@ -283,7 +283,9 @@ async function analyzeRecording(live: LiveSpan, endT: number): Promise<void> {
   const rec = controller.recorder;
   const to = endT + POSTROLL_MS - 100;
   // インスペクションから進めてきた解析に、止めた所までの録画を渡し切り、完成の状態で解き直す
+  const a0 = performance.now();
   const pending = await controller.endAnalysis(to, solvedState(), (p) => timerStore.set({ analysisProgress: p }));
+  const a1 = performance.now();
   // 調査用（E2E テストが読む）
   const debug: { recording: unknown; result?: RefineResult } = { recording: { frames: rec.frames, dropped: rec.dropped } };
   (window as unknown as { __cubevisionAnalysis?: unknown }).__cubevisionAnalysis = debug;
@@ -295,6 +297,7 @@ async function analyzeRecording(live: LiveSpan, endT: number): Promise<void> {
   timerStore.set({ analysisStartedAt: performance.now(), analysisProgress: 0 });
   try {
     result = await pending;
+    console.info(`[analysis] main: hand-over ${(a1 - a0).toFixed(0)}ms worker ${(performance.now() - a1).toFixed(0)}ms`);
   } catch (e) {
     console.warn("refine failed", e);
     updateSolve(id, { analysis: "failed" });
