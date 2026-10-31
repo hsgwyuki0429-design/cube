@@ -36,8 +36,8 @@ export interface RefineInput {
 // （ライブ並みの認識を軽い検査にすると、精密な処理の 7 割ほどかかり、飛ばしても全体では遅くなった）
 const GATE_KEEP_MS = 200;
 const GATE_TAIL = 2;
-const CHECK_POINTS = 3;
-const CHECK_DIFF = 18; // マスの色（R・G・B の平均の差の最大）がこれより変わったら「変わった」（0..255）
+const CHECK_POINTS = 5;
+const CHECK_DIFF = 25; // マスの色（25 点の R・G・B の平均）の差の最大がこれより大きければ「変わった」（0..255）
 
 interface CellSignature {
   faces: { H: Mat3; layer?: FaceLayer; rgb: Float32Array }[]; // 面ごとに 9 マス × RGB
@@ -52,7 +52,7 @@ function cellColors(img: PixelSource, H: Mat3, layer: FaceLayer | undefined): Fl
     let n = 0;
     for (let i = 0; i < CHECK_POINTS; i++)
       for (let j = 0; j < CHECK_POINTS; j++) {
-        const [x, y] = applyH(Hc, c + 0.3 + (0.4 * (j + 0.5)) / CHECK_POINTS, r + 0.3 + (0.4 * (i + 0.5)) / CHECK_POINTS);
+        const [x, y] = applyH(Hc, c + 0.15 + (0.7 * (j + 0.5)) / CHECK_POINTS, r + 0.15 + (0.7 * (i + 0.5)) / CHECK_POINTS);
         const xi = Math.round(x);
         const yi = Math.round(y);
         if (xi < 0 || yi < 0 || xi >= img.width || yi >= img.height) return null;
