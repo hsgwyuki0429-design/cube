@@ -450,9 +450,7 @@ class Controller {
     clearInterval(session.timer);
     this.session = null;
     this.store.set({ analysis: null });
-    const f0 = performance.now();
     await this.recorder.finish(to);
-    console.info(`[analysis] recorder.finish ${(performance.now() - f0).toFixed(0)}ms`);
     this.feedAnalysis(session, to);
     this.recorder.stop();
     return this.refiner.endStream(session.id, to, target, progress);
