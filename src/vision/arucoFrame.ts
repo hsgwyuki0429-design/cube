@@ -49,7 +49,7 @@ const REGION_EDGE = 1; // 切り出しの縁からこれ（マーカーの辺の
 // 合成の 60 場面（4 個の配置）で、辺 30 画素以上なら縮めても色が正しく分かるマスは同じ（25 画素からだと 64.5 → 63.1%、
 // いつも縮めると 34%）。精密解析では縮めない: 角の位置が粗くなり、手の時刻（回し始め・回し終わり）が 50〜350ms ずれた
 // （OpenCV.js に角を元の画素で合わせ直す cornerSubPix がない）
-const SHRINK_SIDE = 32;
+const SHRINK_SIDE = 40;
 
 function detectMarkers(b: ArucoBench, img: PixelSource, t: number, memory: object, region: boolean, shrinkSide = Infinity): Marker[] {
   const prev = region ? boxes.get(memory) : undefined;
