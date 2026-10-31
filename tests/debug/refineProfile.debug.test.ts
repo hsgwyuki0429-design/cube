@@ -11,7 +11,7 @@ import { STICKERS, designOf } from "../../src/aruco/design";
 import { ARUCO_REFS } from "../../src/aruco/palette";
 import { TrackerEngine } from "../../src/track/engine";
 import { ARUCO_OBSERVER } from "../../src/track/observer";
-import { processFrame } from "../../src/vision/pipeline";
+import { frameReading, processFrame } from "../../src/vision/pipeline";
 import { type CubeState, MOVE_NAMES, type Vec3, applyMoves, parseMoves, solvedState } from "../../src/cube/model";
 import { Refiner } from "../../src/vision/refine";
 import { applyMoveStickers, renderArucoCube, solvedStickers } from "../arucoCube";
@@ -115,7 +115,7 @@ function liveRunner(cv: unknown) {
   return {
     push(img: Img, t: number) {
       const r = processFrame(cv as never, img, t, { stickers: "unique54", arucoDesign: DESIGN, arucoRegion: !process.env.NOREGION, arucoShrink: !process.env.NOSHRINK, arucoTrack: !process.env.NOTRACK }, memory);
-      engine.push({ t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, ids: f.ids })), turn: r.turn });
+      engine.push(frameReading(t, r));
     },
     result: (_: CubeState) => ({ moves: engine.decoder.bestMoves(), solved: false, inferred: 0, method: "live" }),
   };

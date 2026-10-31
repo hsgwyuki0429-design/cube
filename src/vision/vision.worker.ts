@@ -9,7 +9,7 @@ import { Refiner } from "./refine";
 import { DetectPool, ParallelFeeder, poolSize } from "./detectPool";
 import { stickerScheme } from "../aruco/codes";
 import { detectWithHint, detectorFor } from "./arucoFrame";
-import { DEFAULT_PIPELINE, type PipelineConfig, processFrame } from "./pipeline";
+import { DEFAULT_PIPELINE, type PipelineConfig, frameReading, processFrame } from "./pipeline";
 import type { FrameMessage, FromWorker, StreamPartial, ToWorker } from "./protocol";
 import type { CV } from "./image";
 import { loadOpenCv } from "./opencv";
@@ -264,7 +264,7 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
         bitmap.close();
         const img = ctx!.getImageData(0, 0, w, h);
         const result = cv ? processFrame(cv, img, msg.t, focus?.length ? { ...config, focus } : config, memory) : { faces: [], quads: [] };
-        const reading = { t: msg.t, faces: result.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, ids: f.ids })), turn: result.turn };
+        const reading = frameReading(msg.t, result);
         const track = engine?.push(reading) ?? undefined;
         if (track) focus = focusCells(track.cells, track.orient);
         let looksSolved: boolean | undefined;

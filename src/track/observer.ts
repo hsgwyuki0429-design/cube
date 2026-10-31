@@ -14,6 +14,7 @@ export interface FaceReading {
   masked?: boolean[]; // 9（手で隠れている）
   alts?: { labs: Lab[]; valid: boolean[] }[]; // 窓の位置が曖昧なとき、ずらした格子での読み
   ids?: number[]; // 9（マスごとに違う ArUco ステッカーの ID = 揃った状態での facelet 番号。-1 = 読めない）
+  shift?: ([number, number] | null)[]; // 9（読んだマーカーの本体の格子からのずれ。開始・終了時刻の判定に使う）
 }
 
 export interface FrameReading {
@@ -72,6 +73,7 @@ export class FaceObserver {
   private deltas: number[] = [];
   private lastT: number | null = null;
   emitted = 0;
+  lastWasRepeat = false; // 最後に出した観測が、前回と同じ読みの出し直しだった
 
   constructor(
     private colors: ColorModel,
@@ -97,7 +99,8 @@ export class FaceObserver {
     return Math.max(1, Math.min(8, Math.round(this.options.stableMs / Math.max(1, interval))));
   }
 
-  push(frame: FrameReading): Observation | null {
+  // repeat: 前回と同じ読みでも、安定していれば観測を出し直す（TrackerEngine の repeatMs）
+  push(frame: FrameReading, repeat = false): Observation | null {
     const labeled: Labeled = {
       t: frame.t,
       faces: frame.faces.map((f) => ({
@@ -191,6 +194,7 @@ export class FaceObserver {
     if (!faces.some((f) => f.slot === 2)) return null;
 
     const slots = faces.map((f) => f.slot).sort().join(",");
+    let sameAsLast = false;
     if (this.last) {
       const same =
         this.last.slots === slots &&
@@ -204,11 +208,13 @@ export class FaceObserver {
           for (let i = 0; i < 9; i++) if ((prev[i] < 0 && f.labels[i] >= 0) || (f.ids && f.ids[i] >= 0 && (!prevIds || prevIds[i] < 0))) gained++;
           return gained < 2;
         });
-      if (same) {
+      sameAsLast = same;
+      if (same && !repeat) {
         this.lastConsistentT = frame.t;
         return null;
       }
     }
+    this.lastWasRepeat = !!this.last && repeat && sameAsLast;
     const t = this.frames[0].t;
     const tPrevEnd = this.last ? Math.min(this.lastConsistentT, t) : t;
     this.last = { slots, faces: new Map(faces.map((f) => [f.slot, f.labels])), ids: new Map(faces.map((f) => [f.slot, f.ids ?? null])) };

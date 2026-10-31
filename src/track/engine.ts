@@ -18,7 +18,15 @@ export interface EngineOptions {
   keepObservations?: boolean; // 観測をすべて残す（ソルブ後の再構成で、前後両方向から解き直すため）
   maxObservations?: number; // 残す観測の数の上限（リアルタイムの追跡で、精密解析への乗り換えに使う分だけ）
   personal?: number[][]; // 自分のソルブの手順（手順の知識に加える）
+  // 最良の仮説でも観測と合わない（コスト REPEAT_COST 以上）まま同じ読みが続いたら、この間隔で観測を出し直す（0 で出し直さない）。
+  // 観測は読みが変わったときしか出ないので、見えにくい面の少しのマスでしか分からない手（1 手のコストと手順の知識の上乗せより
+  // 矛盾が少し安い）を、いつまでも足さなかった。誤読は長く続かないが、本当の変化は続くので、続いた分だけ矛盾を重ねる。
+  // 精密解析は全部の観測をまとめて解き直すので使わない
+  repeatMs?: number;
 }
+
+const REPEAT_COST = 0.8;
+const MAX_REPEATS = 2; // 同じ読みで出し直す回数の上限（指で隠れたままの誤読を重ねすぎない）
 
 export interface TrackUpdate {
   status: TrackStatus;
@@ -130,9 +138,13 @@ export class TrackerEngine {
     this.logMs = options.logMs ?? 12000;
     this.keepObservations = !!options.keepObservations;
     this.maxObservations = options.maxObservations ?? Infinity;
+    this.repeatMs = options.repeatMs ?? 250;
     if (options.personal?.length && this.decoder.prior) this.decoder.prior = movePrior(options.personal);
   }
   private maxObservations: number;
+  private repeatMs: number;
+  private lastObsT = -Infinity;
+  private repeats = 0;
 
   setOptions(options: Partial<EngineOptions>): void {
     if (options.decoder) this.decoder.setOptions(options.decoder);
@@ -167,11 +179,15 @@ export class TrackerEngine {
   }
 
   push(frame: FrameReading): TrackUpdate | null {
-    this.frames.push({ t: frame.t, faces: frame.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, spread: f.spread, masked: f.masked })) });
+    this.frames.push({ t: frame.t, faces: frame.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, spread: f.spread, masked: f.masked, shift: f.shift, ids: f.ids })) });
     while (this.frames.length && frame.t - this.frames[0].t > this.logMs) this.frames.shift();
     this.collectTurn(frame);
-    const obs = this.observer.push(frame);
+    const repeat = this.repeatMs > 0 && this.repeats < MAX_REPEATS && this.decoder.lastObservationCost >= REPEAT_COST && frame.t - this.lastObsT >= this.repeatMs;
+    const obs = this.observer.push(frame, repeat);
     if (!obs) return null;
+    // 出し直し（読みが前と同じ）かどうか: 観測器が新しい読みとして出したら数え直す
+    this.repeats = repeat && this.observer.lastWasRepeat ? this.repeats + 1 : 0;
+    this.lastObsT = frame.t;
     // 前の観測からの間に回転途中の形で見えた層の回転を、この観測に付ける（見え方が落ち着いた = 回し終わった）
     this.finishTurn();
     if (this.turnHints.length) obs.turns = this.turnHints;

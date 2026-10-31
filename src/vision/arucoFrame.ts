@@ -15,7 +15,7 @@ import { STANDARD_DESIGN, type StickerDesign, designOf } from "../aruco/design";
 import { ARUCO_REFS } from "../aruco/palette";
 import { type RereadMemory, rereadFaces } from "../aruco/reread";
 import type { Lab } from "./color";
-import { type Mat3, type Pt, invertH } from "./homography";
+import { type Mat3, type Pt, applyH, invertH } from "./homography";
 import type { DetectedFace, FrameResult } from "./pipeline";
 import type { CV } from "./image";
 import type { PixelSource } from "./image";
@@ -203,8 +203,9 @@ export function processAruco(
     tracker.update(t, r.faces, null, (slot, cell) => skinFraction(img, cellH(bySlot.get(slot)!, cell), cell) > 0.15);
   }
   const turn = tr ? turnSnapshot(tr, t, memory) : undefined;
+  const shifts = scheme === "unique54" ? r.faces.map((f) => cellShifts(f, markers, design)) : null;
   const quads: Pt[][] = markers.map((m) => [0, 1, 2, 3].map((i) => [m.corners[i * 2], m.corners[i * 2 + 1]] as Pt));
-  const faces: DetectedFace[] = r.faces.map((f) => {
+  const faces: DetectedFace[] = r.faces.map((f, fi) => {
     const known = f.colors.map((c) => c >= 0);
     return {
       slot: f.slot,
@@ -218,11 +219,14 @@ export function processAruco(
       valid: known,
       // 読みの確からしさ（マーカーの fit。読み直したマスは少し弱い: src/aruco/reread.ts）
       weight: f.conf,
-      masked: new Array(9).fill(false),
+      // 指で隠れている: マーカーが読めず、マスに肌らしい色が多い（手の時刻の判定に使わない。指が横切ってマーカーが読めなくなったのを
+      // 層の動き出しと取り違えないように）。マーカーが読めたマスは隠れていない
+      masked: Array.from({ length: 9 }, (_, cell) => (shifts ? !shifts[fi][cell] && skinFraction(img, cellH(f, cell), cell) > FINGER_SKIN : false)),
       // 1 列・1 枚の面: 色は使うが、外枠は推定なので 3D の傾き（estimatePose）には使わない
       held: !!f.partial,
       ...(f.ids.some((id) => id >= 0) ? { ids: f.ids } : {}),
       ...(f.layer ? { layer: f.layer } : {}),
+      ...(shifts ? { shift: shifts[fi] } : {}),
     };
   });
   // 普通のステッカーと同じく正面（スロット 2）を先頭に。面があれば必ず正面がある（reconstructFaces の frontAlways）
@@ -230,6 +234,46 @@ export function processAruco(
   if (!front) return { faces: [], quads, turn };
   return { faces: [front, ...faces.filter((f) => f !== front)], quads, turn };
 }
+
+// マスごとの、読んだマーカーの本体の格子（f.H）からのずれ（面の座標 = マスの間隔 1。読めなければ null）。層が回り始めると、
+// 層の側面のマスのマーカーは数度でも格子から動く。マーカーから組み立てた面の色は代表色なので、色の読みでは ID が読めている間は
+// 変わらず、手の時刻（src/track/timing.ts）の回し始めが回し終わり近くまで遅れていた。マーカーごとにステッカーの中の決まった位置
+// （design.at）からのずれにするので、指で一部のマーカーが隠れても値は変わらない
+function cellShifts(f: VisibleFace, markers: Marker[], design: StickerDesign): (Pt | null)[] {
+  const out: (Pt | null)[] = new Array(9).fill(null);
+  const cellOf = new Map<number, number>();
+  f.ids.forEach((id, cell) => id >= 0 && cellOf.set(id, cell));
+  if (!cellOf.size || !f.marker) return out;
+  const inv = invertH(f.H);
+  const sticker = f.marker / VIRTUAL_SIDE;
+  const sum = Array.from({ length: 9 }, () => [0, 0, 0]);
+  for (const m of markers) {
+    const cell = cellOf.get(m.id);
+    if (cell === undefined) continue;
+    let cx = 0;
+    let cy = 0;
+    for (let i = 0; i < 4; i++) {
+      cx += m.corners[i * 2] / 4;
+      cy += m.corners[i * 2 + 1] / 4;
+    }
+    const [u, v] = applyH(inv, cx, cy);
+    const lx = u - ((cell % 3) + 0.5);
+    const ly = v - (Math.floor(cell / 3) + 0.5);
+    let best: Pt | null = null;
+    for (const [ax, ay] of design.at) {
+      const d: Pt = [lx - (ax - 0.5) * sticker, ly - (ay - 0.5) * sticker];
+      if (!best || Math.hypot(...d) < Math.hypot(...best)) best = d;
+    }
+    if (!best || Math.hypot(...best) > 0.45) continue;
+    sum[cell][0] += best[0];
+    sum[cell][1] += best[1];
+    sum[cell][2]++;
+  }
+  for (let c = 0; c < 9; c++) if (sum[c][2]) out[c] = [sum[c][0] / sum[c][2], sum[c][1] / sum[c][2]];
+  return out;
+}
+const FINGER_SKIN = 0.15; // 肌らしい色の点の割合がこれを超えたら指で隠れている（ID なし追跡と同じ）
+const VIRTUAL_SIDE = 0.84; // マーカーの辺 / ステッカーの辺（今の配置。4 個の配置の仮想のマーカーも同じ: src/aruco/cube.ts の virtualMarkers）
 
 // 回転途中の形状認識: 回している層と角度を求める（本体の姿勢は前のフレームのものも候補に入れる）
 function recognizeTurnFor(markers: Marker[], faces: VisibleFace[], img: PixelSource, t: number, memory: object, design: StickerDesign): TurnResult {

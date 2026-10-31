@@ -146,6 +146,13 @@ function firstAfter(frames: PatchFrame[], t: number): number {
   return lo;
 }
 
+// フレームの間隔: k の前後で最も短いもの（精密解析の軽い検査で飛ばしたフレームの所は間が空くので、そこで測ると大きすぎる）
+function frameStep(frames: PatchFrame[], k: number): number {
+  let step = Infinity;
+  for (let i = Math.max(1, k - 4); i <= Math.min(frames.length - 1, k + 4); i++) step = Math.min(step, frames[i].t - frames[i - 1].t);
+  return Number.isFinite(step) && step > 0 ? step : 33;
+}
+
 const MIN_SIGNAL = 6; // 回転途中の差がこれより小さければ（見えにくい層）詰めない
 const FRACTION = 0.08; // 回転途中の差のこの割合を超えたら動いている
 const BASE_GAP_MS = 80; // 基準の静止フレームを、色の読みの開始・終了からこれだけ離す（近すぎると動き始めを含み、遠すぎるとキューブ全体の動きが混ざる）
@@ -189,7 +196,7 @@ export function refineStart(frames: PatchFrame[], m: DecodedMove, coarse: number
   }
   const start = (frames[j - 1].t + frames[j].t) / 2;
   // 色の読みより遅くはならず、早くても 3 フレームまで（それ以上は別の動きを拾っている）
-  if (start > coarse + 1 || frames[k].t - start > 3.5 * (frames[k].t - frames[k - 1].t)) return null;
+  if (start > coarse + 1 || frames[k].t - start > 3.5 * frameStep(frames, k)) return null;
   return start;
 }
 
@@ -225,6 +232,6 @@ export function refineEnd(frames: PatchFrame[], m: DecodedMove, coarse: number, 
   if (j + 1 < b && layerMotion(base, frames[j + 1], m.orient, face, refs) === null) return null;
   const end = (frames[j].t + frames[j + 1].t) / 2;
   // 色の読みより早くはならず、遅くても 3 フレームまで
-  if (end < coarse - 1 || end - frames[e - 1].t > 3.5 * (frames[e].t - frames[e - 1].t)) return null;
+  if (end < coarse - 1 || end - frames[e - 1].t > 3.5 * frameStep(frames, e)) return null;
   return end;
 }

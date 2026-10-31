@@ -9,7 +9,7 @@ import type { DecodedMove, TrackStatus } from "../track/types";
 import type { Lab } from "./color";
 import { type PatchFrame, facePatch, refineEnd, refineStart } from "./fineTiming";
 import type { CV, PixelSource } from "./image";
-import { DEFAULT_PIPELINE, type PipelineConfig, processFrame } from "./pipeline";
+import { DEFAULT_PIPELINE, type PipelineConfig, frameReading, processFrame } from "./pipeline";
 import { type FaceLayer, cellH } from "../aruco/cube";
 import type { Marker } from "../aruco/detect";
 import { type DetectHint, detectHint } from "./arucoFrame";
@@ -161,6 +161,7 @@ export class Refiner {
       decoder: { ...opts.decoder, ...REFINE_ENGINE.decoder },
       logMs: Infinity,
       keepObservations: true,
+      repeatMs: 0,
     }, input.orients);
     // ソルブ後の解析は時間をかけてよいので、二値化の窓を細かく試し、読めなかったマスは全部読み直す。
     // 直前のフレームのマーカーの周りだけで検出する（縁の近くに見つかったら全体でやり直す）
@@ -234,7 +235,7 @@ export class Refiner {
   full(img: PixelSource, t: number, detected?: Marker[]): void {
     const r = processFrame(this.cv, img, t, this.config, this.memory, detected);
     this.ref = signatureOf(img, r.faces);
-    const reading = { t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, ids: f.ids })), turn: r.turn };
+    const reading = frameReading(t, r);
     this.engine.push(reading);
     this.looks.push({ t, solved: reading.faces.length > 0 && this.engine.looksSolved(reading) });
     this.patches.push({ t, faces: r.faces.map((f) => facePatch(img, { ...f, labs: f.labs })) });
@@ -295,39 +296,65 @@ export class Refiner {
     }
     this.method = off.method;
     // 分かれて読まれた手をまとめ、打ち消し合う手（回転途中の見え方・指の誤読から出た雑音）を除く。状態は変わらない
+    const raw = moves;
     moves = simplifyMoves(moves);
-    const timed = moves.map((m) => {
+    const timeOf = <T extends DecodedMove>(m: T) => {
       const tm = this.engine.timing(m);
-      return { ...m, start: tm?.start ?? m.t0 ?? m.t, end: tm?.end ?? m.t, exact: !!tm?.exact };
-    });
+      return { ...m, start: tm?.start ?? m.t0 ?? m.t, end: tm?.end ?? m.t, exact: !!tm?.exact, endExact: !!tm?.endExact, moved: !!tm?.moved };
+    };
+    const timed = moves.map(timeOf);
     // タイムの両端は画素の差で詰める（色の読みより早く動きを拾える）
     const first = timed[0];
     const last = timed[timed.length - 1];
+    // まとめる前の端の手: 打ち消し合って消えた手（F2 B2 F2 → B2 の最後の F2）も実際に回しているので、タイムはその手の端まで。
+    // 層が見えて時刻をフレームから決められた手だけ（見えなければ誤読の雑音かもしれないので、まとめた後の端の手のまま）
+    let rawStart = false;
+    let rawEnd = false;
+    if (first && raw[0] && raw[0] !== moves[0] && !raw[0].inferred) {
+      const r = timeOf(raw[0]);
+      if (r.exact && r.start < first.start) {
+        Object.assign(first, { start: refineStart(this.patches, r, r.start, this.engine.colors.refs) ?? r.start, exact: true });
+        rawStart = true;
+      }
+    }
+    if (last && raw.length && raw[raw.length - 1] !== moves[moves.length - 1] && !raw[raw.length - 1].inferred) {
+      const r = timeOf(raw[raw.length - 1]);
+      if (r.exact && r.endExact && r.end > last.end) {
+        Object.assign(last, { end: refineEnd(this.patches, r, r.end, this.engine.colors.refs) ?? r.end, endExact: true });
+        rawEnd = true;
+      }
+    }
     let endUncertain = !!last?.inferred;
     // 最初の観測から既にスクランブルの状態と違う（解析の範囲より前に回し始めていた）: 開始は録画から決められない
     const firstObs = this.engine.observationLog.find((o) => o.faces.length);
     const beforeWindow = !!first && !!firstObs && (first.t0 ?? first.t) <= firstObs.t;
     const refs = this.engine.colors.refs;
     // 色の読みで静止フレームが見つからなかった（指で層が隠れていた）ときも、観測の時刻を手がかりに画素の差で探す
-    if (first && !first.inferred) first.start = refineStart(this.patches, first, first.start, refs) ?? first.start;
-    if (last && !last.inferred) last.end = refineEnd(this.patches, last, last.end, refs) ?? last.end;
+    if (first && !first.inferred && !rawStart) {
+      const s = refineStart(this.patches, first, first.start, refs);
+      if (s !== null) Object.assign(first, { start: s, exact: true });
+    }
+    if (last && !last.inferred && !rawEnd) {
+      const e = refineEnd(this.patches, last, last.end, refs);
+      if (e !== null) Object.assign(last, { end: e, endExact: true });
+    }
     // 最初（最後）にある同じ軸の手のまとまりに両方の面の手があれば（D' U' など）、反対の面の層の動きも見る。
     // 同じ軸の手は順番を入れ替えても同じ状態になるので、間の状態が見えない（速い・指で隠れた）と「U D' U2」が
     // 「D' U'」と読まれ、本当は先に動いた U の層を見落とす。まとまりに反対の面の手がなければ、その層は動いていない
-    if (first && !first.inferred && bothFacesAt(timed, 0, 1)) {
+    if (first && !first.inferred && !rawStart && bothFacesAt(timed, 0, 1)) {
       const o = this.opposite(first);
       const tm = this.engine.timing(o);
       if (tm?.moved) {
         const s = refineStart(this.patches, o, tm.start, refs) ?? tm.start;
-        if (s < first.start && s > first.start - OPPOSITE_WINDOW_MS) first.start = s;
+        if (s < first.start && s > first.start - OPPOSITE_WINDOW_MS) Object.assign(first, { start: s, exact: true });
       }
     }
-    if (last && !last.inferred && bothFacesAt(timed, timed.length - 1, -1)) {
+    if (last && !last.inferred && !rawEnd && bothFacesAt(timed, timed.length - 1, -1)) {
       const o = this.opposite(last);
       const tm = this.engine.timing(o);
       if (tm?.moved) {
         const e = refineEnd(this.patches, o, tm.end, refs) ?? tm.end;
-        if (e > last.end && e < last.end + OPPOSITE_WINDOW_MS) last.end = e;
+        if (e > last.end && e < last.end + OPPOSITE_WINDOW_MS) Object.assign(last, { end: e, endExact: true });
       }
     }
     if (last?.inferred && solved) {
@@ -353,8 +380,10 @@ export class Refiner {
       inferred: merged.filter((m) => m.inferred).length,
       forced,
       method: this.method,
-      startUncertain: !!first?.inferred || beforeWindow,
-      endUncertain,
+      // 端の手の層が見えず、時刻をフレームから決められなかった（観測の時刻のまま）ときも不確か。見えない層（低く構えて U・B が
+      // 写らないなど）の手は、観測の時刻が数百 ms ずれることがある
+      startUncertain: !!first?.inferred || beforeWindow || !first?.exact,
+      endUncertain: endUncertain || (!!last && !last.inferred && !last.endExact),
       raw: timed.map((m) => ({ move: m.move, t0: m.t0, t: m.t, start: m.start, end: m.end, inferred: m.inferred })),
     };
   }

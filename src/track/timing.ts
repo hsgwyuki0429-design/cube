@@ -16,6 +16,8 @@ export interface LoggedFace {
   valid: boolean[];
   spread?: number[];
   masked?: boolean[]; // 手で隠れている（判定に使わない）
+  shift?: ([number, number] | null)[]; // 読んだマーカーの本体の格子からのずれ（マスの間隔 = 1。src/vision/arucoFrame.ts の cellShifts）
+  ids?: number[]; // 読んだステッカー（-1 = 読めない）
 }
 
 export interface LoggedFrame {
@@ -31,10 +33,26 @@ export interface TimingOptions {
   // 動き出しを探すのは、前の見え方が最後に確認できた時刻（t0）からこれだけ前まで。層が回り始めても 20〜30° までは
   // 前の見え方のままなので、本当の開始は t0 の少し前にある（それより前の変化は指の動きなど）
   onsetWindowMs: number;
+  shiftDelta: number; // 読んだマーカーの本体の格子からのずれ（LoggedFace.shift）がこれ以上変わったら動いた（マスの間隔 = 1）
   refs?: Lab[]; // キューブの 6 色。分かっていれば、どの色からも遠いセル（指・手）を判定に使わない
 }
 
-export const DEFAULT_TIMING: TimingOptions = { restSpread: 22, onsetDelta: 9, searchMs: 450, endAfterMs: 200, onsetWindowMs: 150 };
+// onsetWindowMs: ArUco の面の色は代表色なので、層が回り始めても ID が読めている（格子に追従する・ID なし追跡と色で補う）間は前の見え方の
+// ままで、t0 が回し終わり近くになる。回転の長さ（遅い手で 300ms ほど）より長く遡る（止まっていたフレームを見つけたらそこで止める）
+export const DEFAULT_TIMING: TimingOptions = { restSpread: 22, onsetDelta: 9, searchMs: 450, endAfterMs: 200, onsetWindowMs: 350, shiftDelta: 0.18 };
+
+type Shift = [number, number] | null | undefined;
+// 比べるフレームが離れている（精密解析の軽い検査で間を飛ばした）ほど、キューブ全体の動きで見え方が変わり、格子からのずれも揺れる
+// （奥の斜めの面で 200ms 離れると 0.13 ほど）。離れた分だけ動いたとみなすずれを大きくする
+function shiftLimit(gapMs: number, opts: TimingOptions): number {
+  return opts.shiftDelta * (1 + Math.max(0, gapMs - 50) / 150);
+}
+// マーカーが動いた: 隣のフレーム（基準）で読めていたマーカーが読めない、またはずれが shiftDelta 以上変わった
+function shiftMoved(a: Shift, ref: Shift, opts: TimingOptions, gapMs: number): boolean {
+  if (!ref) return false;
+  if (!a) return true;
+  return Math.hypot(a[0] - ref[0], a[1] - ref[1]) >= shiftLimit(gapMs, opts);
+}
 
 const dot = (a: number[], b: number[]) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 
@@ -70,17 +88,35 @@ const labDist = (a: Lab, b: Lab) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - 
 // セルが止まっているか: 隣のフレーム（near）と色もセル内のばらつきもほぼ同じ。隣と比べられなければ、ばらつきが小さいこと。
 // 映り込みでばらつきが常に大きいセルも、隣と同じなら止まっている。回り始めの 1 フレームは色の動きが小さくても
 // ばらつきが大きく変わる（サンプル点が隙間や隣のステッカーにかかる）ので、それも動きとみなす
-function cellStill(f: LoggedFace, cell: number, near: LoggedFace | undefined, opts: TimingOptions): boolean {
-  if (!f.valid[cell]) return false;
+// マーカーのずれがある（ArUco の）フレームでは、マーカーで決める: 両方で読めて動いていなければ止まっている、動いたなら動いている、
+// 片方だけで読めたら「見失った」（回している途中のぶれ・小さいマーカーの読み落とし）、どちらでも読めなければ分からない（null）。
+// マーカーが読めないマスの色は色で補った・ID なし追跡で引き継いだもので、回している途中でも前の色のままなので、止まっている証拠に
+// ならない（回し終わりが早く出ていた）
+const STILL = 1;
+const MOVED = 0;
+const LOST = -1;
+function cellState(f: LoggedFace, cell: number, near: LoggedFace | undefined, opts: TimingOptions, gapMs = 0): number | null {
+  if (f.shift) {
+    // 隣のフレームと比べられなければ分からない（回している途中に 1 枚だけ読めたマーカーを、止まっていると取り違えないように）
+    if (!near || !near.shift || near.masked?.[cell]) return null;
+    const a = f.shift[cell];
+    const b = near.shift[cell];
+    if (!a && !b) return null;
+    if (!a || !b) return LOST;
+    return Math.hypot(a[0] - b[0], a[1] - b[1]) < shiftLimit(gapMs, opts) && (f.spread?.[cell] ?? 0) <= opts.restSpread ? STILL : MOVED;
+  }
+  if (!f.valid[cell]) return MOVED;
   const s = f.spread?.[cell] ?? 0;
-  if (!near || !near.valid[cell] || near.masked?.[cell]) return s <= opts.restSpread;
-  return labDist(f.labs[cell], near.labs[cell]) <= opts.onsetDelta && Math.abs(s - (near.spread?.[cell] ?? 0)) <= opts.restSpread / 2;
+  if (!near || !near.valid[cell] || near.masked?.[cell]) return s <= opts.restSpread ? STILL : MOVED;
+  return labDist(f.labs[cell], near.labs[cell]) <= opts.onsetDelta && Math.abs(s - (near.spread?.[cell] ?? 0)) <= opts.restSpread / 2 ? STILL : MOVED;
 }
 
 // 層のセルのうち、見えている数と止まっている数（見えていなければ null）。near は比べる隣のフレーム（前か後）
-function layerStill(frame: LoggedFrame, orient: number, face: number, opts: TimingOptions, near?: LoggedFrame): { seen: number; still: number } | null {
+function layerStill(frame: LoggedFrame, orient: number, face: number, opts: TimingOptions, near?: LoggedFrame): { seen: number; still: number; moved: number; lost: number } | null {
   let seen = 0;
   let still = 0;
+  let moved = 0;
+  let lost = 0;
   for (const f of frame.faces) {
     const n = near?.faces.find((x) => x.slot === f.slot);
     for (let cell = 0; cell < 9; cell++) {
@@ -88,18 +124,25 @@ function layerStill(frame: LoggedFrame, orient: number, face: number, opts: Timi
       if (f.masked?.[cell]) continue;
       // 指が乗っている（キューブの色でない）セルは、止まっているかどうかの判断に使わない
       if (f.valid[cell] && !cubeLike(f.labs[cell], opts.refs)) continue;
+      const s = cellState(f, cell, n, opts, near ? Math.abs(frame.t - near.t) : 0);
+      if (s === null) continue;
       seen++;
-      if (cellStill(f, cell, n, opts)) still++;
+      if (s === STILL) still++;
+      else if (s === MOVED) moved++;
+      else lost++;
     }
   }
-  return seen ? { seen, still } : null;
+  return seen ? { seen, still, moved, lost } : null;
 }
 
 // true: 層が止まっている / false: 動いている / null: 層が見えていない
 export function layerAtRest(frame: LoggedFrame, orient: number, face: number, opts: TimingOptions = DEFAULT_TIMING, near?: LoggedFrame): boolean | null {
   // 指先の縁や反射が1枚にかかり続けても判定できるよう、層のセルの 3/4 以上が止まっていれば止まっているとみなす
+  // マーカーを見失ったマスは動いた証拠としては弱い（小さいマーカーは止まっていても読み落とす）: 動いたマスがなく、見失ったのが
+  // 半分までなら止まっている。回している層は、読めたマーカーが動くか、ぶれて全部読めなくなる
   const r = layerStill(frame, orient, face, opts, near);
-  return r ? r.still >= Math.ceil(r.seen * 0.75) : null;
+  if (!r) return null;
+  return r.still >= Math.ceil(r.seen * 0.75) || (r.moved === 0 && r.still > 0 && r.lost * 2 <= r.seen);
 }
 
 function indexAtOrBefore(frames: LoggedFrame[], t: number): number {
@@ -119,21 +162,44 @@ function indexAtOrBefore(frames: LoggedFrame[], t: number): number {
 export interface MoveTiming {
   start: number;
   end: number;
-  exact: boolean; // 層が見えていてフレームから決められた
+  exact: boolean; // 開始を、層が見えていてフレームから決められた
+  endExact: boolean; // 終了を、層が止まって見えたフレームから決められた（見えていなければ観測の時刻のまま）
   moved: boolean; // 層が動き出したフレームを見つけた（exact でも、静止の終わりしか分からないことがある）
 }
 
 export function moveTiming(frames: LoggedFrame[], m: DecodedMove, opts: TimingOptions = DEFAULT_TIMING): MoveTiming {
   const t0 = m.t0 ?? m.t;
-  const fallback = { start: t0, end: m.t, exact: false, moved: false };
+  const fallback = { start: t0, end: m.t, exact: false, endExact: false, moved: false };
   if (!frames.length || m.inferred) return fallback;
   const face = moveFace(m.move);
   // 開始: t0 から遡って、層が止まっていた最後のフレーム
   let i = indexAtOrBefore(frames, t0);
   if (i < 0) return fallback;
   let restIdx = -1;
+  // 回した後のステッカー（観測の時刻から少しの間に読めたもの）。t0 が回し終わりより後のこともあるので、層の側面のマスに
+  // 回した後と同じステッカーが見えている「止まっている」フレームは回し終わった後のもので、回し始めの前の静止ではない
+  const post = new Map<string, number>();
+  for (let k = Math.max(0, indexAtOrBefore(frames, m.t)); k < frames.length && frames[k].t <= m.t + 100; k++)
+    for (const f of frames[k].faces)
+      f.ids?.forEach((id, cell) => {
+        const key = `${f.slot}:${cell}`;
+        if (id >= 0 && !post.has(key) && cellInLayer(m.orient, f.slot, cell, face)) post.set(key, id);
+      });
+  const afterMove = (k: number) => {
+    let same = 0;
+    let diff = 0;
+    for (const f of frames[k].faces)
+      f.ids?.forEach((id, cell) => {
+        const p = post.get(`${f.slot}:${cell}`);
+        if (id < 0 || p === undefined) return;
+        if (id === p) same++;
+        else diff++;
+      });
+    return same > diff;
+  };
   for (let k = i; k >= 0 && frames[k].t >= t0 - opts.onsetWindowMs; k--) {
     const r = layerAtRest(frames[k], m.orient, face, opts, frames[k - 1]);
+    if (r === true && afterMove(k)) continue;
     if (r === true) {
       restIdx = k;
       break;
@@ -146,20 +212,20 @@ export function moveTiming(frames: LoggedFrame[], m: DecodedMove, opts: TimingOp
     // 動き出し: 静止していたフレームを基準に、層のセル（その時点で止まっていたもの）のどれかが
     // 変わり始めた最初のフレーム。少しの回転でもサンプルの色が動くので、ばらつきより早く分かる
     const base = frames[restIdx];
-    const ref = new Map<string, { lab: Lab; spread: number }>();
+    const ref = new Map<string, { lab: Lab; spread: number; shift: Shift }>();
     for (const f of base.faces) {
       const n = frames[restIdx - 1]?.faces.find((x) => x.slot === f.slot);
       for (let cell = 0; cell < 9; cell++) {
         if (!cellInLayer(m.orient, f.slot, cell, face) || f.masked?.[cell]) continue;
-        if (!cellStill(f, cell, n, opts) || !cubeLike(f.labs[cell], opts.refs)) continue;
-        ref.set(`${f.slot}:${cell}`, { lab: f.labs[cell], spread: f.spread?.[cell] ?? 0 });
+        if (cellState(f, cell, n, opts, frames[restIdx - 1] ? base.t - frames[restIdx - 1].t : 0) !== STILL || !cubeLike(f.labs[cell], opts.refs)) continue;
+        ref.set(`${f.slot}:${cell}`, { lab: f.labs[cell], spread: f.spread?.[cell] ?? 0, shift: f.shift?.[cell] });
       }
     }
-    // 指がセルの上を横切っただけで「動き出した」としないよう、層のセルが 2 つ以上（基準が少なければ 1 つ）
+    // 指がセルの上を横切っただけで「動き出した」としないよう、層のセルが 2 つ以上（基準が 1 つなら 1 つ）
     // 変わり、次に比べられるフレームでも変わったままのときだけ動き出しとする。
     // 変わった = 読めない・色が動いた・ばらつきが静止時から大きく変わった（映り込みのあるセルは静止時から大きい）
-    const need = ref.size >= 3 ? 2 : 1;
-    const changedAt = (k: number): number | null => {
+    const need = ref.size >= 2 ? 2 : 1;
+    const changedAt = (k: number): { changed: number; compared: number } | null => {
       let changed = 0;
       let compared = 0;
       for (const f of frames[k].faces)
@@ -169,27 +235,34 @@ export function moveTiming(frames: LoggedFrame[], m: DecodedMove, opts: TimingOp
           compared++;
           const s = f.spread?.[cell] ?? 0;
           const spreadMoved = s > Math.max(opts.restSpread, r.spread + opts.restSpread / 2) || s < r.spread - opts.restSpread / 2;
-          if (!f.valid[cell] || spreadMoved || labDist(f.labs[cell], r.lab) > opts.onsetDelta) changed++;
+          if (!f.valid[cell] || spreadMoved || shiftMoved(f.shift?.[cell], r.shift, opts, frames[k].t - base.t) || labDist(f.labs[cell], r.lab) > opts.onsetDelta) changed++;
         }
-      return compared ? changed : null;
+      return compared ? { changed, compared } : null;
+    };
+    // n 個以上（比べられたマスが n より少なければその全部）変わったか。比べられなければ null（指で隠れたマスは比べない）
+    const enough = (k: number, n: number): boolean | null => {
+      const c = changedAt(k);
+      return c ? c.changed >= Math.min(n, c.compared) : null;
     };
     let onset = -1;
     for (let k = restIdx + 1; k < frames.length && frames[k].t <= m.t; k++) {
-      if ((changedAt(k) ?? 0) < need) continue;
+      if (!enough(k, need)) continue;
       // 次に層が見えるフレーム（指で隠れたフレームは飛ばす）
-      let next: number | null = null;
-      for (let j = k + 1; j < frames.length && frames[j].t <= m.t + opts.searchMs && next === null; j++) next = changedAt(j);
-      if (next !== null && next < need) continue;
+      let next: boolean | null = null;
+      for (let j = k + 1; j < frames.length && frames[j].t <= m.t + opts.searchMs && next === null; j++) next = enough(j, need);
+      if (next === false) continue;
       onset = k;
       break;
     }
     if (onset > 0) {
       // 回り始めの 1〜2 フレームは、変わるセルが 1 つだけのことがある（少し回っただけ）。確かめた動き出しから、
-      // 層が見えるフレームを 2 つまで遡り、1 つでも変わっていればそこを動き出しとする
+      // 層が見えるフレームを 2 つまで遡り、1 つでも変わっていればそこを動き出しとする。マーカーの位置で見るときは、層は
+      // 一緒に動くので動き出しと同じ数（遠い・斜めの面のマーカーは 1 つだけなら止まっていても揺れる）
+      const backNeed = frames[onset].faces.some((f) => f.shift) ? need : 1;
       let prev = onset - 1;
       for (let steps = 0; steps < 2; ) {
         while (prev > restIdx && changedAt(prev) === null) prev--;
-        if (prev <= restIdx || (changedAt(prev) ?? 0) < 1) break;
+        if (prev <= restIdx || !enough(prev, backNeed)) break;
         onset = prev--;
         steps++;
       }
@@ -206,6 +279,7 @@ export function moveTiming(frames: LoggedFrame[], m: DecodedMove, opts: TimingOp
   // 観測から endAfterMs を過ぎてから動き始めたように見えるのは指などなので使わない。回転の間ずっと層が隠れていたら、
   // 観測の時刻と、その後はじめて止まって見えたフレームの中間（離れすぎていれば観測の時刻のまま）
   let end = m.t;
+  let endExact = false;
   i = restIdx >= 0 ? restIdx + 1 : Math.max(0, indexAtOrBefore(frames, t0));
   let lastMoving = -1;
   const restAt = (k: number) => layerAtRest(frames[k], m.orient, face, opts, frames[k + 1]);
@@ -227,11 +301,15 @@ export function moveTiming(frames: LoggedFrame[], m: DecodedMove, opts: TimingOp
       if (lastMoving >= 0) lastMoving = k;
     } else if (r === true && lastMoving >= 0 && frames[k].t >= start) {
       end = (frames[lastMoving].t + frames[k].t) / 2;
+      endExact = true;
       break;
     } else if (r === true && lastMoving < 0 && frames[k].t >= m.t) {
-      if (frames[k].t - m.t <= opts.endAfterMs) end = (m.t + frames[k].t) / 2;
+      if (frames[k].t - m.t <= opts.endAfterMs) {
+        end = (m.t + frames[k].t) / 2;
+        endExact = true;
+      }
       break;
     }
   }
-  return { start, end: Math.max(start, end), exact, moved };
+  return { start, end: Math.max(start, end), exact, endExact, moved };
 }
