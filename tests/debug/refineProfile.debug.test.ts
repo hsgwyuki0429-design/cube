@@ -115,7 +115,7 @@ function liveRunner(cv: unknown) {
   const memory = {};
   return {
     push(img: Img, t: number) {
-      const r = processFrame(cv as never, img, t, { stickers: "unique54", arucoDesign: DESIGN, arucoRegion: !process.env.NOREGION, arucoShrink: !process.env.NOSHRINK }, memory);
+      const r = processFrame(cv as never, img, t, { stickers: "unique54", arucoDesign: DESIGN, arucoRegion: !process.env.NOREGION, arucoShrink: !process.env.NOSHRINK, arucoTrack: !process.env.NOTRACK }, memory);
       engine.push({ t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, ids: f.ids })), turn: r.turn });
     },
     result: (_: CubeState) => ({ moves: engine.decoder.bestMoves(), solved: false, inferred: 0, method: "live" }),

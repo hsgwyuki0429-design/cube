@@ -278,6 +278,19 @@ export class ArucoBench {
     return out;
   }
 
+  // 角 c のマーカー id を測る（追ったマーカー: src/aruco/markerTrack.ts）
+  describeMarker(img: ImageLike, id: number, c: number[]): Marker {
+    return this.describe(img, id, c);
+  }
+
+  // 符号のマス（枠を含む）の明暗と、マスの数
+  bitsOf(id: number): Uint8Array {
+    return markerBits(this.scheme, id);
+  }
+  get cellCount(): number {
+    return this.cells;
+  }
+
   private describe(img: ImageLike, id: number, c: number[]): Marker {
     const pts: Pt[] = [0, 1, 2, 3].map((i) => [c[i * 2], c[i * 2 + 1]]);
     let side = 0;
