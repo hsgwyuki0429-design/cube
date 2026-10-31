@@ -9,6 +9,7 @@ import { DEFAULT_TURN, type TurnResult, type TurnTrack, layerCells, projectedFac
 import type { TurnSnapshot } from "../track/types";
 import type { Pose } from "./pose";
 import { ArucoBench, DEFAULT_CONFIGS, type Marker, THOROUGH_PARAMS } from "../aruco/detect";
+import { trackMarkers } from "../aruco/markerTrack";
 import { type StickerScheme, decode, markerSize } from "../aruco/codes";
 import { STANDARD_DESIGN, type StickerDesign, designOf } from "../aruco/design";
 import { ARUCO_REFS } from "../aruco/palette";
@@ -51,10 +52,39 @@ const REGION_EDGE = 1; // 切り出しの縁からこれ（マーカーの辺の
 // （OpenCV.js に角を元の画素で合わせ直す cornerSubPix がない）
 const SHRINK_SIDE = 40;
 
-function detectMarkers(b: ArucoBench, img: PixelSource, t: number, memory: object, region: boolean, shrinkSide = Infinity): Marker[] {
+// ライブ: 検出せずに前のフレームのマーカーを追う（src/aruco/markerTrack.ts）。最後に検出したときのマーカーの数の TRACK_KEEP 以上を
+// 追えたら検出を省く（追うたびに少しずつ減っていくので、前のフレームではなく検出したときの数と比べる）。新しく見えたマーカー・
+// 回し終えた層のマーカーを拾うため、TRACK_REDETECT_MS ごとには検出する
+const tracks = new WeakMap<object, { t: number; detectT: number; detected: number; markers: Marker[]; shifts: Pt[] }>();
+const TRACK_KEEP = 0.8;
+const TRACK_REDETECT_MS = 250;
+const TRACK_GAP_MS = 150;
+const TRACK_MIN = 8;
+const TRACK_MIN_FIT = 0.85; // 追ったマーカーの明暗が符号どおりの割合（検出と同じ: src/aruco/detect.ts の MIN_FIT）
+
+function detectMarkers(b: ArucoBench, img: PixelSource, t: number, memory: object, region: boolean, shrinkSide = Infinity, track = false): Marker[] {
   const prev = region ? boxes.get(memory) : undefined;
   let markers: Marker[] | null = null;
-  if (prev && t - prev.t < REGION_MS && t > prev.t) {
+  const tr = track ? tracks.get(memory) : undefined;
+  let tracked = false;
+  let shifts: Pt[] = [];
+  if (tr && t > tr.t && t - tr.t < TRACK_GAP_MS && t - tr.detectT < TRACK_REDETECT_MS && tr.markers.length >= TRACK_MIN) {
+    const T0 = performance.now(); // TMP
+    const got = trackMarkers(img, tr.markers, (id) => b.bitsOf(id), b.cellCount, (_, k) => tr.shifts[k] ?? [0, 0]);
+    const G = globalThis as { __trk?: { n: number; ok: number; ms: number; ratio: number } }; // TMP
+    G.__trk ??= { n: 0, ok: 0, ms: 0, ratio: 0 }; // TMP
+    G.__trk.n++; G.__trk.ms += performance.now() - T0; G.__trk.ratio += got.length / tr.markers.length; // TMP
+    if (got.length >= tr.detected * TRACK_KEEP) {
+      const ms = got.map((g) => b.describeMarker(img, g.id, g.corners));
+      const keep = ms.map((m) => m.fit >= TRACK_MIN_FIT);
+      markers = ms.filter((_, k) => keep[k]);
+      shifts = got.filter((_, k) => keep[k]).map((g) => g.shift);
+      tracked = markers.length >= tr.detected * TRACK_KEEP;
+      if (tracked) (globalThis as { __trk?: { ok: number } }).__trk!.ok++; // TMP
+      if (!tracked) markers = null;
+    }
+  }
+  if (!markers && prev && t - prev.t < REGION_MS && t > prev.t) {
     const m = Math.max(REGION_MARGIN * prev.side, REGION_MARGIN_MIN * Math.max(img.width, img.height));
     const x0 = Math.max(0, Math.floor(prev.x0 - m));
     const y0 = Math.max(0, Math.floor(prev.y0 - m));
@@ -70,6 +100,7 @@ function detectMarkers(b: ArucoBench, img: PixelSource, t: number, memory: objec
     }
   }
   markers ??= b.detect(img)[0].markers;
+  if (track) tracks.set(memory, { t, detectT: tracked ? tr!.detectT : t, detected: tracked ? tr!.detected : markers.length, markers, shifts: tracked ? shifts : [] });
   if (region) {
     if (markers.length >= 4) {
       const xs = markers.flatMap((mk) => [mk.corners[0], mk.corners[2], mk.corners[4], mk.corners[6]]);
@@ -95,7 +126,7 @@ export function processAruco(
   memory: object,
   scheme: StickerScheme = "aruco54",
   thorough = false,
-  opts: { reread?: number; focus?: number[]; colorFill?: boolean; idTrack?: boolean; region?: boolean; design?: string; turn?: boolean; shrink?: boolean } = {},
+  opts: { reread?: number; focus?: number[]; colorFill?: boolean; idTrack?: boolean; region?: boolean; design?: string; turn?: boolean; shrink?: boolean; track?: boolean } = {},
 ): FrameResult {
   const design = designOf(opts.design ?? STANDARD_DESIGN.key);
   if (!bench || bench.cv !== cv || bench.scheme !== scheme || bench.thorough !== thorough || bench.design !== design) {
@@ -103,7 +134,7 @@ export function processAruco(
     const config = thorough ? { ...DEFAULT_CONFIGS[1], params: THOROUGH_PARAMS } : DEFAULT_CONFIGS[1]; // max(RGB)
     bench = { cv, scheme, thorough, design, b: new ArucoBench(cv, [config], scheme, design) };
   }
-  const markers = detectMarkers(bench.b, img, t, memory, !!opts.region, opts.shrink === false || thorough ? Infinity : SHRINK_SIDE);
+  const markers = detectMarkers(bench.b, img, t, memory, !!opts.region, opts.shrink === false || thorough ? Infinity : SHRINK_SIDE, !!opts.track && !thorough);
   const prev = tilts.get(memory);
   const r = reconstructFaces(markers, img, prev && t - prev.t < TILT_MS ? prev.tilt : null, scheme, undefined, true, design);
   if (r.faces.length) tilts.set(memory, { t, tilt: r.tilt });

@@ -165,7 +165,7 @@ class Controller {
 
   // 認識の設定（ステッカーの符号・マーカーの配置は STICKERS だけ）。ライブも直前のマーカーの周りだけで検出する（arucoRegion）
   pipelineConfig(): Partial<PipelineConfig> {
-    return { ...STICKERS, arucoRegion: true };
+    return { ...STICKERS, arucoRegion: true, arucoTrack: true };
   }
 
   engineOptions(s: Settings = settingsStore.get()): Partial<EngineOptions> {

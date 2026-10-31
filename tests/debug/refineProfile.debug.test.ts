@@ -115,7 +115,7 @@ function liveRunner(cv: unknown) {
   const memory = {};
   return {
     push(img: Img, t: number) {
-      const r = processFrame(cv as never, img, t, { stickers: "unique54", arucoDesign: DESIGN, arucoRegion: !process.env.NOREGION, arucoShrink: !process.env.NOSHRINK }, memory);
+      const r = processFrame(cv as never, img, t, { stickers: "unique54", arucoDesign: DESIGN, arucoRegion: !process.env.NOREGION, arucoShrink: !process.env.NOSHRINK, arucoTrack: !process.env.NOTRACK }, memory);
       engine.push({ t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, ids: f.ids })), turn: r.turn });
     },
     result: (_: CubeState) => ({ moves: engine.decoder.bestMoves(), solved: false, inferred: 0, method: "live" }),
@@ -154,6 +154,8 @@ it("精密解析の処理時間", async () => {
     } else for (const f of scene.frames) r.push(f.img, f.t);
     const pushMs = performance.now() - t0;
     const t1 = performance.now();
+    console.log('trk', JSON.stringify((globalThis as { __trk?: unknown }).__trk)); // TMP
+    (globalThis as { __trk?: unknown }).__trk = undefined; // TMP
     const res = r.result(scene.target);
     const resultMs = performance.now() - t1;
     const moves = res.moves.map((m) => MOVE_NAMES[m.move]).join(" ");

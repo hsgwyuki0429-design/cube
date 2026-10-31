@@ -30,6 +30,8 @@ export interface PipelineConfig {
   arucoTurn?: boolean;
   // マーカーが大きく映っていたら、切り出しを半分に縮めて検出する（既定 true。src/vision/arucoFrame.ts）
   arucoShrink?: boolean;
+  // ライブ: 検出せずに前のフレームのマーカーを追う（src/aruco/markerTrack.ts。精密解析では使わない）
+  arucoTrack?: boolean;
 }
 
 export const DEFAULT_PIPELINE: PipelineConfig = { stickers: "unique54" };
@@ -66,5 +68,6 @@ export function processFrame(cv: CV, img: PixelSource, t: number, config: Pipeli
     design: config.arucoDesign,
     turn: config.arucoTurn,
     shrink: config.arucoShrink,
+    track: config.arucoTrack,
   });
 }
