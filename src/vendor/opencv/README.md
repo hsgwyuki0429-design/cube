@@ -6,7 +6,7 @@ ArUco の検出に要る関数・クラスだけ（`scripts/opencv/cubevision_js
 - `opencv.js`: SIMD なし（約 2.6MB）。検出の結果は SIMD 版と同じ
 
 どちらも wasm を中に持つ 1 ファイル（UMD）。ブラウザでは `src/vision/opencv.ts` が SIMD に対応しているかを調べて読み込み、
-Node（テスト）では `tests/cv.ts` がそのまま require する。
+Node（テスト）では `tests/cv.ts` が同じように SIMD 版を読み込む。
 
 作り直すとき: `EMSDK=…/emsdk OPENCV=…/opencv（4.10.0）bash scripts/opencv/build.sh 出力先` で、出力先の 2 つをここに置く。
 

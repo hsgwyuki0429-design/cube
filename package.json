@@ -15,7 +15,6 @@
     "e2e": "node scripts/e2e.mjs"
   },
   "dependencies": {
-    "@techstark/opencv-js": "^5.0.0-release.1",
     "cubing": "^0.66.1",
     "mp4box": "^2.4.1",
     "preact": "^11.0.1",

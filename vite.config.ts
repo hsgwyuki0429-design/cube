@@ -32,16 +32,8 @@ export default defineConfig(({ mode }) => ({
       },
       workbox: {
         globPatterns: ["**/*.{js,css,html,svg,png}"],
-        // ArUco の画面の解析 Worker（OpenCV.js をもう 1 つ持つ、約 15MB）は、最初に使ったときにキャッシュする
-        globIgnores: ["**/aruco.worker-*.js"],
-        maximumFileSizeToCacheInBytes: 24 * 1024 * 1024,
-        runtimeCaching: [
-          {
-            urlPattern: ({ url }) => /aruco\.worker-/.test(url.pathname),
-            handler: "CacheFirst",
-            options: { cacheName: "aruco-worker", expiration: { maxEntries: 2 } },
-          },
-        ],
+        // いちばん大きいのは OpenCV.js の SIMD 版（約 4MB）。ArUco の画面の解析 Worker も同じファイルを読む
+        maximumFileSizeToCacheInBytes: 8 * 1024 * 1024,
       },
     }),
   ],

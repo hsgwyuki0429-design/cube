@@ -25,7 +25,7 @@
   扱える（`PipelineConfig.stickers`・`arucoDesign`。テスト・ArUco の画面のテストモード・比較用）。3×3 は明るい印刷色 `PRINT_COLORS`。
   ほかの配置の候補（幅 1/3・濃い同色など）の比較は `tests/debug/stickerDesign.debug.test.ts`
 - 本体の「ArUco」の画面（`src/aruco/`、入口は `src/ui/ArucoScreen.tsx`。初めて開いたときに読み込む）は、スロー撮影の動画から手順を推定する
-  キューブモードと、方式 × 色 × 大きさの検出率を出すテストモード。解析 Worker（OpenCV.js をもう 1 つ持つ）は PWA の事前のキャッシュに入れない。
+  キューブモードと、方式 × 色 × 大きさの検出率を出すテストモード。解析 Worker は本体と同じ OpenCV.js のファイルを読む。
   `#aruco`・`aruco.html`（移動するだけ）で直接開ける。キューブモードは本体と同じステッカーだけ（テストモードはシートの符号を選ぶ）
 - **3D キューブの回し方**: どの手も決まった速さで 1 手ずつ回し、回転を必ず描く。ライブ（`src/ui/Cube3D.tsx`）は前の手を回し終えてから
   次の手を足す（cubing.js は回している途中に次の手を足すと前の手を一瞬で終わらせ、速く回すと回転が描かれない手があった。1 手 約 170ms、
@@ -66,7 +66,8 @@ src/vision Vision             ← 映像 → マーカー → 見えている面
 
 ### 4. メインスレッドを塞がない
 
-- 画像認識と追跡エンジンは `src/vision/vision.worker.ts`（OpenCV.js 約 13MB もここだけで読む）
+- 画像認識と追跡エンジンは `src/vision/vision.worker.ts`（OpenCV.js もここだけで読む。ArUco に要るものだけを自分でビルドした SIMD 版 約 4MB・
+  SIMD なし版 約 2.6MB を `src/vendor/opencv/` に置き、`src/vision/opencv.ts` が対応を調べて選ぶ。npm の版より検出が約 2 倍速い）
 - 動画ファイルの精密解析は、検出（OpenCV のマーカー検出。精密解析の時間の 7 割ほど）だけを、同じ Worker スクリプトの別の Worker
   （コア数 − 2、最大 3 個。`src/vision/detectPool.ts`）に分ける。面の組み立て・読み直し・追跡（フレームの間で引き継ぐもの）は解析の
   Worker が時刻順に行う（`Refiner.gate` → 検出を頼む → `full(img, t, markers)`。`ParallelFeeder`）。切り出しの手がかりは最後に処理し
@@ -366,7 +367,7 @@ facelet の直接置換テーブルを手書きすると必ず間違える。**3
 TypeScript + Vite + vite-plugin-pwa
 UI: Preact（hooks + 小さなストア src/app/store.ts）
 3D・記法・ソルバー・スクランブル: cubing.js
-CV: OpenCV.js（@techstark/opencv-js。ArUco の検出）
+CV: OpenCV.js 4.10（ArUco の検出。自分でビルドした SIMD 版、`src/vendor/opencv/`・`scripts/opencv/build.sh`。テストは `tests/cv.ts` で同じものを読む）
 テスト: Vitest（単体・結合）、playwright-core（E2E）
 ```
 
