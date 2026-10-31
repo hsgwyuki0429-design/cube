@@ -8,7 +8,7 @@ import { gunzipSync, gzipSync } from "node:zlib";
 import { it } from "vitest";
 import { STICKERS, designOf } from "../../src/aruco/design";
 import { ARUCO_REFS } from "../../src/aruco/palette";
-import { MOVE_NAMES, type Vec3, applyMoves, parseMoves, solvedState } from "../../src/cube/model";
+import { MOVE_NAMES, type Vec3, applyMoves, parseMoves, solvedState, statesEqual } from "../../src/cube/model";
 import { TrackerEngine } from "../../src/track/engine";
 import { simplifyMoves } from "../../src/track/merge";
 import { ARUCO_OBSERVER } from "../../src/track/observer";
@@ -158,6 +158,7 @@ it("手順の総合評価", async () => {
         const res = processFrame(cv as never, img, t, l.cfg, l.memory);
         l.engine.push(frameReading(t, res));
         l.ms += performance.now() - a;
+        if (process.env.LIVEDUMP && t >= Number(process.env.LIVEDUMP)) process.stdout.write(`# live ${t.toFixed(0)} ${l.engine.decoder.status} ${l.engine.decoder.bestMoves().map((m) => MOVE_NAMES[m.move]).join(" ")} | obs ${l.engine.decoder.observations} cost ${l.engine.decoder.lastObservationCost.toFixed(2)} | ${res.faces.map((f) => `${f.slot}:${(f.ids ?? []).map((id) => (id < 0 ? "." : id)).join(",")}`).join(" ")}\n`);
       }
       if (process.env.SHIFTS && t <= Number(process.env.SHIFTS)) {
         const res = processFrame(cv as never, img, t, { ...LIVE_BASE, arucoThorough: true }, shiftMemory);
@@ -172,11 +173,13 @@ it("手順の総合評価", async () => {
     // 正解は手をまとめた形（L' R' L' = L2 R' など、同じ状態になる並び）
     const truthAlg = simplifyMoves(parseMoves(sc.alg).map((move, i) => ({ move, t: i, orient: 0 }))).map((m) => MOVE_NAMES[m.move]).join(" ");
     const truth = truthAlg.split(" ");
+    // 正解: まとめた正解と同じ並び、または同じ手数で同じ状態（反対の面の手の順番が入れ替わっただけ: D' U' = U' D'）
+    const correct = (got: string[]) => got.join(" ") === truthAlg || (got.length === truth.length && statesEqual(applyMoves(solvedState(), got.join(" ")), applyMoves(solvedState(), truthAlg)));
     const frames = Math.floor(sc.endT / (1000 / FPS)) + 1;
     const rows: object[] = [];
     for (const l of lives) {
       const got = simplifyMoves(l.engine.decoder.bestMoves()).map((m) => MOVE_NAMES[m.move]);
-      rows.push({ seed, view: sc.view.name, kind: "live", cfg: l.name, ok: got.join(" ") === truthAlg, dist: dist(got, truth), got: got.join(" "), truth: truthAlg, ms: l.ms / frames });
+      rows.push({ seed, view: sc.view.name, kind: "live", cfg: l.name, ok: correct(got), dist: dist(got, truth), got: got.join(" "), truth: truthAlg, ms: l.ms / frames });
     }
     const target = applyMoves(solvedState(), sc.alg);
     const tStart = sc.timing[0].start;
@@ -219,7 +222,7 @@ it("手順の総合評価", async () => {
         view: sc.view.name,
         kind: "refine",
         cfg: rf.name,
-        ok: got.join(" ") === truthAlg,
+        ok: correct(got),
         dist: dist(got, truth),
         got: got.join(" "),
         truth: truthAlg,

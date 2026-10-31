@@ -161,6 +161,7 @@ export class Refiner {
       decoder: { ...opts.decoder, ...REFINE_ENGINE.decoder },
       logMs: Infinity,
       keepObservations: true,
+      repeatMs: 0,
     }, input.orients);
     // ソルブ後の解析は時間をかけてよいので、二値化の窓を細かく試し、読めなかったマスは全部読み直す。
     // 直前のフレームのマーカーの周りだけで検出する（縁の近くに見つかったら全体でやり直す）
