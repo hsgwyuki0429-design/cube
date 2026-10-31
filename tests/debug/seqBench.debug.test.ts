@@ -21,7 +21,8 @@ import { loadTestOpenCv } from "../cv";
 import { applyMoveStickers, renderArucoCube, solvedStickers } from "../arucoCube";
 import type { Finger } from "../render";
 
-const LIVE_BASE: PipelineConfig = { ...STICKERS, arucoRegion: true, arucoTrack: true }; // src/app/controller.ts と同じ
+const LIVE_BASE: PipelineConfig = { ...STICKERS, arucoRegion: true, arucoTrack: true }; // src/app/controller.ts の pipelineConfig と同じ（精密解析にも使う）
+const LIVE_ONLY: Partial<PipelineConfig> = { arucoTurn: false }; // ライブだけ（controller.liveConfig）
 // decoder: 追跡のデコーダの設定（認識の設定ではない）
 const LIVE: Record<string, Partial<PipelineConfig> & { decoder?: Partial<DecoderOptions> }> = {
   base: {},
@@ -30,7 +31,7 @@ const LIVE: Record<string, Partial<PipelineConfig> & { decoder?: Partial<Decoder
   noregion: { arucoRegion: false },
   nofill: { arucoColorFill: false },
   noidtrack: { arucoIdTrack: false },
-  noturn: { arucoTurn: false },
+  turn: { arucoTurn: true }, // 以前のライブ（回転途中の形も使う）
   reread9: { arucoReread: 54 },
   reread2: { arucoReread: 2 },
   reread4: { arucoReread: 4 }, // 以前のライブ（読めなかったマスを 4 つまで読み直す）
@@ -123,7 +124,7 @@ it("手順の総合評価", async () => {
       // 名前@fN: 1 秒 N 枚に固定して処理する（処理時間によらない。低い fps での崩れ方を比べる）
       k: name.split("@")[1]?.startsWith("f") ? 0 : Number(name.split("@")[1] ?? process.env.LIVEK ?? 0),
       every: name.split("@")[1]?.startsWith("f") ? 1000 / Number(name.split("@")[1].slice(1)) : 0,
-      cfg: { ...LIVE_BASE, ...LIVE[name.split("@")[0]] },
+      cfg: { ...LIVE_BASE, ...LIVE_ONLY, ...LIVE[name.split("@")[0]] },
       memory: {},
       engine: new TrackerEngine(solvedState(), ARUCO_REFS, { observer: ARUCO_OBSERVER, decoder: LIVE[name.split("@")[0]].decoder ?? {} }),
       ms: 0,
