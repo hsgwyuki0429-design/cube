@@ -1,7 +1,7 @@
 // 手順の総合評価（ライブと精密解析、機能ごとに外したもの）。ランダムな 10 手を、視点・距離・縦横・持つ指・手ぶれ・回す速さを
 // 変えた 30fps の合成映像で回し、どの設定でも同じフレームを処理して比べる（描くのが重いので 1 回だけ描く）。
 //   npx vitest run -c vitest.debug.config.ts tests/debug/seqBench.debug.test.ts
-//   CACHE=描いた画像を置くディレクトリ（2 回目から描かない）・SEEDS=1-20（範囲）・SPEED=fast（約 6 手/秒）・FPS=60・LIVE=base,notrack,…・REFINE=base,nogate,…（"" で使わない）・OUT=結果の JSON Lines の書き出し先
+//   CACHE=描いた画像を置くディレクトリ（2 回目から描かない）・SEEDS=1-20（範囲）・SPEED=fast（約 6 手/秒）・FPS=60・ROT=1（持ち替え）・LIVE=base,notrack,…・REFINE=base,nogate,…（"" で使わない）・OUT=結果の JSON Lines の書き出し先
 // 1 行 = 1 つの手順と 1 つの設定: { seed, kind, cfg, ok, got, truth, dist, start, end, ms }
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { gunzipSync, gzipSync } from "node:zlib";
@@ -60,6 +60,9 @@ function rng(seed: number) {
   };
 }
 
+// 視点を縦の軸のまわりに回す
+const orbit = (e: Vec3, a: number): Vec3 => [e[0] * Math.cos(a) + e[2] * Math.sin(a), e[1], -e[0] * Math.sin(a) + e[2] * Math.cos(a)];
+
 // 編集距離（手の名前の並び）
 function dist(a: string[], b: string[]): number {
   const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
@@ -83,15 +86,22 @@ function scene(seed: number) {
   const timing: { start: number; dur: number }[] = [];
   let t = lead;
   const fast = process.env.SPEED === "fast"; // 約 6 手/秒（速いソルブ）。既定は約 2.5 手/秒
+  // ROT=1: 手の間に時々キューブ全体を縦の軸のまわりに 90° 回す（持ち替え: y・y'）。カメラをキューブのまわりに回して描く
+  const rotations: { start: number; dur: number; dir: number }[] = [];
   for (let i = 0; i < moves.length; i++) {
     const dur = fast ? 70 + r() * 70 : 110 + r() * 150;
     timing.push({ start: t, dur });
     t += dur + (fast ? r() * 120 : 60 + r() * 300);
+    if (process.env.ROT && i < moves.length - 1 && r() < 0.3) {
+      const d = 220 + r() * 200;
+      rotations.push({ start: t, dur: d, dir: r() < 0.5 ? 1 : -1 });
+      t += d + 80 + r() * 150;
+    }
   }
   const endT = t + 400;
   const fingerPhase = r() * 10;
   const wobble = 0.05 + r() * 0.15;
-  return { seed, view, moves, timing, endT, fingerPhase, wobble, alg: moves.map((m) => MOVE_NAMES[m]).join(" ") };
+  return { seed, view, moves, timing, rotations, endT, fingerPhase, wobble, alg: moves.map((m) => MOVE_NAMES[m]).join(" ") };
 }
 
 it("手順の総合評価", async () => {
@@ -137,13 +147,13 @@ it("手順の総合評価", async () => {
         fingers.push({ a: [tip[0] - pitch * 3, tip[1] + pitch * 3], b: tip, width: pitch * 0.9 });
       }
       const t0 = performance.now();
-      const cacheFile = process.env.CACHE ? `${process.env.CACHE}/${process.env.SPEED ?? "normal"}-${FPS}-${seed}-${Math.round(t)}.gz` : null;
+      const cacheFile = process.env.CACHE ? `${process.env.CACHE}/${process.env.SPEED ?? "normal"}${process.env.ROT ? "-rot" : ""}-${FPS}-${seed}-${Math.round(t)}.gz` : null;
       const img = cacheFile && existsSync(cacheFile) ? { data: new Uint8ClampedArray(gunzipSync(readFileSync(cacheFile))), width: w, height: h } : renderArucoCube(cv as never, {
         width: w,
         height: h,
         stickers: st,
         orient: 0,
-        eye: [eye[0] + sc.wobble * Math.sin(t / 310 + ph), eye[1] + sc.wobble * 0.6 * Math.sin(t / 470 + ph), eye[2]],
+        eye: orbit([eye[0] + sc.wobble * Math.sin(t / 310 + ph), eye[1] + sc.wobble * 0.6 * Math.sin(t / 470 + ph), eye[2]], sc.rotations.reduce((a, q) => a + (q.dir * Math.PI) / 2 * Math.min(1, Math.max(0, (t - q.start) / q.dur)), 0)),
         turn: turning ? { move: sc.moves[done], fraction: (t - cur.start) / cur.dur, spread: Math.min(0.3, 1000 / FPS / 2 / cur.dur) } : undefined,
         noise: 2.5,
         seed: Math.round(t) + seed * 100000,
