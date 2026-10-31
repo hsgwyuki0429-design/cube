@@ -159,13 +159,19 @@ class Controller {
   private applySettings(s: Settings): void {
     if (!this.vision) return;
     this.vision.workWidth = s.workWidth;
-    this.vision.setConfig(this.pipelineConfig());
+    this.vision.setConfig(this.liveConfig());
     this.vision.setTrackingOptions(this.engineOptions(s));
   }
 
   // 認識の設定（ステッカーの符号・マーカーの配置は STICKERS だけ）。ライブも直前のマーカーの周りだけで検出する（arucoRegion）
   pipelineConfig(): Partial<PipelineConfig> {
     return { ...STICKERS, arucoRegion: true, arucoTrack: true };
+  }
+
+  // ライブの認識: 回転途中の形（arucoTurn）は使わない。ライブは 1 秒 10 枚前後しか処理できず、回している途中を 3 枚以上続けて
+  // 捉えることがほとんどないので手がかりにならず、1 フレームの 3 割ほど（合成の 30fps で 50 → 32ms）を使っていた（精密解析では使う）
+  liveConfig(): Partial<PipelineConfig> {
+    return { ...this.pipelineConfig(), arucoTurn: false };
   }
 
   engineOptions(s: Settings = settingsStore.get()): Partial<EngineOptions> {
@@ -450,7 +456,7 @@ class Controller {
     clearInterval(session.timer);
     this.session = null;
     this.store.set({ analysis: null });
-    await this.recorder.finish();
+    await this.recorder.finish(to);
     this.feedAnalysis(session, to);
     this.recorder.stop();
     return this.refiner.endStream(session.id, to, target, progress);
@@ -467,6 +473,11 @@ class Controller {
   }
 
   // いまの追跡の続きから、フリーの解析を始め直す（タイマーの計測が終わった後など）
+  // 解析を進めている途中か（タイマーを止めた後の解析の結果を待つ間に、次のソルブが解析を始めたか）
+  get analyzing(): boolean {
+    return !!this.session;
+  }
+
   restartFreeAnalysis(): void {
     const track = this.store.get().track;
     const cube = this.store.get().cube;

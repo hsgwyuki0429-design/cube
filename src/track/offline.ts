@@ -61,14 +61,43 @@ export function reversedObservations(obs: Observation[], lastT: number): Observa
   return out;
 }
 
-export function decodeOffline(obs: Observation[], start: CubeState, end: CubeState | null, lastT: number, options: OfflineOptions = DEFAULT_OFFLINE): OfflineResult {
+// 前向きの再構成を、観測が出るたびに進めておく（精密解析はソルブ中から観測を出すので、止めた後は後ろ向きとつなぐだけで済む）。
+// 観測は追加した後で書き換わらないこと。decodeOffline に渡すと、同じ観測をすべて通してあればそれを使う
+export class OfflineForward {
+  readonly fwd: MoveDecoder;
+  readonly F: Snapshot[] = [];
+  private seen: Observation[] = [];
+  constructor(
+    readonly start: CubeState,
+    readonly options: OfflineOptions = DEFAULT_OFFLINE,
+  ) {
+    this.fwd = new MoveDecoder(start, options.decoder);
+    if (options.personal?.length && this.fwd.prior) this.fwd.prior = movePrior(options.personal);
+  }
+  feed(o: Observation): void {
+    if (!o.faces.length) return;
+    this.fwd.observe(o);
+    this.F.push({ hyps: [...this.fwd.hypotheses()], offset: this.fwd.costOffset });
+    this.seen.push(o);
+  }
+  // valid と同じ観測をすべて通したか
+  covers(valid: Observation[], start: CubeState): boolean {
+    return statesEqual(start, this.start) && valid.length === this.seen.length && valid.every((o, i) => o === this.seen[i]);
+  }
+}
+
+export function decodeOffline(obs: Observation[], start: CubeState, end: CubeState | null, lastT: number, options: OfflineOptions = DEFAULT_OFFLINE, pre?: OfflineForward): OfflineResult {
   const valid = obs.filter((o) => o.faces.length);
-  const fwd = new MoveDecoder(start, options.decoder);
-  if (options.personal?.length && fwd.prior) fwd.prior = movePrior(options.personal);
-  const F: Snapshot[] = [];
-  for (const o of valid) {
-    fwd.observe(o);
-    F.push({ hyps: [...fwd.hypotheses()], offset: fwd.costOffset });
+  let fwd: MoveDecoder;
+  let F: Snapshot[];
+  if (pre?.covers(valid, start)) {
+    fwd = pre.fwd;
+    F = pre.F;
+  } else {
+    const p = new OfflineForward(start, options);
+    for (const o of valid) p.feed(o);
+    fwd = p.fwd;
+    F = p.F;
   }
   const forwardBest = (): OfflineResult => {
     const moves = fwd.bestMoves();

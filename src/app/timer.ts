@@ -250,7 +250,8 @@ function finish(u: TrackUpdate | null, how: StopReason, lookT?: number): void {
   window.setTimeout(async () => {
     // 速報値を、止めた後のフレーム（最後の手が止まったところ）も使って更新する
     if (how === "tracked") await refreshLive(live, s.startIndex, endIndex);
-    if (analyze) analyzeRecording(live, how === "manual" ? stopT : endT);
+    // 次のソルブ（とフリーの追跡）のための解析は、この解析が終わってから始める（同じ解析の Worker で取り合うと、確定が数倍遅れた）
+    if (analyze) void analyzeRecording(live, how === "manual" ? stopT : endT).finally(() => controller.analyzing || controller.restartFreeAnalysis());
     else controller.restartFreeAnalysis();
   }, POSTROLL_MS);
 }
@@ -286,8 +287,6 @@ async function analyzeRecording(live: LiveSpan, endT: number): Promise<void> {
   // 調査用（E2E テストが読む）
   const debug: { recording: unknown; result?: RefineResult } = { recording: { frames: rec.frames, dropped: rec.dropped } };
   (window as unknown as { __cubevisionAnalysis?: unknown }).__cubevisionAnalysis = debug;
-  // 次のソルブ（とフリーの追跡）のために、ここからまた解析を進める
-  controller.restartFreeAnalysis();
   if (!pending) {
     updateSolve(id, { analysis: "failed" });
     return;

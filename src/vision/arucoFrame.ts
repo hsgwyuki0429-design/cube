@@ -110,10 +110,12 @@ function rememberBox(memory: object, t: number, markers: Marker[]): void {
   boxes.set(memory, { t, x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys), side: sides[Math.floor(sides.length / 2)], small: sides[Math.floor(sides.length * 0.1)] });
 }
 
-// 精密解析を並列にするとき: 次に検出するフレームの手がかり（最後に処理し終えたフレームのマーカーの範囲から）
+// 精密解析を並列にするとき: 次に検出するフレームの手がかり（最後に処理し終えたフレームのマーカーの範囲から）。
+// 処理し終えたフレームは数枚遅れるので、少し古い範囲まで使う（キューブが大きく動いていれば、縁の近くに見つかって全体でやり直す）
+const PARALLEL_REGION_MS = 400;
 export function detectHint(memory: object, img: { width: number; height: number }, t: number): DetectHint | null {
   const prev = boxes.get(memory);
-  return prev && t - prev.t < REGION_MS && t > prev.t ? regionOf(prev, img, Infinity) : null;
+  return prev && t - prev.t < PARALLEL_REGION_MS && t > prev.t ? regionOf(prev, img, Infinity) : null;
 }
 
 // 検出器（精密解析の設定）。別の Worker で検出だけするとき
@@ -154,7 +156,7 @@ function detectMarkers(b: ArucoBench, img: PixelSource, t: number, memory: objec
 }
 
 // thorough: 精密解析（時間をかけてよい）。二値化の窓を細かく試す（THOROUGH_PARAMS）
-// opts.reread: 読めなかったマスを読み直す数（省略時はライブ 4・精密解析は全部）、opts.focus: 先に読み直すマス（slot * 9 + cell）、
+// opts.reread: 読めなかったマスを読み直す数（省略時はライブ 0・精密解析は全部）、opts.focus: 先に読み直すマス（slot * 9 + cell）、
 // opts.colorFill: それでも読めなかったマスを色で補う（既定 true。src/aruco/colorFill.ts）、
 // opts.idTrack: ID が読めなかったマスに直前のフレームのステッカーを引き継ぐ（既定 true。src/aruco/idTrack.ts）、
 // opts.region: 直前のフレームのマーカーの周りだけで検出する（本体のライブと精密解析。既定 false）、
@@ -183,7 +185,9 @@ export function processAruco(
   // 回転途中の形: 回している層が見えたら、その層が通る面の外側の 1 列を層の格子で置き、面から外れた層のマーカーもその列に入れる
   const tr = opts.turn === false || !r.faces.length ? null : recognizeTurnFor(markers, r.faces, img, t, memory, design);
   if (tr?.turn && tr.pose) applyTurnLayers(r.faces, tr, img, markers, scheme);
-  const budget = opts.reread ?? (thorough ? 27 : 4);
+  // ライブは読み直さない: 1 フレームの 3 割（合成の 30fps で 64 → 38ms）を使うのに、手順の正確さは変わらず（読めなかったマスは
+  // 色で補う・ID なし追跡・次のフレームで埋まる）、処理が追いつかない端末ではその分フレームを捨てて見落とした
+  const budget = opts.reread ?? (thorough ? 27 : 0);
   if (budget > 0 && r.faces.length) {
     if (!rereader || rereader.cv !== cv || rereader.scheme !== scheme || rereader.design !== design) {
       rereader?.b.delete();

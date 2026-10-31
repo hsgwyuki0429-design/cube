@@ -200,7 +200,8 @@ function compile(obs: Observation, o: number): CompiledObs {
   return { idx, costBase, costs: obs.faces.map((f) => f.cost), faceOf, alts: obs.faces.map((f) => f.alts), ids: obs.faces.map((f) => f.ids), idCost: obs.faces.map((f) => f.idCost) };
 }
 
-function evalCost(state: Uint8Array, c: CompiledObs): number {
+// limit: これ以上になったら（残りの面を足さずに）その時点の和を返す。コストは負にならないので、しきい値で捨てる候補は同じ
+function evalCost(state: Uint8Array, c: CompiledObs, limit = Infinity): number {
   let sum = 0;
   for (let k = 0; k < c.costs.length; k++) {
     const base = k * 9;
@@ -226,6 +227,7 @@ function evalCost(state: Uint8Array, c: CompiledObs): number {
         if (t < s) s = t;
       }
     sum += s;
+    if (sum >= limit) return sum;
   }
   return sum;
 }
@@ -388,7 +390,8 @@ export class MoveDecoder {
     const order = beam.map((h, i) => ({ h, i })).sort((a, b) => a.h.cost - b.h.cost);
 
     // 深さ d の節点を、仮説 h について評価する（親の深さ d-1 の状態は states に入っている前提）
-    const evalLevel = (h: Hypothesis, hi: number, d: number) => {
+    // leaf: この段の状態は後で使わない（子の段を評価しない）。手のコストだけでしきい値を超える節点は状態も作らない
+    const evalLevel = (h: Hypothesis, hi: number, d: number, leaf = false) => {
       const os = orients.includes(h.orient) ? orients : [...orients, h.orient];
       const prevLen = h.tail?.len ?? 0;
       const penalty = turnPenalty(h.orient);
@@ -396,6 +399,8 @@ export class MoveDecoder {
       const from = tree.levelStart[d];
       const to = tree.levelStart[d + 1];
       for (let node = from; node < to; node++) {
+        const turnExtra = penalty ? penalty(node) : 0;
+        if (leaf && h.cost + pathCost[node] + turnExtra >= top.threshold) continue;
         const dst = states[node];
         if (d === 0) dst.set(h.state);
         else {
@@ -404,11 +409,10 @@ export class MoveDecoder {
           for (let i = 0; i < 54; i++) dst[i] = src[p[i]];
         }
         let hash: [number, number] | null = null;
-        const turnExtra = penalty ? penalty(node) : 0;
         for (const o of os) {
           const base = h.cost + pathCost[node] + turnExtra + (o === h.orient ? 0 : rotationCost);
           if (base >= top.threshold) continue;
-          const obsCost = evalCost(dst, getCompiled(o));
+          const obsCost = evalCost(dst, getCompiled(o), top.threshold - base);
           evaluated++;
           const cost = base + obsCost;
           if (cost >= top.threshold) continue;
@@ -426,7 +430,7 @@ export class MoveDecoder {
 
     // 1) 全仮説を浅く（深さ 2 まで）
     const shallow = Math.min(depth, 2);
-    for (const { h, i } of order) for (let d = 0; d <= shallow; d++) evalLevel(h, i, d);
+    for (const { h, i } of order) for (let d = 0; d <= shallow; d++) evalLevel(h, i, d, d === shallow);
     // 2) 下限がしきい値より安い仮説だけ深く（2 手までで観測が説明できていれば省く）
     let bestShallowObs = Infinity;
     for (const c of best.values()) if (c.obsCost < bestShallowObs) bestShallowObs = c.obsCost;
@@ -450,7 +454,7 @@ export class MoveDecoder {
       }
       for (let d = shallow + 1; d <= depth; d++) {
         if (h.cost + d * minMove >= top.threshold) break;
-        evalLevel(h, i, d);
+        evalLevel(h, i, d, d === depth);
       }
     }
     this.lastExpanded = evaluated;

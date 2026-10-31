@@ -77,7 +77,7 @@ export class StreamDecoder {
     config: VideoDecoderConfig,
     private width: number,
     private height: number,
-    private onFrame: (img: ImageData, t: number) => void,
+    private onFrame: (img: ImageData, t: number) => void | Promise<void>,
   ) {
     this.canvas = new OffscreenCanvas(width, height);
     const ctx = this.canvas.getContext("2d", { willReadFrequently: true });
@@ -96,7 +96,8 @@ export class StreamDecoder {
     this.decoder.configure(config);
   }
 
-  private drain(): void {
+  // onFrame が Promise を返したら待つ（検出を別の Worker に頼んでいる間は、次のフレームを復号しすぎない）
+  private async drain(): Promise<void> {
     while (this.pending.length) {
       const f = this.pending.shift()!;
       const t = f.timestamp / 1000;
@@ -105,7 +106,7 @@ export class StreamDecoder {
       } finally {
         f.close();
       }
-      this.onFrame(this.ctx.getImageData(0, 0, this.width, this.height), t);
+      await this.onFrame(this.ctx.getImageData(0, 0, this.width, this.height), t);
       this.frames++;
     }
   }
@@ -125,13 +126,13 @@ export class StreamDecoder {
       for (const c of chunks) {
         if (this.error) throw this.error;
         this.decoder.decode(new EncodedVideoChunk({ type: c.type, timestamp: c.timestamp, duration: c.duration || undefined, data: c.data }));
-        this.drain();
+        await this.drain();
         while (this.decoder.decodeQueueSize > 2 && !this.error) {
           await this.waitOutput();
-          this.drain();
+          await this.drain();
         }
       }
-      this.drain();
+      await this.drain();
     });
     return this.work;
   }
@@ -140,7 +141,7 @@ export class StreamDecoder {
   flush(): Promise<void> {
     this.work = this.work.then(async () => {
       if (this.decoder.state === "configured") await this.decoder.flush();
-      this.drain();
+      await this.drain();
     });
     return this.work;
   }

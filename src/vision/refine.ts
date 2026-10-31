@@ -4,7 +4,7 @@
 import { type CubeState, OPPOSITE, isSolved, moveFace, solvedState, statesEqual } from "../cube/model";
 import { type EngineOptions, TrackerEngine } from "../track/engine";
 import { mergeQuickRepeats, simplifyMoves } from "../track/merge";
-import { DEFAULT_OFFLINE, decodeOffline } from "../track/offline";
+import { DEFAULT_OFFLINE, OfflineForward, decodeOffline } from "../track/offline";
 import type { DecodedMove, TrackStatus } from "../track/types";
 import type { Lab } from "./color";
 import { type PatchFrame, facePatch, refineEnd, refineStart } from "./fineTiming";
@@ -67,6 +67,17 @@ function cellColors(img: PixelSource, H: Mat3, layer: FaceLayer | undefined): Fl
     for (let k = 0; k < 3; k++) out[cell * 3 + k] /= n;
   }
   return out;
+}
+
+// 基準の格子のまま、マスの色を img で測り直す（並列のとき: 格子は最後に処理し終えたフレーム、色は最後に処理に回したフレーム）
+function resample(img: PixelSource, sig: CellSignature): CellSignature | null {
+  const faces: CellSignature["faces"] = [];
+  for (const f of sig.faces) {
+    const rgb = cellColors(img, f.H, f.layer);
+    if (!rgb) return null;
+    faces.push({ ...f, rgb });
+  }
+  return { faces };
 }
 
 // 精密に処理したフレームの面（3×3 の面だけ）の、マスの色の手がかり
@@ -144,12 +155,16 @@ export class Refiner {
   private lastGateT = -Infinity; // 最後に精密に処理すると決めたフレーム
   private held: { img: PixelSource; t: number } | null = null; // 飛ばした直前のフレーム
   private tail = 0;
+  private picked: { img: PixelSource; t: number } | null = null; // 最後に精密な処理に回したフレーム
   gated = 0; // 軽い検査で飛ばしたフレームの数
   readonly patches: PatchFrame[] = [];
   readonly looks: { t: number; solved: boolean }[] = []; // フレームごとの「完成して見えるか」
   frames = 0;
   lastT = 0;
   method = "";
+  // 前向きの再構成を観測が出るたびに進めておく（result で後ろ向きとつなぐだけにする）。区切り（checkpoint）を使うフリーでは使わない
+  private forward: OfflineForward | null;
+  private fedObs = 0;
 
   constructor(
     private cv: CV,
@@ -163,6 +178,7 @@ export class Refiner {
       keepObservations: true,
       repeatMs: 0,
     }, input.orients);
+    this.forward = input.keepPatchesMs === undefined ? new OfflineForward(Uint8Array.from(input.state), this.offlineOptions()) : null;
     // ソルブ後の解析は時間をかけてよいので、二値化の窓を細かく試し、読めなかったマスは全部読み直す。
     // 直前のフレームのマーカーの周りだけで検出する（縁の近くに見つかったら全体でやり直す）
     this.config = { ...DEFAULT_PIPELINE, ...input.pipeline, arucoThorough: true, arucoRegion: true };
@@ -188,6 +204,10 @@ export class Refiner {
     this.engine.rebase(target, orient, full, t, 0);
     this.seg = { state: Uint8Array.from(target), moves: full };
     return { t, state: Array.from(target), orient, moves: full, status: "tracking" };
+  }
+
+  private offlineOptions() {
+    return { decoder: { ...this.input.engine?.decoder, ...DEFAULT_OFFLINE.decoder }, personal: this.input.engine?.personal };
   }
 
   // 途中結果: 前向きにここまで解いた最良の仮説（リアルタイムの追跡をこれに乗り換える）
@@ -219,6 +239,10 @@ export class Refiner {
     out.push({ img, t });
     this.tail = changed ? GATE_TAIL : Math.max(0, this.tail - 1);
     this.lastGateT = t;
+    // 検出を並列にすると、処理し終える前に次のフレームが来る。基準の色を、処理に回したこのフレームのものにしておく
+    // （古いフレームの色と比べると、変わった後の数枚が「変わった」と出続けて、止まっていても飛ばせなかった）
+    this.picked = { img, t };
+    if (this.ref) this.ref = resample(img, this.ref);
     return out;
   }
 
@@ -234,9 +258,15 @@ export class Refiner {
   // 精密に処理する。detected: 別の Worker で検出しておいたマーカー
   full(img: PixelSource, t: number, detected?: Marker[]): void {
     const r = processFrame(this.cv, img, t, this.config, this.memory, detected);
-    this.ref = signatureOf(img, r.faces);
+    // 基準: この格子で、処理に回したいちばん新しいフレームの色（1 か所で処理するときは、このフレーム）
+    const latest = this.picked && this.picked.t > t ? this.picked.img : img;
+    this.ref = signatureOf(latest, r.faces);
     const reading = frameReading(t, r);
     this.engine.push(reading);
+    if (this.forward) {
+      const log = this.engine.observationLog;
+      for (; this.fedObs < log.length; this.fedObs++) this.forward.feed(log[this.fedObs]);
+    }
     this.looks.push({ t, solved: reading.faces.length > 0 && this.engine.looksSolved(reading) });
     this.patches.push({ t, faces: r.faces.map((f) => facePatch(img, { ...f, labs: f.labs })) });
     this.prunePatches(t);
@@ -273,10 +303,7 @@ export class Refiner {
   result(target: CubeState | null = solvedState()): RefineResult {
     const dec = this.engine.decoder;
     // 前向き（スクランブル後から）と後ろ向き（完成から）の両方で解き直し、辻褄の合う所でつなぐ
-    const off = decodeOffline(this.engine.observationLog, Uint8Array.from(this.input.state), target, this.lastT, {
-      decoder: { ...this.input.engine?.decoder, ...DEFAULT_OFFLINE.decoder },
-      personal: this.input.engine?.personal,
-    });
+    const off = decodeOffline(this.engine.observationLog, Uint8Array.from(this.input.state), target, this.lastT, this.offlineOptions(), this.forward ?? undefined);
     let moves = off.moves;
     let solved = target ? off.reachedEnd && isSolved(target) : isSolved(dec.best().state);
     let forced = off.method === "forward-finish" ? off.moves.filter((m) => m.inferred && m.t === this.lastT).length : 0;

@@ -16,7 +16,7 @@ export interface PipelineConfig {
   stickers: "unique54" | "aruco12" | "aruco";
   arucoThorough?: boolean; // 二値化の窓を細かく試す（精密解析。src/aruco/detect.ts の THOROUGH_PARAMS）
   // 組み立てた面の読めなかったマスを、切り出して拡大して読み直す数（再認識。src/aruco/reread.ts）。
-  // 省略時はライブ 4・精密解析（arucoThorough）は全部
+  // 省略時はライブ 0（読み直さない）・精密解析（arucoThorough）は全部
   arucoReread?: number;
   // 先に読み直すマス（カメラフレームの slot * 9 + cell）。追跡が未確定・推定とみているマス（TrackerEngine.cellBelief）
   focus?: number[];
