@@ -106,22 +106,62 @@ export function rereadCell(bench: ArucoBench, img: ImageLike, H: Mat3, cell: num
   return null;
 }
 
+// マスの見た目（真ん中あたりの 5×5 点の平均の色）。読み直しに失敗したマスが変わったかを見る
+function cellLook(img: ImageLike, H: Mat3, cell: number): [number, number, number] | null {
+  const r = Math.floor(cell / 3);
+  const c = cell % 3;
+  const sum = [0, 0, 0];
+  for (let i = 0; i < 5; i++)
+    for (let j = 0; j < 5; j++) {
+      const [x, y] = applyH(H, c + 0.15 + (0.7 * (j + 0.5)) / 5, r + 0.15 + (0.7 * (i + 0.5)) / 5);
+      const xi = Math.round(x);
+      const yi = Math.round(y);
+      if (xi < 0 || yi < 0 || xi >= img.width || yi >= img.height) return null;
+      const k = (yi * img.width + xi) * 4;
+      for (let ch = 0; ch < 3; ch++) sum[ch] += img.data[k + ch];
+    }
+  return [sum[0] / 25, sum[1] / 25, sum[2] / 25];
+}
+const SAME_LOOK = 12; // 見た目の差（R・G・B の平均の差の最大）がこれ以下なら同じ
+
+// 前のフレームで読み直しに失敗したマス（slot * 9 + cell → そのときの見た目）。見た目が変わっていなければ、読み直してもまた失敗する
+// （検出は同じ画素から同じ結果を出す）ので飛ばす。精密解析で、読み直しの 7〜9 割は失敗していた（指で隠れたままのマスを毎フレーム）
+export type RereadMemory = Map<number, [number, number, number]>;
+
 // 面の読めなかったマスを読み直す（focus を先に、全体で budget 個まで）。読めたマスは face.colors / face.ids を書き換え、そのマスの番号を返す
-export function rereadFaces(bench: ArucoBench, img: ImageLike, faces: VisibleFace[], scheme: StickerScheme, budget: number, focus: Set<number> = new Set()): Set<number> {
-  const todo: { f: VisibleFace; cell: number; pri: number }[] = [];
+export function rereadFaces(bench: ArucoBench, img: ImageLike, faces: VisibleFace[], scheme: StickerScheme, budget: number, focus: Set<number> = new Set(), memory?: RereadMemory): Set<number> {
+  const todo: { f: VisibleFace; cell: number; pri: number; look: [number, number, number] | null }[] = [];
+  const failed = new Map<number, [number, number, number]>();
   for (const f of faces) {
     if (f.partial) continue; // 外枠が推定の面は、マスの位置も確かでない
-    for (let cell = 0; cell < 9; cell++) if (f.colors[cell] < 0) todo.push({ f, cell, pri: focus.has(f.slot * 9 + cell) ? 0 : 1 });
+    for (let cell = 0; cell < 9; cell++) {
+      if (f.colors[cell] >= 0) continue;
+      const key = f.slot * 9 + cell;
+      const look = memory ? cellLook(img, cellH(f, cell), cell) : null;
+      const prev = memory?.get(key);
+      if (prev && look && Math.max(...look.map((v, k) => Math.abs(v - prev[k]))) <= SAME_LOOK) {
+        failed.set(key, prev);
+        continue;
+      }
+      todo.push({ f, cell, pri: focus.has(key) ? 0 : 1, look });
+    }
   }
   todo.sort((a, b) => a.pri - b.pri);
   const got = new Set<number>();
-  for (const { f, cell } of todo.slice(0, budget)) {
+  for (const { f, cell, look } of todo.slice(0, budget)) {
     const r = rereadCell(bench, img, cellH(f, cell), cell, scheme);
-    if (!r) continue;
+    if (!r) {
+      if (look) failed.set(f.slot * 9 + cell, look);
+      continue;
+    }
     f.colors[cell] = r.face;
     f.ids[cell] = r.sticker;
     f.conf[cell] = r.conf;
     got.add(f.slot * 9 + cell);
+  }
+  if (memory) {
+    memory.clear();
+    for (const [k, v] of failed) memory.set(k, v);
   }
   return got;
 }

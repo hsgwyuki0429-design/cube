@@ -131,6 +131,22 @@ export function cropRegion(img: ImageLike, r: Region): ImageLike {
   return { data: out, width: r.w, height: r.h };
 }
 
+// 縦横半分に縮める（2×2 の画素の平均）
+export function halve(img: ImageLike): ImageLike {
+  const w = img.width >> 1;
+  const h = img.height >> 1;
+  const out = new Uint8ClampedArray(w * h * 4);
+  const src = img.data;
+  const stride = img.width * 4;
+  for (let y = 0; y < h; y++) {
+    let a = 2 * y * stride;
+    let o = y * w * 4;
+    for (let x = 0; x < w; x++, a += 8, o += 4)
+      for (let c = 0; c < 4; c++) out[o + c] = (src[a + c] + src[a + 4 + c] + src[a + stride + c] + src[a + stride + 4 + c] + 2) >> 2;
+  }
+  return { data: out, width: w, height: h };
+}
+
 // 1 フレームに複数の方式を順に当てる。Mat は使い回す
 export class ArucoBench {
   private dict: any;
@@ -185,12 +201,20 @@ export class ArucoBench {
 
   // region: 画像のこの部分だけで検出する（精密解析で、直前のフレームのキューブの周り）。マーカーの大きさの範囲は画像全体で
   // 検出したときと同じ画素数にする。角の座標は画像全体の座標で返す
-  detect(img: ImageLike, region?: Region): DetectResult[] {
+  // shrink 2: 切り出しを縦横半分に縮めてから検出する（マーカーが大きく映っているとき。画素が 1/4 になる）
+  detect(img: ImageLike, region?: Region, shrink: 1 | 2 = 1): DetectResult[] {
     if (region) {
+      // マーカーの大きさの範囲（画素）は縮めた分だけ小さくなるので、切り出しの長辺に対する割合は縮めても同じ
       this.setRateScale(Math.max(img.width, img.height) / Math.max(region.w, region.h));
-      const out = this.detectIn(cropRegion(img, region));
+      const crop = cropRegion(img, region);
+      const out = this.detectIn(shrink === 2 ? halve(crop) : crop);
+      // 縮めた画像の画素 i の中心は、元の画素 2i と 2i+1 の間
+      const back = (v: number) => (shrink === 2 ? v * 2 + 0.5 : v);
       for (const r of out)
-        for (const m of r.markers) m.corners = m.corners.map((v, i) => Math.round((v + (i % 2 ? region.y : region.x)) * 10) / 10);
+        for (const m of r.markers) {
+          m.corners = m.corners.map((v, i) => Math.round((back(v) + (i % 2 ? region.y : region.x)) * 10) / 10);
+          m.side *= shrink;
+        }
       return out;
     }
     this.setRateScale(1);
