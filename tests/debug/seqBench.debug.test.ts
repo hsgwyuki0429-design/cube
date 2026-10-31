@@ -44,6 +44,7 @@ const REFINE: Record<string, { pipeline?: Partial<PipelineConfig>; gate?: boolea
   noidtrack: { pipeline: { arucoIdTrack: false } },
   noturn: { pipeline: { arucoTurn: false } },
   noshrink: { pipeline: { arucoShrink: false } },
+  noreread: { pipeline: { arucoReread: 0 } },
 };
 
 const VIEWS: { name: string; w: number; h: number; eye: Vec3 }[] = [
