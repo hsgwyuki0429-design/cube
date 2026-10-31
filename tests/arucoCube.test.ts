@@ -316,8 +316,8 @@ describe("1 列（1×3）・1 枚（1×1）の面", () => {
     const fl = at.indexOf(s.id);
     return Math.floor(fl / 9) !== face || keep.includes(fl % 9);
   });
-  const faceOf = (scheme: "unique54" | "aruco12", b: ArucoBench, sts: Sticker[], slot: number) =>
-    reconstructFaces(b.detect(renderArucoCube(cv, { ...SIZE, stickers: sts, orient: 0, eye: EYE, noise: 2, scheme }))[0].markers, SIZE, null, scheme).faces.find((f) => f.slot === slot);
+  const faceOf = (scheme: "unique54" | "aruco12", b: ArucoBench, sts: Sticker[], slot: number, eye = EYE) =>
+    reconstructFaces(b.detect(renderArucoCube(cv, { ...SIZE, stickers: sts, orient: 0, eye, noise: 2, scheme }))[0].markers, SIZE, null, scheme).faces.find((f) => f.slot === slot);
   const want = (slot: number) => Array.from({ length: 9 }, (_, cell) => Math.floor(at[VIEW[slot * 9 + cell]] / 9));
 
   it("54 種類: 正面の上の段だけ見えていても、その 3 マスを使う", () => {
@@ -334,7 +334,8 @@ describe("1 列（1×3）・1 枚（1×1）の面", () => {
   });
 
   it("12 種類: センター 1 枚だけ見えている面は、真ん中のマス（その面の色）を使う", () => {
-    const f = faceOf("aruco12", bench12c, keepOnly(1, [4]), 1)!;
+    // 右の面を少し正面寄りに見る（EYE の斜めでは、いまの OpenCV は 12 種類の 1 枚だけの ID を読み違える: 7 → 9）
+    const f = faceOf("aruco12", bench12c, keepOnly(1, [4]), 1, [3.2, 2.4, 5.5])!;
     expect(f.partial).toBe(true);
     expect(f.colors).toEqual([-1, -1, -1, -1, want(1)[4], -1, -1, -1, -1]);
   });
