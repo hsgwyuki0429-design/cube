@@ -10,6 +10,8 @@ import type { Lab } from "./color";
 import { type PatchFrame, facePatch, refineEnd, refineStart } from "./fineTiming";
 import type { CV, PixelSource } from "./image";
 import { DEFAULT_PIPELINE, type PipelineConfig, processFrame } from "./pipeline";
+import { type FaceLayer, cellH } from "../aruco/cube";
+import { type Mat3, applyH } from "./homography";
 
 export interface RefineInput {
   state: number[]; // 解析範囲の始まりの状態（スクランブル後）
@@ -22,6 +24,69 @@ export interface RefineInput {
   pipeline?: Partial<PipelineConfig>;
   // タイムを測らない解析（フリー）: 画素のパッチは直近のこれだけ残す（長く続けてもメモリが増えないように）
   keepPatchesMs?: number;
+  // 軽い検査で、前に精密に処理したフレームとマスの色が同じフレームを飛ばす（既定 true。下の「軽い検査」）
+  gate?: boolean;
+}
+
+// 軽い検査: 全フレームを精密に処理する代わりに、前に精密に処理したフレーム（基準）の面の格子で、各マスの真ん中あたりの色を数点だけ測り
+// （CHECK_POINTS × CHECK_POINTS 点の平均。1 フレーム 0.1ms 程度）、基準と同じなら飛ばす。層を回す・持ち替える・指が動く・キューブが
+// 揺れて格子からずれると色が変わるので精密に処理する（迷ったら精密に。読み違えて飛ばすことはない向き）。
+// 変わっていたら、取っておいた直前のフレーム（変わる前の最後の 1 枚。回し始めの時刻に要る）と、そのフレームを精密に処理し、
+// その後 GATE_TAIL 枚も精密に処理する（回し終わりの時刻は、止まった後のフレームでも止まっていることを確かめる）。GATE_KEEP_MS ごとにも精密に
+// （ライブ並みの認識を軽い検査にすると、精密な処理の 7 割ほどかかり、飛ばしても全体では遅くなった）
+const GATE_KEEP_MS = 200;
+const GATE_TAIL = 2;
+const CHECK_POINTS = 5;
+const CHECK_DIFF = 25; // マスの色（25 点の R・G・B の平均）の差の最大がこれより大きければ「変わった」（0..255）
+
+interface CellSignature {
+  faces: { H: Mat3; layer?: FaceLayer; rgb: Float32Array }[]; // 面ごとに 9 マス × RGB
+}
+
+function cellColors(img: PixelSource, H: Mat3, layer: FaceLayer | undefined): Float32Array | null {
+  const out = new Float32Array(27);
+  for (let cell = 0; cell < 9; cell++) {
+    const Hc = cellH({ H, layer }, cell);
+    const r = Math.floor(cell / 3);
+    const c = cell % 3;
+    let n = 0;
+    for (let i = 0; i < CHECK_POINTS; i++)
+      for (let j = 0; j < CHECK_POINTS; j++) {
+        const [x, y] = applyH(Hc, c + 0.15 + (0.7 * (j + 0.5)) / CHECK_POINTS, r + 0.15 + (0.7 * (i + 0.5)) / CHECK_POINTS);
+        const xi = Math.round(x);
+        const yi = Math.round(y);
+        if (xi < 0 || yi < 0 || xi >= img.width || yi >= img.height) return null;
+        const k = (yi * img.width + xi) * 4;
+        out[cell * 3] += img.data[k];
+        out[cell * 3 + 1] += img.data[k + 1];
+        out[cell * 3 + 2] += img.data[k + 2];
+        n++;
+      }
+    for (let k = 0; k < 3; k++) out[cell * 3 + k] /= n;
+  }
+  return out;
+}
+
+// 精密に処理したフレームの面（3×3 の面だけ）の、マスの色の手がかり
+function signatureOf(img: PixelSource, faces: { H: Mat3; held?: boolean; layer?: FaceLayer }[]): CellSignature | null {
+  const out: CellSignature = { faces: [] };
+  for (const f of faces) {
+    if (f.held) continue;
+    const rgb = cellColors(img, f.H, f.layer);
+    if (!rgb) return null;
+    out.faces.push({ H: f.H, layer: f.layer, rgb });
+  }
+  return out.faces.length ? out : null;
+}
+
+// img のマスの色が、基準 sig と同じか
+export function sameCells(img: PixelSource, sig: CellSignature): boolean {
+  for (const f of sig.faces) {
+    const rgb = cellColors(img, f.H, f.layer);
+    if (!rgb) return false;
+    for (let k = 0; k < 27; k++) if (Math.abs(rgb[k] - f.rgb[k]) > CHECK_DIFF) return false;
+  }
+  return true;
 }
 
 export interface RefinedMove {
@@ -72,6 +137,12 @@ export class Refiner {
   readonly engine: TrackerEngine;
   private memory = {}; // フレームの間で引き継ぐもの（processFrame）
   private config: PipelineConfig;
+  // 軽い検査
+  private ref: CellSignature | null = null; // 最後に精密に処理したフレームのマスの色
+  private lastFullT = -Infinity;
+  private held: { img: PixelSource; t: number } | null = null; // 飛ばした直前のフレーム
+  private tail = 0;
+  gated = 0; // 軽い検査で飛ばしたフレームの数
   readonly patches: PatchFrame[] = [];
   readonly looks: { t: number; solved: boolean }[] = []; // フレームごとの「完成して見えるか」
   frames = 0;
@@ -125,7 +196,25 @@ export class Refiner {
 
   push(img: PixelSource, t: number): void {
     if (t < this.input.from || t > this.input.to) return;
+    if (this.input.gate === false) return this.full(img, t);
+    const forced = !this.ref || this.tail > 0 || t - this.lastFullT >= GATE_KEEP_MS;
+    const changed = !this.ref || !sameCells(img, this.ref);
+    if (!forced && !changed) {
+      this.held = { img: copyImage(img, this.held?.img), t };
+      this.gated++;
+      return;
+    }
+    // 変わった: 変わる前の最後の 1 枚から精密に処理する
+    if (changed && this.held) this.full(this.held.img, this.held.t);
+    this.held = null;
+    this.full(img, t);
+    this.tail = changed ? GATE_TAIL : Math.max(0, this.tail - 1);
+  }
+
+  private full(img: PixelSource, t: number): void {
     const r = processFrame(this.cv, img, t, this.config, this.memory);
+    this.ref = signatureOf(img, r.faces);
+    this.lastFullT = t;
     const reading = { t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, ids: f.ids })), turn: r.turn };
     this.engine.push(reading);
     this.looks.push({ t, solved: reading.faces.length > 0 && this.engine.looksSolved(reading) });
@@ -250,4 +339,11 @@ export class Refiner {
       raw: timed.map((m) => ({ move: m.move, t0: m.t0, t: m.t, start: m.start, end: m.end, inferred: m.inferred })),
     };
   }
+}
+
+// 画素を写す（飛ばしたフレームを取っておく。古いものの入れ物を使い回す）
+function copyImage(img: PixelSource, reuse?: PixelSource): PixelSource {
+  const data = reuse && reuse.data.length === img.data.length ? (reuse.data as Uint8ClampedArray) : new Uint8ClampedArray(img.data.length);
+  data.set(img.data);
+  return { data, width: img.width, height: img.height } as PixelSource;
 }
