@@ -28,6 +28,8 @@ export interface PipelineConfig {
   arucoDesign?: string;
   // 回転途中の形状認識で回している層と角度を求め、追跡の手がかりにする（既定 true。src/aruco/turn.ts）
   arucoTurn?: boolean;
+  // マーカーが大きく映っていたら、切り出しを半分に縮めて検出する（既定 true。src/vision/arucoFrame.ts）
+  arucoShrink?: boolean;
 }
 
 export const DEFAULT_PIPELINE: PipelineConfig = { stickers: "unique54" };
@@ -63,5 +65,6 @@ export function processFrame(cv: CV, img: PixelSource, t: number, config: Pipeli
     region: config.arucoRegion,
     design: config.arucoDesign,
     turn: config.arucoTurn,
+    shrink: config.arucoShrink,
   });
 }

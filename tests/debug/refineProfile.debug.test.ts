@@ -103,7 +103,7 @@ function arucoScene(cv: unknown, name: string, width: number, height: number, ey
     frames,
     target: applyMoves(solvedState(), truth),
     truth: alg,
-    refiner: () => new Refiner(cv as never, { state: Array.from(solvedState()), refs: ARUCO_REFS, from: 0, to: Infinity, startHint: lead, pipeline: { stickers: "unique54", arucoDesign: DESIGN }, gate: !process.env.NOGATE }),
+    refiner: () => new Refiner(cv as never, { state: Array.from(solvedState()), refs: ARUCO_REFS, from: 0, to: Infinity, startHint: lead, pipeline: { stickers: "unique54", arucoDesign: DESIGN, arucoShrink: !process.env.NOSHRINK }, gate: !process.env.NOGATE }),
   };
 }
 
@@ -115,7 +115,7 @@ function liveRunner(cv: unknown) {
   const memory = {};
   return {
     push(img: Img, t: number) {
-      const r = processFrame(cv as never, img, t, { stickers: "unique54", arucoDesign: DESIGN, arucoRegion: !process.env.NOREGION }, memory);
+      const r = processFrame(cv as never, img, t, { stickers: "unique54", arucoDesign: DESIGN, arucoRegion: !process.env.NOREGION, arucoShrink: !process.env.NOSHRINK }, memory);
       engine.push({ t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, ids: f.ids })), turn: r.turn });
     },
     result: (_: CubeState) => ({ moves: engine.decoder.bestMoves(), solved: false, inferred: 0, method: "live" }),

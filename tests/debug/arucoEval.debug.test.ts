@@ -85,7 +85,8 @@ it("ArUco の総合評価", async () => {
     const truth = parseMoves(o.alg);
     const SIZE = { width: 1280, height: 720 };
     const EYE: Vec3 = [2.2 + rnd() * 0.6, 2.4, 6];
-    const pipeline = { ...DEFAULT_PIPELINE, arucoDesign: key, arucoTurn: o.turn !== false };
+    // ライブは本体と同じ設定（直前のマーカーの周りだけで検出・大きく映ったら縮める）。NOSHRINK=1 で縮めない
+    const pipeline = { ...DEFAULT_PIPELINE, arucoDesign: key, arucoTurn: o.turn !== false, arucoRegion: true, arucoShrink: !process.env.NOSHRINK };
     const engine = o.live ? new TrackerEngine(solvedState(), ARUCO_REFS, { observer: ARUCO_OBSERVER }) : null;
     const memory = {};
     const refiner = new Refiner(cv, { state: Array.from(solvedState()), refs: ARUCO_REFS, from: 0, to: Infinity, startHint: 300, pipeline });
