@@ -10,6 +10,7 @@ import { STICKERS, designOf } from "../../src/aruco/design";
 import { ARUCO_REFS } from "../../src/aruco/palette";
 import { MOVE_NAMES, type Vec3, applyMoves, parseMoves, solvedState, statesEqual } from "../../src/cube/model";
 import { TrackerEngine } from "../../src/track/engine";
+import type { DecoderOptions } from "../../src/track/decoder";
 import { simplifyMoves } from "../../src/track/merge";
 import { ARUCO_OBSERVER } from "../../src/track/observer";
 import { cellInLayer, layerAtRest } from "../../src/track/timing";
@@ -21,7 +22,8 @@ import { applyMoveStickers, renderArucoCube, solvedStickers } from "../arucoCube
 import type { Finger } from "../render";
 
 const LIVE_BASE: PipelineConfig = { ...STICKERS, arucoRegion: true, arucoTrack: true }; // src/app/controller.ts と同じ
-const LIVE: Record<string, Partial<PipelineConfig>> = {
+// decoder: 追跡のデコーダの設定（認識の設定ではない）
+const LIVE: Record<string, Partial<PipelineConfig> & { decoder?: Partial<DecoderOptions> }> = {
   base: {},
   notrack: { arucoTrack: false },
   noshrink: { arucoShrink: false },
@@ -30,8 +32,8 @@ const LIVE: Record<string, Partial<PipelineConfig>> = {
   noidtrack: { arucoIdTrack: false },
   noturn: { arucoTurn: false },
   reread9: { arucoReread: 54 },
-  reread0: { arucoReread: 0 },
   reread2: { arucoReread: 2 },
+  reread4: { arucoReread: 4 }, // 以前のライブ（読めなかったマスを 4 つまで読み直す）
 };
 const REFINE: Record<string, { pipeline?: Partial<PipelineConfig>; gate?: boolean; still?: boolean }> = {
   base: {},
@@ -118,13 +120,16 @@ it("手順の総合評価", async () => {
     // 名前@k: 実機のライブのように、Worker が処理している間（処理時間 × k）に来たフレームは捨てる（k はスマホが Node より遅い分）
     const lives = liveNames.map((name) => ({
       name,
-      k: Number(name.split("@")[1] ?? process.env.LIVEK ?? 0),
+      // 名前@fN: 1 秒 N 枚に固定して処理する（処理時間によらない。低い fps での崩れ方を比べる）
+      k: name.split("@")[1]?.startsWith("f") ? 0 : Number(name.split("@")[1] ?? process.env.LIVEK ?? 0),
+      every: name.split("@")[1]?.startsWith("f") ? 1000 / Number(name.split("@")[1].slice(1)) : 0,
       cfg: { ...LIVE_BASE, ...LIVE[name.split("@")[0]] },
       memory: {},
-      engine: new TrackerEngine(solvedState(), ARUCO_REFS, { observer: ARUCO_OBSERVER }),
+      engine: new TrackerEngine(solvedState(), ARUCO_REFS, { observer: ARUCO_OBSERVER, decoder: LIVE[name.split("@")[0]].decoder ?? {} }),
       ms: 0,
       busyUntil: -Infinity,
       processed: 0,
+      spent: [] as number[],
     }));
     const refines = refineNames.map((name) => ({
       name,
@@ -170,14 +175,15 @@ it("手順の総合評価", async () => {
       if (cacheFile && !existsSync(cacheFile)) writeFileSync(cacheFile, gzipSync(img.data, { level: 1 }));
       renderMs += performance.now() - t0;
       for (const l of lives) {
-        if (l.k && t < l.busyUntil) continue;
+        if ((l.k || l.every) && t < l.busyUntil) continue;
         const a = performance.now();
         const res = processFrame(cv as never, img, t, l.cfg, l.memory);
         l.engine.push(frameReading(t, res));
         const spent = performance.now() - a;
         l.ms += spent;
         l.processed++;
-        l.busyUntil = t + spent * l.k - 1;
+        l.spent.push(spent);
+        l.busyUntil = l.every ? t + l.every - 1 : t + spent * l.k - 1;
         if (process.env.LIVEDUMP && t >= Number(process.env.LIVEDUMP)) process.stdout.write(`# live ${t.toFixed(0)} ${l.engine.decoder.status} ${l.engine.decoder.bestMoves().map((m) => MOVE_NAMES[m.move]).join(" ")} | obs ${l.engine.decoder.observations} cost ${l.engine.decoder.lastObservationCost.toFixed(2)} | ${res.faces.map((f) => `${f.slot}:${(f.ids ?? []).map((id) => (id < 0 ? "." : id)).join(",")}`).join(" ")}\n`);
       }
       if (process.env.SHIFTS && t <= Number(process.env.SHIFTS)) {
@@ -199,7 +205,7 @@ it("手順の総合評価", async () => {
     const rows: object[] = [];
     for (const l of lives) {
       const got = simplifyMoves(l.engine.decoder.bestMoves()).map((m) => MOVE_NAMES[m.move]);
-      rows.push({ seed, view: sc.view.name, kind: "live", cfg: l.name, ok: correct(got), dist: dist(got, truth), got: got.join(" "), truth: truthAlg, ms: l.ms / l.processed, fps: (l.processed * 1000) / sc.endT });
+      rows.push({ seed, view: sc.view.name, kind: "live", cfg: l.name, ok: correct(got), dist: dist(got, truth), got: got.join(" "), truth: truthAlg, ms: l.ms / l.processed, fps: (l.processed * 1000) / sc.endT, p90: [...l.spent].sort((a, b) => a - b)[Math.floor(l.spent.length * 0.9)], max: Math.max(...l.spent) });
     }
     const target = applyMoves(solvedState(), sc.alg);
     const tStart = sc.timing[0].start;
