@@ -27,7 +27,8 @@ export function videoStride(captureFps: number, maxFps: number): number {
 }
 
 // onFrame の t は実際の時間（ms、最初のフレーム = 0）
-export async function decodeVideoFile(file: Blob, o: VideoFileOptions, onFrame: (img: ImageData, t: number) => void): Promise<number> {
+// onFrame が Promise を返したら、終わるまで次のフレームを渡さない（精密解析の並列化で、頼んだ検出が溜まりすぎないように）
+export async function decodeVideoFile(file: Blob, o: VideoFileOptions, onFrame: (img: ImageData, t: number) => void | Promise<void>): Promise<number> {
   if (typeof VideoDecoder === "undefined") throw new Error("このブラウザは WebCodecs（VideoDecoder）に対応していません。最新の Chrome・Edge・Safari で開いてください");
   const d: Demuxed = await demuxFile(file);
   const support = await VideoDecoder.isConfigSupported(d.config).catch(() => ({ supported: false }));
@@ -69,7 +70,7 @@ export async function decodeVideoFile(file: Blob, o: VideoFileOptions, onFrame: 
   let index = 0;
   let count = 0;
   const cancelled = () => !!o.cancelled?.();
-  const drain = () => {
+  const drain = async () => {
     while (pending.length && !cancelled()) {
       const f = pending.shift()!;
       try {
@@ -82,7 +83,7 @@ export async function decodeVideoFile(file: Blob, o: VideoFileOptions, onFrame: 
         ctx.drawImage(f, 0, 0, d.width, d.height);
         const t = ((f.timestamp - d.firstCts) / 1000) * timeScale;
         f.close();
-        onFrame(ctx.getImageData(0, 0, aw, ah), t);
+        await onFrame(ctx.getImageData(0, 0, aw, ah), t);
         count++;
       } finally {
         f.close();
@@ -103,15 +104,15 @@ export async function decodeVideoFile(file: Blob, o: VideoFileOptions, onFrame: 
       if (error) throw error;
       const s = d.samples[i];
       decoder.decode(new EncodedVideoChunk({ type: s.key ? "key" : "delta", timestamp: s.cts, duration: s.duration || undefined, data }));
-      drain();
+      await drain();
       while (decoder.decodeQueueSize > 3 && !error && !cancelled()) {
         await waitOutput();
-        drain();
+        await drain();
       }
     }
     if (!cancelled()) {
       await decoder.flush();
-      drain();
+      await drain();
     }
     if (error) throw error;
   } finally {

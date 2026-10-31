@@ -7,6 +7,9 @@ import { StreamDecoder, decodeRecording } from "./decode";
 import { StillSkipper } from "./motion";
 import { estimatePose, rotationAngle } from "./pose";
 import { Refiner } from "./refine";
+import { DetectPool, ParallelFeeder, poolSize } from "./detectPool";
+import { stickerScheme } from "../aruco/codes";
+import { detectWithHint, detectorFor } from "./arucoFrame";
 import { DEFAULT_PIPELINE, type PipelineConfig, processFrame } from "./pipeline";
 import type { FrameMessage, FromWorker, StreamPartial, ToWorker } from "./protocol";
 import { type CV, initOpenCv } from "./image";
@@ -58,6 +61,24 @@ function doAnchor(id: number, s: Stream): void {
 }
 
 const post = (msg: FromWorker) => (self as unknown as Worker).postMessage(msg);
+
+// 精密解析の検出を別の Worker に分ける（src/vision/detectPool.ts）。作れない・OpenCV を読み込めないときは null（この Worker だけで）
+async function parallelFeeder(refiner: Refiner): Promise<{ pool: DetectPool; feeder: ParallelFeeder } | null> {
+  const n = poolSize();
+  if (!n || typeof Worker === "undefined") return null;
+  const cfg = refiner.pipelineConfig;
+  let pool: DetectPool | null = null;
+  try {
+    pool = new DetectPool(n, { scheme: stickerScheme(cfg.stickers), design: cfg.arucoDesign ?? "standard", thorough: !!cfg.arucoThorough });
+    await pool.start();
+    const p = pool;
+    return { pool: p, feeder: new ParallelFeeder(refiner, (img, hint) => p.detect(img, hint), n * 2) };
+  } catch (e) {
+    console.warn("検出を並列にできませんでした。", e);
+    pool?.close();
+    return null;
+  }
+}
 
 function needCv(): CV {
   if (!cv) throw new Error("画像認識（OpenCV）を読み込めませんでした");
@@ -179,6 +200,8 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
           const { decodeVideoFile } = await import("./videoFile");
           const refiner = new Refiner(needCv(), { ...input, pipeline: { ...config, ...input.pipeline } });
           const still = new StillSkipper();
+          // 検出を別の Worker に分ける（コアが少ない・Worker を作れないときは、この Worker だけで）
+          const feeder = await parallelFeeder(refiner);
           let total = 1;
           let done = 0;
           let lastPost = 0;
@@ -192,8 +215,11 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
                 post({ type: "video-info", id, info, analyzedFrames });
               },
             },
-            (img, t) => {
-              for (const f of still.next(img, t)) refiner.push(f.img, f.t);
+            async (img, t) => {
+              for (const f of still.next(img, t)) {
+                if (feeder) await feeder.feeder.push(f.img, f.t);
+                else refiner.push(f.img, f.t);
+              }
               done++;
               if (performance.now() - lastPost > 200) {
                 lastPost = performance.now();
@@ -201,6 +227,8 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
               }
             },
           );
+          await feeder?.feeder.flush();
+          feeder?.pool.close();
           if (videoCancels.has(id)) throw new Error("中止しました");
           post({ type: "refine-progress", id, done: total, total });
           post({ type: "refine-result", id, result: refiner.result(target ? Uint8Array.from(target) : null) });
@@ -209,6 +237,12 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
         } finally {
           videoCancels.delete(id);
         }
+        return;
+      }
+      case "detect": {
+        // 検出だけ（精密解析の並列化: 解析の Worker が、この Worker を何個か作って検出を分ける）
+        const b = detectorFor(needCv(), msg.scheme, msg.thorough, msg.design);
+        post({ type: "detected", id: msg.id, markers: detectWithHint(b, msg.img, msg.hint) });
         return;
       }
       case "video-cancel": {

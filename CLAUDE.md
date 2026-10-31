@@ -67,6 +67,11 @@ src/vision Vision             ← 映像 → マーカー → 見えている面
 ### 4. メインスレッドを塞がない
 
 - 画像認識と追跡エンジンは `src/vision/vision.worker.ts`（OpenCV.js 約 13MB もここだけで読む）
+- 動画ファイルの精密解析は、検出（OpenCV のマーカー検出。精密解析の時間の 7 割ほど）だけを、同じ Worker スクリプトの別の Worker
+  （コア数 − 2、最大 3 個。`src/vision/detectPool.ts`）に分ける。面の組み立て・読み直し・追跡（フレームの間で引き継ぐもの）は解析の
+  Worker が時刻順に行う（`Refiner.gate` → 検出を頼む → `full(img, t, markers)`。`ParallelFeeder`）。切り出しの手がかりは最後に処理し
+  終えたフレームから（`detectHint`）。合成動画の解析が 40 → 30 秒（2 個）、手順・タイムは同じ（`tests/parallelRefine.test.ts`）。
+  Worker 1 個あたり OpenCV で 100MB ほど使う。録画しながらの精密解析はライブの認識と CPU を取り合うので、まだ 1 個で
 - 精密解析は同じ Worker スクリプトの**別インスタンス**（`RefineClient`）で動かし、リアルタイムの追跡を止めない。
   追跡を始めたとき（タイマーはインスペクション）から録画を少しずつ渡して進め（`stream-feed`）、途中結果に追跡を乗り換える
   （下の「タイマーと精密解析」）。動画ファイルの解析（`video-refine`）もさらに別のインスタンス

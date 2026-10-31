@@ -1,4 +1,7 @@
 // メインスレッド ⇄ 認識 Worker のメッセージ
+import type { StickerScheme } from "../aruco/codes";
+import type { Marker } from "../aruco/detect";
+import type { DetectHint } from "./arucoFrame";
 import type { EngineOptions, TrackUpdate } from "../track/engine";
 import type { DecodedMove } from "../track/types";
 import type { Lab } from "./color";
@@ -28,7 +31,9 @@ export type ToWorker =
   | { type: "stream-anchor"; id: number; t: number; target: number[] }
   // 動画ファイル（スロー撮影など）を精密解析する。target: 最後の状態（タイマーなら完成。分からなければ null）
   | { type: "video-refine"; id: number; file: Blob; input: RefineInput; target: number[] | null; options: VideoRefineOptions }
-  | { type: "video-cancel"; id: number };
+  | { type: "video-cancel"; id: number }
+  // 検出だけ（精密解析の並列化: src/vision/detectPool.ts）
+  | { type: "detect"; id: number; img: { data: Uint8ClampedArray; width: number; height: number }; hint: DetectHint | null; scheme: StickerScheme; design: string; thorough: boolean };
 
 export interface VideoRefineOptions {
   maxSide: number; // 長辺をこれに縮める
@@ -61,7 +66,8 @@ export type FromWorker =
   | { type: "refine-result"; id: number; result: RefineResult }
   | { type: "refine-error"; id: number; message: string }
   | { type: "stream-partial"; id: number; partial: StreamPartial }
-  | { type: "video-info"; id: number; info: VideoFileInfo; analyzedFrames: number };
+  | { type: "video-info"; id: number; info: VideoFileInfo; analyzedFrames: number }
+  | { type: "detected"; id: number; markers: Marker[] };
 
 // ソルブ中の精密解析の途中結果（前向きに t まで解いたもの）
 export interface StreamPartial {

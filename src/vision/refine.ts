@@ -11,6 +11,8 @@ import { type PatchFrame, facePatch, refineEnd, refineStart } from "./fineTiming
 import type { CV, PixelSource } from "./image";
 import { DEFAULT_PIPELINE, type PipelineConfig, processFrame } from "./pipeline";
 import { type FaceLayer, cellH } from "../aruco/cube";
+import type { Marker } from "../aruco/detect";
+import { type DetectHint, detectHint } from "./arucoFrame";
 import { type Mat3, applyH } from "./homography";
 
 export interface RefineInput {
@@ -139,7 +141,7 @@ export class Refiner {
   private config: PipelineConfig;
   // 軽い検査
   private ref: CellSignature | null = null; // 最後に精密に処理したフレームのマスの色
-  private lastFullT = -Infinity;
+  private lastGateT = -Infinity; // 最後に精密に処理すると決めたフレーム
   private held: { img: PixelSource; t: number } | null = null; // 飛ばした直前のフレーム
   private tail = 0;
   gated = 0; // 軽い検査で飛ばしたフレームの数
@@ -195,26 +197,43 @@ export class Refiner {
   }
 
   push(img: PixelSource, t: number): void {
-    if (t < this.input.from || t > this.input.to) return;
-    if (this.input.gate === false) return this.full(img, t);
-    const forced = !this.ref || this.tail > 0 || t - this.lastFullT >= GATE_KEEP_MS;
+    for (const f of this.gate(img, t)) this.full(f.img, f.t);
+  }
+
+  // 軽い検査: このフレームで精密に処理するもの（0〜2 枚。時刻順）。飛ばすフレームは取っておく（変わったときに直前の 1 枚として処理する）。
+  // 検出を別の Worker で並列にするときは、返ったフレームを検出してから順に full に渡す（基準は最後に処理し終えたフレーム）
+  gate(img: PixelSource, t: number): { img: PixelSource; t: number }[] {
+    if (t < this.input.from || t > this.input.to) return [];
+    if (this.input.gate === false) return [{ img, t }];
+    const forced = !this.ref || this.tail > 0 || t - this.lastGateT >= GATE_KEEP_MS;
     const changed = !this.ref || !sameCells(img, this.ref);
     if (!forced && !changed) {
       this.held = { img: copyImage(img, this.held?.img), t };
       this.gated++;
-      return;
+      return [];
     }
     // 変わった: 変わる前の最後の 1 枚から精密に処理する
-    if (changed && this.held) this.full(this.held.img, this.held.t);
+    const out = changed && this.held ? [this.held] : [];
     this.held = null;
-    this.full(img, t);
+    out.push({ img, t });
     this.tail = changed ? GATE_TAIL : Math.max(0, this.tail - 1);
+    this.lastGateT = t;
+    return out;
   }
 
-  private full(img: PixelSource, t: number): void {
-    const r = processFrame(this.cv, img, t, this.config, this.memory);
+  get pipelineConfig(): PipelineConfig {
+    return this.config;
+  }
+
+  // 次に検出するフレームの切り出し（別の Worker で検出するとき。最後に処理し終えたフレームのマーカーの範囲から）
+  detectHint(img: PixelSource, t: number): DetectHint | null {
+    return this.config.arucoRegion ? detectHint(this.memory, img, t) : null;
+  }
+
+  // 精密に処理する。detected: 別の Worker で検出しておいたマーカー
+  full(img: PixelSource, t: number, detected?: Marker[]): void {
+    const r = processFrame(this.cv, img, t, this.config, this.memory, detected);
     this.ref = signatureOf(img, r.faces);
-    this.lastFullT = t;
     const reading = { t, faces: r.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, weight: f.weight, spread: f.spread, masked: f.masked, ids: f.ids })), turn: r.turn };
     this.engine.push(reading);
     this.looks.push({ t, solved: reading.faces.length > 0 && this.engine.looksSolved(reading) });

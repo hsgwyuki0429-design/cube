@@ -2,6 +2,7 @@
 // ステッカーの ID・読みの確からしさを返す（src/vision/arucoFrame.ts）。Worker とテストの両方から使う（OpenCV のオブジェクトは呼び出し側が渡す）
 import { stickerScheme } from "../aruco/codes";
 import type { FaceLayer } from "../aruco/cube";
+import type { Marker } from "../aruco/detect";
 import { processAruco } from "./arucoFrame";
 import type { Lab } from "./color";
 import type { Mat3, Pt } from "./homography";
@@ -58,7 +59,8 @@ export interface FrameResult {
 }
 
 // memory: フレームの間で引き継ぐもの（キューブの傾き・ID なし追跡・直前のマーカーの範囲）の入れ物。同じ映像には同じものを渡す
-export function processFrame(cv: CV, img: PixelSource, t: number, config: PipelineConfig, memory: object): FrameResult {
+// detected: 別の Worker で検出しておいたマーカー（精密解析の並列化。省略時はここで検出する）
+export function processFrame(cv: CV, img: PixelSource, t: number, config: PipelineConfig, memory: object, detected?: Marker[]): FrameResult {
   return processAruco(cv, img, t, memory, stickerScheme(config.stickers), !!config.arucoThorough, {
     reread: config.arucoReread,
     focus: config.focus,
@@ -69,5 +71,5 @@ export function processFrame(cv: CV, img: PixelSource, t: number, config: Pipeli
     turn: config.arucoTurn,
     shrink: config.arucoShrink,
     track: config.arucoTrack,
-  });
+  }, detected);
 }

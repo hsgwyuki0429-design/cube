@@ -8,7 +8,7 @@ import { type VisibleFace, cellH, readConfidence, reconstructFaces, trustedColor
 import { DEFAULT_TURN, type TurnResult, type TurnTrack, layerCells, projectedFace, recognizeTurn, unwrapTurn } from "../aruco/turn";
 import type { TurnSnapshot } from "../track/types";
 import type { Pose } from "./pose";
-import { ArucoBench, DEFAULT_CONFIGS, type Marker, THOROUGH_PARAMS } from "../aruco/detect";
+import { ArucoBench, DEFAULT_CONFIGS, type Marker, type Region, THOROUGH_PARAMS } from "../aruco/detect";
 import { trackMarkers } from "../aruco/markerTrack";
 import { type StickerScheme, decode, markerSize } from "../aruco/codes";
 import { STANDARD_DESIGN, type StickerDesign, designOf } from "../aruco/design";
@@ -34,7 +34,7 @@ const turnStates = new WeakMap<object, { pose: Pose | null; poseT: number; track
 const POSE_MS = 500;
 const TURN_GAP_MS = 80; // 回している層がこれより長く見えなければ、つながりを切る
 // 直前のフレームのマーカーの範囲（切り出して検出するため。記憶の入れ物ごと）
-const boxes = new WeakMap<object, { t: number; x0: number; y0: number; x1: number; y1: number; side: number; small: number }>(); // small: 小さい方から 1 割のマーカーの辺
+const boxes = new WeakMap<object, Box>(); // small: 小さい方から 1 割のマーカーの辺
 const REGION_MS = 200; // これより前のフレームの範囲は使わない
 const REGION_MARGIN = 2.5; // 範囲を広げる量（マーカーの辺の倍数。キューブが少し動いても、回している層がはみ出しても入る）
 // 範囲を広げる量の下限（画像の長辺に対する割合）。4 個の配置はマーカーが小さく、ライブ（1 秒 10〜20 枚）ではフレームの間に
@@ -62,6 +62,71 @@ const TRACK_GAP_MS = 150;
 const TRACK_MIN = 8;
 const TRACK_MIN_FIT = 0.85; // 追ったマーカーの明暗が符号どおりの割合（検出と同じ: src/aruco/detect.ts の MIN_FIT）
 
+type Box = { t: number; x0: number; y0: number; x1: number; y1: number; side: number; small: number };
+
+// 直前のフレームのマーカーの範囲から、検出する切り出しと縮める倍率を決める（範囲が画像の 8 割を超えるなら全体）
+function regionOf(prev: Box, img: { width: number; height: number }, shrinkSide: number): DetectHint | null {
+  const m = Math.max(REGION_MARGIN * prev.side, REGION_MARGIN_MIN * Math.max(img.width, img.height));
+  const x0 = Math.max(0, Math.floor(prev.x0 - m));
+  const y0 = Math.max(0, Math.floor(prev.y0 - m));
+  const x1 = Math.min(img.width, Math.ceil(prev.x1 + m));
+  const y1 = Math.min(img.height, Math.ceil(prev.y1 + m));
+  if ((x1 - x0) * (y1 - y0) >= img.width * img.height * 0.8) return null;
+  return { region: { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }, shrink: prev.small >= shrinkSide ? 2 : 1, edge: REGION_EDGE * prev.side };
+}
+
+// 検出の手がかり: 切り出し・縮める倍率・縁の近さ（これより縁に近いマーカーがあれば全体でやり直す）
+export interface DetectHint {
+  region: Region;
+  shrink: 1 | 2;
+  edge: number;
+}
+
+// 手がかりの切り出しで検出し、縁の近くにマーカーがある（キューブが大きく動いた）・何も見つからないときは全体でやり直す。
+// フレームの間で引き継ぐものを使わないので、別の Worker でも動く（精密解析の並列化: src/vision/detectPool.ts）
+export function detectWithHint(b: ArucoBench, img: PixelSource, hint: DetectHint | null): Marker[] {
+  if (hint) {
+    const { region: r, shrink, edge: e } = hint;
+    const found = b.detect(img, r, shrink)[0].markers;
+    const x1 = r.x + r.w;
+    const y1 = r.y + r.h;
+    const nearEdge = found.some((mk) =>
+      [0, 2, 4, 6].some((i) => (mk.corners[i] - r.x < e && r.x > 0) || (x1 - mk.corners[i] < e && x1 < img.width) || (mk.corners[i + 1] - r.y < e && r.y > 0) || (y1 - mk.corners[i + 1] < e && y1 < img.height)),
+    );
+    if (found.length && !nearEdge) return found;
+  }
+  return b.detect(img)[0].markers;
+}
+
+// 次のフレームの切り出しのために、マーカーの範囲を覚える
+function rememberBox(memory: object, t: number, markers: Marker[]): void {
+  if (markers.length < 4) {
+    boxes.delete(memory);
+    return;
+  }
+  const xs = markers.flatMap((mk) => [mk.corners[0], mk.corners[2], mk.corners[4], mk.corners[6]]);
+  const ys = markers.flatMap((mk) => [mk.corners[1], mk.corners[3], mk.corners[5], mk.corners[7]]);
+  const sides = markers.map((mk) => mk.side).sort((p, q) => p - q);
+  boxes.set(memory, { t, x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys), side: sides[Math.floor(sides.length / 2)], small: sides[Math.floor(sides.length * 0.1)] });
+}
+
+// 精密解析を並列にするとき: 次に検出するフレームの手がかり（最後に処理し終えたフレームのマーカーの範囲から）
+export function detectHint(memory: object, img: { width: number; height: number }, t: number): DetectHint | null {
+  const prev = boxes.get(memory);
+  return prev && t - prev.t < REGION_MS && t > prev.t ? regionOf(prev, img, Infinity) : null;
+}
+
+// 検出器（精密解析の設定）。別の Worker で検出だけするとき
+export function detectorFor(cv: CV, scheme: StickerScheme, thorough: boolean, designKey: string): ArucoBench {
+  const design = designOf(designKey);
+  if (!bench || bench.cv !== cv || bench.scheme !== scheme || bench.thorough !== thorough || bench.design !== design) {
+    bench?.b.delete();
+    const config = thorough ? { ...DEFAULT_CONFIGS[1], params: THOROUGH_PARAMS } : DEFAULT_CONFIGS[1]; // max(RGB)
+    bench = { cv, scheme, thorough, design, b: new ArucoBench(cv, [config], scheme, design) };
+  }
+  return bench.b;
+}
+
 function detectMarkers(b: ArucoBench, img: PixelSource, t: number, memory: object, region: boolean, shrinkSide = Infinity, track = false): Marker[] {
   const prev = region ? boxes.get(memory) : undefined;
   let markers: Marker[] | null = null;
@@ -79,31 +144,12 @@ function detectMarkers(b: ArucoBench, img: PixelSource, t: number, memory: objec
       if (!tracked) markers = null;
     }
   }
-  if (!markers && prev && t - prev.t < REGION_MS && t > prev.t) {
-    const m = Math.max(REGION_MARGIN * prev.side, REGION_MARGIN_MIN * Math.max(img.width, img.height));
-    const x0 = Math.max(0, Math.floor(prev.x0 - m));
-    const y0 = Math.max(0, Math.floor(prev.y0 - m));
-    const x1 = Math.min(img.width, Math.ceil(prev.x1 + m));
-    const y1 = Math.min(img.height, Math.ceil(prev.y1 + m));
-    if ((x1 - x0) * (y1 - y0) < img.width * img.height * 0.8) {
-      const found = b.detect(img, { x: x0, y: y0, w: x1 - x0, h: y1 - y0 }, prev.small >= shrinkSide ? 2 : 1)[0].markers;
-      const e = REGION_EDGE * prev.side;
-      const nearEdge = found.some((mk) =>
-        [0, 2, 4, 6].some((i) => (mk.corners[i] - x0 < e && x0 > 0) || (x1 - mk.corners[i] < e && x1 < img.width) || (mk.corners[i + 1] - y0 < e && y0 > 0) || (y1 - mk.corners[i + 1] < e && y1 < img.height)),
-      );
-      if (found.length && !nearEdge) markers = found;
-    }
+  if (!markers) {
+    const hint = prev && t - prev.t < REGION_MS && t > prev.t ? regionOf(prev, img, shrinkSide) : null;
+    markers = detectWithHint(b, img, hint);
   }
-  markers ??= b.detect(img)[0].markers;
   if (track) tracks.set(memory, { t, detectT: tracked ? tr!.detectT : t, detected: tracked ? tr!.detected : markers.length, markers, shifts: tracked ? shifts : [] });
-  if (region) {
-    if (markers.length >= 4) {
-      const xs = markers.flatMap((mk) => [mk.corners[0], mk.corners[2], mk.corners[4], mk.corners[6]]);
-      const ys = markers.flatMap((mk) => [mk.corners[1], mk.corners[3], mk.corners[5], mk.corners[7]]);
-      const sides = markers.map((mk) => mk.side).sort((p, q) => p - q);
-      boxes.set(memory, { t, x0: Math.min(...xs), y0: Math.min(...ys), x1: Math.max(...xs), y1: Math.max(...ys), side: sides[Math.floor(sides.length / 2)], small: sides[Math.floor(sides.length * 0.1)] });
-    } else boxes.delete(memory);
-  }
+  if (region) rememberBox(memory, t, markers);
   return markers;
 }
 
@@ -122,14 +168,15 @@ export function processAruco(
   scheme: StickerScheme = "aruco54",
   thorough = false,
   opts: { reread?: number; focus?: number[]; colorFill?: boolean; idTrack?: boolean; region?: boolean; design?: string; turn?: boolean; shrink?: boolean; track?: boolean } = {},
+  detected?: Marker[], // 別の Worker で検出したマーカー（精密解析の並列化。detectWithHint）
 ): FrameResult {
   const design = designOf(opts.design ?? STANDARD_DESIGN.key);
-  if (!bench || bench.cv !== cv || bench.scheme !== scheme || bench.thorough !== thorough || bench.design !== design) {
-    bench?.b.delete();
-    const config = thorough ? { ...DEFAULT_CONFIGS[1], params: THOROUGH_PARAMS } : DEFAULT_CONFIGS[1]; // max(RGB)
-    bench = { cv, scheme, thorough, design, b: new ArucoBench(cv, [config], scheme, design) };
-  }
-  const markers = detectMarkers(bench.b, img, t, memory, !!opts.region, opts.shrink === false || thorough ? Infinity : SHRINK_SIDE, !!opts.track && !thorough);
+  const b = detectorFor(cv, scheme, thorough, design.key);
+  let markers: Marker[];
+  if (detected) {
+    markers = detected;
+    if (opts.region) rememberBox(memory, t, markers);
+  } else markers = detectMarkers(b, img, t, memory, !!opts.region, opts.shrink === false || thorough ? Infinity : SHRINK_SIDE, !!opts.track && !thorough);
   const prev = tilts.get(memory);
   const r = reconstructFaces(markers, img, prev && t - prev.t < TILT_MS ? prev.tilt : null, scheme, undefined, true, design);
   if (r.faces.length) tilts.set(memory, { t, tilt: r.tilt });
