@@ -39,34 +39,29 @@ function Toggle<K extends keyof Settings>({ k }: { k: K }) {
   return <input type="checkbox" checked={!!v} onChange={(e) => updateSettings({ [k]: (e.target as HTMLInputElement).checked } as Partial<Settings>)} />;
 }
 
-// 使うカメラ: 「インカメラ / 背面カメラ」（向きで選ぶ）と、端末が持っているカメラ（超広角など。名前は一度カメラを許可すると出る）
+// 使うカメラ: 端末が持っているカメラ（前面・背面・超広角など）から選ぶ。名前の一覧はカメラを一度許可すると取れるので、
+// それまではインカメラ / 背面の 2 つだけ
 function CameraSelect() {
   const cameras = useStore(controller.store, (s) => s.cameras);
+  const inUse = useStore(controller.store, (s) => s.cameraInfo?.deviceId ?? "");
   const cameraId = useStore(settingsStore, (s) => s.cameraId);
   const facing = useStore(settingsStore, (s) => s.facingMode);
-  const value = cameraId || facing;
-  const known = cameras.some((c) => c.id === cameraId);
+  if (!cameras.length)
+    return (
+      <select value={facing} onChange={(e) => updateSettings({ cameraId: "", facingMode: (e.target as HTMLSelectElement).value as "user" | "environment" })}>
+        <option value="user">インカメラ（自分側）</option>
+        <option value="environment">背面カメラ</option>
+      </select>
+    );
+  const value = cameras.some((c) => c.id === cameraId) ? cameraId : cameras.some((c) => c.id === inUse) ? inUse : "";
   return (
-    <select
-      value={value}
-      onChange={(e) => {
-        const v = (e.target as HTMLSelectElement).value;
-        if (v === "user" || v === "environment") updateSettings({ cameraId: "", facingMode: v });
-        else updateSettings({ cameraId: v });
-      }}
-    >
-      <option value="user">インカメラ（自分側）</option>
-      <option value="environment">背面カメラ</option>
-      {cameras.length > 0 && (
-        <optgroup label="このデバイスのカメラ">
-          {cameras.map((c) => (
-            <option key={c.id} value={c.id}>
-              {c.label}
-            </option>
-          ))}
-        </optgroup>
-      )}
-      {cameraId && !known && <option value={cameraId}>選んだカメラ</option>}
+    <select value={value} onChange={(e) => updateSettings({ cameraId: (e.target as HTMLSelectElement).value })}>
+      {!value && <option value="">自動</option>}
+      {cameras.map((c) => (
+        <option key={c.id} value={c.id}>
+          {c.label}
+        </option>
+      ))}
     </select>
   );
 }
@@ -94,7 +89,7 @@ export function SettingsPage() {
       <div class="card">
         <div class="card-head">カメラ</div>
         <div class="card-body form">
-          <Field label="使うカメラ" desc={info ? `使用中: ${info.label || "カメラ"}（${info.width}×${info.height}${info.frameRate ? `・${Math.round(info.frameRate)}fps` : ""}）。インカメラは鏡像で映します` : "インカメラは鏡像で映します。超広角などは、一度カメラを許可すると一覧に出ます"}>
+          <Field label="使うカメラ" desc={info ? `使用中: ${info.label || "カメラ"}（${info.width}×${info.height}${info.frameRate ? `・${Math.round(info.frameRate)}fps` : ""}）` : "カメラを一度許可すると、超広角などのカメラも選べます"}>
             <CameraSelect />
           </Field>
         </div>

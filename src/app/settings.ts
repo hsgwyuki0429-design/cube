@@ -43,7 +43,7 @@ export const DEFAULT_SETTINGS: Settings = {
 
 const KEY = "cubevision.settings.v1";
 
-// 画面では選ばない（常に既定の値）: 鏡像（インカメラなら鏡像: mirrorFor）・カメラの解像度・fps、精密解析、認識の調整、持ち方基準の向き（カメラが自分を向く前提）、デバッグ表示
+// 画面では選ばない（常に既定の値・カメラから決める）: 鏡像・持ち方基準の向き（使っているカメラの向きから: facingOf）・カメラの解像度・fps、精密解析、認識の調整、デバッグ表示
 const FIXED: (keyof Settings)[] = ["mirror", "resolution", "cameraFps", "analyzeSolves", "workWidth", "beamWidth", "maxMovesPerStep", "stableMs", "rotationCost", "viewpoint", "debug"];
 // デバッグ表示は URL に ?debug を付けたときだけ
 const urlFlags = (): Partial<Settings> => (typeof location !== "undefined" && new URLSearchParams(location.search).has("debug") ? { debug: true } : {});
@@ -88,5 +88,14 @@ settingsStore.subscribe((s) => {
 
 export const updateSettings = (patch: Partial<Settings>) => settingsStore.set(patch);
 
-// プレビューを鏡像にするか: インカメラ（自分側。向きが分からない PC のカメラも）なら鏡像、背面カメラなら鏡像にしない
-export const mirrorFor = (facing: string | undefined, requested: Settings["facingMode"]): boolean => (facing ?? requested) !== "environment";
+// 使っているカメラの向き: カメラが教える向き（facingMode）、なければ名前（「背面…」「前面…」など）、それもなければ頼んだ向き。
+// インカメラ（自分側。向きが分からない PC のカメラも）なら、プレビューは鏡像・持ち方基準の表記は自分から見た向き（カメラの反対側）。
+// 背面カメラは自分と同じ側からキューブを見るので、鏡像にせず、表記はカメラから見た向きのまま（自分から見た向きに固定していた間は、
+// 背面カメラでスクランブルの案内の左右・前後が逆になっていた）
+export function facingOf(info: { facingMode?: string; label?: string } | null, requested: Settings["facingMode"]): "user" | "environment" {
+  if (info?.facingMode === "environment" || info?.facingMode === "user") return info.facingMode;
+  const label = info?.label ?? "";
+  if (/背面|後ろ|back|rear|environment/i.test(label)) return "environment";
+  if (/前面|front|user|facetime/i.test(label)) return "user";
+  return requested;
+}
