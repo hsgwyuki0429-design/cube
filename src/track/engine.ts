@@ -6,6 +6,7 @@ import type { Lab } from "../vision/color";
 import { ColorModel, type ColorModelOptions } from "./colorModel";
 import { type DecoderOptions, MoveDecoder } from "./decoder";
 import { movePrior } from "./prior";
+import { snapToObservation } from "./snap";
 import { FaceObserver, type FrameReading, type ObserverOptions } from "./observer";
 import { DEFAULT_TIMING, type LoggedFrame, type MoveTiming, moveTiming } from "./timing";
 import type { DecodedMove, Observation, TrackStatus, TurnHint, TurnSnapshot } from "./types";
@@ -23,9 +24,17 @@ export interface EngineOptions {
   // 矛盾が少し安い）を、いつまでも足さなかった。誤読は長く続かないが、本当の変化は続くので、続いた分だけ矛盾を重ねる。
   // 精密解析は全部の観測をまとめて解き直すので使わない
   repeatMs?: number;
+  // ライブ: 一番合う仮説でも見え方とはっきり合わなければ、見えている色に合う状態にその場で作り変え、そこから追跡をやり直す
+  // （src/track/snap.ts。3D を見えているキューブと同じ色の組み合わせに保つ。精密解析は使わない）
+  snapToView?: boolean;
 }
 
 const REPEAT_COST = 0.8;
+// 作り変え: 最良の仮説の観測の矛盾がこれ以上の観測が 2 回続いたら（1 マスの矛盾 1.5。2 マス以上はっきり合わない）、
+// SNAP_NOW 以上なら（3 マス以上）すぐ。作り変えた状態が観測をこれだけ以上よく説明するときだけ
+const SNAP_COST = 2.5;
+const SNAP_NOW = 4.5;
+const SNAP_GAIN = 1.5;
 const MAX_REPEATS = 2; // 同じ読みで出し直す回数の上限（指で隠れたままの誤読を重ねすぎない）
 
 export interface TrackUpdate {
@@ -43,6 +52,11 @@ export interface TrackUpdate {
   observation: { t: number; faces: { slot: number; labels: number[] }[] };
   timings: (MoveTiming | null)[]; // moves と同じ並び。フレームの記録から求めた開始・終了時刻（記録が残っていなければ null）
   cells: CellBelief; // マスごとの確からしさ（不確実性の保持）
+  // ライブの作り変え（snapToView）: 何回目か・そのときの手の数・作り変えた状態（キューブ固定）。手順は作り変えの前後でつながらない
+  // （moves の at 番目より前の手を始まりの状態に当てても state にならない）。3D はこの状態から、at 番目以降の手を回す
+  base: { n: number; at: number; state: number[]; t: number } | null;
+  // ライブの表示だけの作り変え: 追跡（最良の仮説）では見え方をはっきり説明できない間、3D に出す見えている色に合う状態（null = 最良の仮説）
+  view: { n: number; state: number[]; orient: number; t: number } | null;
 }
 
 // マスごとの確からしさ。添え字はキューブ固定の facelet（最良の仮説の状態の並び）。
@@ -139,10 +153,15 @@ export class TrackerEngine {
     this.keepObservations = !!options.keepObservations;
     this.maxObservations = options.maxObservations ?? Infinity;
     this.repeatMs = options.repeatMs ?? 250;
+    this.snapToView = !!options.snapToView;
     if (options.personal?.length && this.decoder.prior) this.decoder.prior = movePrior(options.personal);
   }
   private maxObservations: number;
   private repeatMs: number;
+  private snapToView: boolean;
+  private snapStreak = 0;
+  base: TrackUpdate["base"] = null;
+  view: TrackUpdate["view"] = null;
   private lastObsT = -Infinity;
   private repeats = 0;
 
@@ -151,11 +170,15 @@ export class TrackerEngine {
     if (options.observer) Object.assign(this.observer.options, options.observer);
     if (options.colors) Object.assign(this.colors.options, options.colors);
     if (options.logMs !== undefined) this.logMs = options.logMs;
+    if (options.snapToView !== undefined) this.snapToView = options.snapToView;
     if (options.personal && this.decoder.options.priorWeight > 0) this.decoder.prior = movePrior(options.personal);
   }
 
   reset(state: CubeState, orients?: number[]): void {
     this.decoder.reset(state, orients);
+    this.base = null;
+    this.view = null;
+    this.snapStreak = 0;
     this.observer.reset();
     this.turnCur = null;
     this.turnHints = [];
@@ -217,6 +240,7 @@ export class TrackerEngine {
 
   observe(obs: Observation, frame?: FrameReading): TrackUpdate {
     this.decoder.observe(obs);
+    if (this.snapToView) this.snap(obs);
     const best = this.decoder.best();
     this.markSeen(obs);
     // デコーダが確信していて、観測とよく合っているときだけ代表色を寄せる
@@ -229,6 +253,33 @@ export class TrackerEngine {
       }
     }
     return this.snapshot(obs);
+  }
+
+  // 作り変え（snapToView）: 一番合う仮説でもはっきり合わない見え方が続いたら、見えている色に合う状態を作る。
+  //   - 3D の表示は、その場でその状態にする（view。追跡はそのまま探し続ける）
+  //   - 追跡が見失った（lost: 探し直しても戻れなかった）ときだけ、追跡もその状態からやり直す（base）
+  // 見えていない面は分からないので、作り変えた状態で追跡を置き換えるのは見失ったときだけにする（置き換えるたびにスクランブルの
+  // 案内の道筋から外れ、誤読で置き換わるとインスペクション中に動いたと見てタイマーが始まった）
+  private snap(obs: Observation): void {
+    const best = this.decoder.best();
+    this.snapStreak = best.obsCost >= SNAP_COST ? this.snapStreak + 1 : 0;
+    if (this.snapStreak < 2 && best.obsCost < SNAP_NOW) {
+      if (!this.snapStreak) this.view = null;
+      return;
+    }
+    const r = snapToObservation(best.state, best.orient, obs);
+    if (!r || r.cost > best.obsCost - SNAP_GAIN) return;
+    if (this.decoder.status === "lost") {
+      const moves = this.decoder.bestMoves();
+      this.decoder.rebase(r.state, r.orient, moves);
+      this.base = { n: (this.base?.n ?? 0) + 1, at: moves.length, state: Array.from(r.state), t: obs.t };
+      this.view = null;
+      this.snapStreak = 0;
+      return;
+    }
+    // 表示だけ: 前と同じ状態なら作り直さない（3D がそのたびにソルバーで作り直さないように）
+    const same = this.view && this.view.state.every((c, i) => c === r.state[i]) && this.view.orient === r.orient;
+    if (!same) this.view = { n: (this.view?.n ?? 0) + 1, state: Array.from(r.state), orient: r.orient, t: obs.t };
   }
 
   // 見えている面がすべて1色か（完成の見た目）。高速回転で追跡を見失っていても、タイマーを止められるように。
@@ -260,7 +311,8 @@ export class TrackerEngine {
   // continuity: 姿勢 o を選んだときの、直前の 3D の向きからの飛びの罰（0〜1 未満）。見え方で区別できないとき
   // （1 面だけ・センターが隠れて 1 色）に、90° ずつ違う向きのどれかへ跳ねないように直前の向きに近いものを選ぶ
   frameOrient(frame: FrameReading, labels = this.labelsOf(frame), continuity?: (o: number) => number): number {
-    const best = this.decoder.best();
+    // 3D に出している状態（表示だけの作り変えの間はそれ）と照らす
+    const best = this.view ? { state: this.view.state, orient: this.view.orient } : this.decoder.best();
     let bestO = best.orient;
     let bestCost = Infinity;
     for (let o = 0; o < 24; o++) {
@@ -341,6 +393,8 @@ export class TrackerEngine {
       refs: this.colors.refs.map((r) => [...r] as Lab),
       observation: { t: obs?.t ?? 0, faces: (obs?.faces ?? []).map((f) => ({ slot: f.slot, labels: Array.from(f.labels) })) },
       cells: this.cellBelief(),
+      base: this.base,
+      view: this.view,
     };
   }
 }

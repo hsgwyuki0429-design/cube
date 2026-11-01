@@ -14,6 +14,7 @@ import type { DecodedMove, Observation } from "./types";
 export interface OfflineOptions {
   decoder: Partial<DecoderOptions>;
   personal?: number[][]; // 自分のソルブの手順（手順の知識に加える）
+  bridge?: boolean; // つながらないときに隠れた区間を橋渡しするか（既定 true。軽い解析ではしない）
 }
 
 export const DEFAULT_OFFLINE: OfflineOptions = {
@@ -140,7 +141,7 @@ export function decodeOffline(obs: Observation[], start: CubeState, end: CubeSta
   }
   // つながらない（前後どちらも、隠れていた同じ区間で見失った）: 隠れる前の前向きの仮説と、隠れた後の後ろ向きの仮説を、
   // 短い手順（最大 6 手）でつなぐ。途中の手は直接見えていないので inferred
-  const bridged = bridge(F, B, valid);
+  const bridged = options.bridge === false ? null : bridge(F, B, valid);
   if (bridged) return bridged;
   // それでもつながらない: 前向きの結果を、終わりの状態にたどり着くよう補う
   const fixed = fwd.finish(end, lastT, 2);

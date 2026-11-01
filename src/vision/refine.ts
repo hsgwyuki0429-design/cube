@@ -3,8 +3,8 @@
 // OpenCV のオブジェクトは呼び出し側が渡すので、Worker でもテスト（Node）でも同じコードが動く。
 import { type CubeState, OPPOSITE, isSolved, moveFace, solvedState, statesEqual } from "../cube/model";
 import { type EngineOptions, TrackerEngine } from "../track/engine";
-import { mergeQuickRepeats, simplifyMoves } from "../track/merge";
-import { DEFAULT_OFFLINE, OfflineForward, decodeOffline } from "../track/offline";
+import { mergeQuickRepeats, separateMotions, simplifyMoves } from "../track/merge";
+import { DEFAULT_OFFLINE, OfflineForward, type OfflineOptions, decodeOffline } from "../track/offline";
 import type { DecodedMove, TrackStatus } from "../track/types";
 import type { Lab } from "./color";
 import { type PatchFrame, facePatch, refineEnd, refineStart } from "./fineTiming";
@@ -28,6 +28,8 @@ export interface RefineInput {
   keepPatchesMs?: number;
   // 軽い検査で、前に精密に処理したフレームとマスの色が同じフレームを飛ばす（既定 true。下の「軽い検査」）
   gate?: boolean;
+  // 軽い解析（前回の解析中に落ちたとき: src/app/crashGuard.ts）: 候補を半分にし、隠れた区間の橋渡しをしない
+  light?: boolean;
 }
 
 // 軽い検査: 全フレームを精密に処理する代わりに、前に精密に処理したフレーム（基準）の面の格子で、各マスの真ん中あたりの色を数点だけ測り
@@ -148,6 +150,9 @@ export const REFINE_ENGINE: Partial<EngineOptions> = {
   logMs: Infinity,
 };
 
+// 軽い解析の設定（RefineInput.light）
+const LIGHT_DECODER = { beamWidth: 32, maxMovesPerStep: 3, recoveryDepth: 3 };
+
 export class Refiner {
   readonly engine: TrackerEngine;
   private memory = {}; // フレームの間で引き継ぐもの（processFrame）
@@ -175,7 +180,7 @@ export class Refiner {
     const opts = input.engine ?? {};
     this.engine = new TrackerEngine(Uint8Array.from(input.state), input.refs, {
       ...opts,
-      decoder: { ...opts.decoder, ...REFINE_ENGINE.decoder },
+      decoder: { ...opts.decoder, ...REFINE_ENGINE.decoder, ...(input.light ? LIGHT_DECODER : {}) },
       logMs: Infinity,
       keepObservations: true,
       repeatMs: 0,
@@ -208,8 +213,9 @@ export class Refiner {
     return { t, state: Array.from(target), orient, moves: full, status: "tracking" };
   }
 
-  private offlineOptions() {
-    return { decoder: { ...this.input.engine?.decoder, ...DEFAULT_OFFLINE.decoder }, personal: this.input.engine?.personal };
+  private offlineOptions(): OfflineOptions {
+    const light = this.input.light ? LIGHT_DECODER : {};
+    return { decoder: { ...this.input.engine?.decoder, ...DEFAULT_OFFLINE.decoder, ...light }, personal: this.input.engine?.personal, bridge: !this.input.light };
   }
 
   // 途中結果: 前向きにここまで解いた最良の仮説（リアルタイムの追跡をこれに乗り換える）
@@ -302,7 +308,8 @@ export class Refiner {
   }
 
   // target: 最後の状態が分かっていれば（タイマーなら完成）、それにたどり着く仮説を選ぶ
-  result(target: CubeState | null = solvedState()): RefineResult {
+  // onPhase: 段階を知らせる（解き直しの後に "timing"。落ちたときにどこで落ちたかを残すため: src/app/crashGuard.ts）
+  result(target: CubeState | null = solvedState(), onPhase?: (phase: "timing") => void): RefineResult {
     const dec = this.engine.decoder;
     // 前向き（スクランブル後から）と後ろ向き（完成から）の両方で解き直し、辻褄の合う所でつなぐ
     const off = decodeOffline(this.engine.observationLog, Uint8Array.from(this.input.state), target, this.lastT, this.offlineOptions(), this.forward ?? undefined);
@@ -324,31 +331,40 @@ export class Refiner {
       }
     }
     this.method = off.method;
-    // 分かれて読まれた手をまとめ、打ち消し合う手（回転途中の見え方・指の誤読から出た雑音）を除く。状態は変わらない
-    const raw = moves;
-    moves = simplifyMoves(moves);
+    onPhase?.("timing");
     const timeOf = <T extends DecodedMove>(m: T) => {
       const tm = this.engine.timing(m);
       return { ...m, start: tm?.start ?? m.t0 ?? m.t, end: tm?.end ?? m.t, exact: !!tm?.exact, endExact: !!tm?.endExact, moved: !!tm?.moved };
     };
+    // 分かれて読まれた手をまとめ、打ち消し合う手（回転途中の見え方・指の誤読から出た雑音）を除く。状態は変わらない。
+    // ただし、どちらも層が動いたのを見つけていて間で止まっていた 2 手は、本当に回した手（無駄な動きも）として残す（separateMotions）
+    const raw = moves;
+    const timings = new Map<DecodedMove, ReturnType<typeof timeOf>>();
+    const timed0 = (m: DecodedMove) => {
+      let r = timings.get(m);
+      if (!r) timings.set(m, (r = timeOf(m)));
+      return r;
+    };
+    moves = simplifyMoves(moves, (a, b) => separateMotions(timed0(a), timed0(b)));
     const timed = moves.map(timeOf);
     // タイムの両端は画素の差で詰める（色の読みより早く動きを拾える）
     const first = timed[0];
     const last = timed[timed.length - 1];
     // まとめる前の端の手: 打ち消し合って消えた手（F2 B2 F2 → B2 の最後の F2）も実際に回しているので、タイムはその手の端まで。
-    // 層が見えて時刻をフレームから決められた手だけ（見えなければ誤読の雑音かもしれないので、まとめた後の端の手のまま）
+    // 層が見えて動いたのをフレームから見つけた手だけ（そうでなければ誤読の雑音かもしれないので、まとめた後の端の手のまま。
+    // インスペクション中・完成した後の誤読を打ち消し合う 2 手で説明した仮説の手で、タイムが長くなっていた）
     let rawStart = false;
     let rawEnd = false;
     if (first && raw[0] && raw[0] !== moves[0] && !raw[0].inferred) {
       const r = timeOf(raw[0]);
-      if (r.exact && r.start < first.start) {
+      if (r.exact && r.moved && r.start < first.start) {
         Object.assign(first, { start: refineStart(this.patches, r, r.start, this.engine.colors.refs) ?? r.start, exact: true });
         rawStart = true;
       }
     }
     if (last && raw.length && raw[raw.length - 1] !== moves[moves.length - 1] && !raw[raw.length - 1].inferred) {
       const r = timeOf(raw[raw.length - 1]);
-      if (r.exact && r.endExact && r.end > last.end) {
+      if (r.exact && r.endExact && r.moved && r.end > last.end) {
         Object.assign(last, { end: refineEnd(this.patches, r, r.end, this.engine.colors.refs) ?? r.end, endExact: true });
         rawEnd = true;
       }
@@ -398,7 +414,7 @@ export class Refiner {
         endUncertain = false;
       }
     }
-    const merged = mergeQuickRepeats(timed).map((m) => ({ move: m.move, orient: m.orient, start: m.start, end: Math.max(m.start, m.end), exact: m.exact, ...(m.inferred ? { inferred: true } : {}) }));
+    const merged = mergeQuickRepeats(timed, undefined, undefined, separateMotions).map((m) => ({ move: m.move, orient: m.orient, start: m.start, end: Math.max(m.start, m.end), exact: m.exact, ...(m.inferred ? { inferred: true } : {}) }));
     return {
       moves: merged,
       solved,

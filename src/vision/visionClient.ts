@@ -140,6 +140,8 @@ export class VisionClient {
 // ソルブ後の精密解析を、リアルタイムの認識とは別の Worker で動かす（追跡を止めない）。
 // Worker は OpenCV の読み込みに時間がかかるので、しばらく使い回してから閉じる。
 export class RefineClient {
+  // 解析の段階（止めた後の解析で、落ちたときにどこで落ちたかを残す: src/app/crashGuard.ts）
+  onPhase: ((phase: "flush" | "decode" | "timing") => void) | null = null;
   private worker: Worker | null = null;
   private ready: Promise<boolean> | null = null;
   private idleTimer = 0;
@@ -154,7 +156,8 @@ export class RefineClient {
       worker.onmessage = (e: MessageEvent<FromWorker>) => {
         const m = e.data;
         if (m.type === "ready") resolve(m.opencv);
-        else if (m.type === "refine-progress") this.jobs.get(m.id)?.progress?.(m.done / Math.max(1, m.total));
+        else if (m.type === "refine-progress") this.jobs.get(m.id)?.progress?.(Math.min(1, m.done / Math.max(1, m.total)));
+        else if (m.type === "refine-phase") this.onPhase?.(m.phase);
         else if (m.type === "stream-partial") this.partialListeners.get(m.id)?.(m.partial);
         else if (m.type === "video-info") this.infoListeners.get(m.id)?.(m.info, m.analyzedFrames);
         else if (m.type === "refine-result") this.settle(m.id, (j) => j.resolve(m.result));
@@ -267,6 +270,11 @@ export class RefineClient {
   cancelStream(id: number): void {
     this.partialListeners.delete(id);
     this.worker?.postMessage({ type: "stream-cancel", id } satisfies ToWorker);
+  }
+
+  // 解析が何も残っていなければ Worker を閉じる（OpenCV のヒープ 130MB ほどと解析で使ったメモリを返す。次の解析で作り直す）
+  closeIfIdle(): void {
+    if (!this.jobs.size && !this.partialListeners.size) this.close();
   }
 
   close(): void {
