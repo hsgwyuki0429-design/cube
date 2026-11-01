@@ -40,13 +40,8 @@ function Toggle<K extends keyof Settings>({ k }: { k: K }) {
 }
 
 export function SettingsPage() {
-  const cameras = useStore(controller.store, (s) => s.cameras);
   const info = useStore(controller.store, (s) => s.cameraInfo);
-  const cameraId = useStore(settingsStore, (s) => s.cameraId);
   const facing = useStore(settingsStore, (s) => s.facingMode);
-  useEffect(() => {
-    controller.refreshCameras();
-  }, []);
   // カメラを変えたら、動いているカメラをそのまま切り替える
   const first = useRef(true);
   useEffect(() => {
@@ -55,7 +50,7 @@ export function SettingsPage() {
       return;
     }
     if (controller.store.get().camera === "on" && !controller.store.get().demo) void controller.startCamera();
-  }, [cameraId, facing]);
+  }, [facing]);
 
   return (
     <div class="page settings">
@@ -63,16 +58,8 @@ export function SettingsPage() {
       <div class="card">
         <div class="card-head">カメラ</div>
         <div class="card-body form">
-          <Field label="カメラ" desc={info ? `使用中: ${info.label || "カメラ"}（${info.width}×${info.height}${info.frameRate ? `・${Math.round(info.frameRate)}fps` : ""}）` : undefined}>
-            <Select k="cameraId" options={[["", "自動"], ...cameras.map((c) => [c.id, c.label] as [string, string])]} />
-          </Field>
-          {!cameraId && (
-            <Field label="向き">
-              <Select k="facingMode" options={[["user", "インカメラ（自分側）"], ["environment", "背面カメラ"]]} />
-            </Field>
-          )}
-          <Field label="鏡像表示">
-            <Toggle k="mirror" />
+          <Field label="使うカメラ" desc={info ? `使用中: ${info.label || "カメラ"}（${info.width}×${info.height}${info.frameRate ? `・${Math.round(info.frameRate)}fps` : ""}）。インカメラは鏡像で映します` : "インカメラは鏡像で映します"}>
+            <Select k="facingMode" options={[["user", "インカメラ（自分側）"], ["environment", "背面カメラ"]]} />
           </Field>
         </div>
       </div>

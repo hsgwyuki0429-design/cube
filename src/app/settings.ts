@@ -43,8 +43,8 @@ export const DEFAULT_SETTINGS: Settings = {
 
 const KEY = "cubevision.settings.v1";
 
-// 画面では選ばない（常に既定の値）: カメラの解像度・fps、精密解析、認識の調整、持ち方基準の向き（カメラが自分を向く前提）、デバッグ表示
-const FIXED: (keyof Settings)[] = ["resolution", "cameraFps", "analyzeSolves", "workWidth", "beamWidth", "maxMovesPerStep", "stableMs", "rotationCost", "viewpoint", "debug"];
+// 画面では選ばない（常に既定の値）: カメラの選択（向きだけ選ぶ）・鏡像（インカメラなら鏡像: mirrorFor）・カメラの解像度・fps、精密解析、認識の調整、持ち方基準の向き（カメラが自分を向く前提）、デバッグ表示
+const FIXED: (keyof Settings)[] = ["cameraId", "mirror", "resolution", "cameraFps", "analyzeSolves", "workWidth", "beamWidth", "maxMovesPerStep", "stableMs", "rotationCost", "viewpoint", "debug"];
 // デバッグ表示は URL に ?debug を付けたときだけ
 const urlFlags = (): Partial<Settings> => (typeof location !== "undefined" && new URLSearchParams(location.search).has("debug") ? { debug: true } : {});
 
@@ -87,3 +87,6 @@ settingsStore.subscribe((s) => {
 });
 
 export const updateSettings = (patch: Partial<Settings>) => settingsStore.set(patch);
+
+// プレビューを鏡像にするか: インカメラ（自分側。向きが分からない PC のカメラも）なら鏡像、背面カメラなら鏡像にしない
+export const mirrorFor = (facing: string | undefined, requested: Settings["facingMode"]): boolean => (facing ?? requested) !== "environment";
