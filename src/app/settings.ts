@@ -43,6 +43,11 @@ export const DEFAULT_SETTINGS: Settings = {
 
 const KEY = "cubevision.settings.v1";
 
+// 画面では選ばない（常に既定の値）: カメラの解像度・fps、精密解析、認識の調整、持ち方基準の向き（カメラが自分を向く前提）、デバッグ表示
+const FIXED: (keyof Settings)[] = ["resolution", "cameraFps", "analyzeSolves", "workWidth", "beamWidth", "maxMovesPerStep", "stableMs", "rotationCost", "viewpoint", "debug"];
+// デバッグ表示は URL に ?debug を付けたときだけ
+const urlFlags = (): Partial<Settings> => (typeof location !== "undefined" && new URLSearchParams(location.search).has("debug") ? { debug: true } : {});
+
 function load(): Settings {
   try {
     const raw = localStorage.getItem(KEY);
@@ -59,12 +64,16 @@ function load(): Settings {
       if (typeof saved.workWidth === "number" && saved.workWidth < 1280) delete saved.workWidth;
       // ステッカーは 54 種類（マスごとに違う）・4 個・幅 1/2 だけにした（STICKERS）
       for (const k of ["scheme", "detection", "handMask", "maxColorDistance", "stickers", "stickerDesign"]) delete saved[k];
-      return { ...DEFAULT_SETTINGS, ...saved };
+      // 性能に関わる値は画面で選ばせず、いつも最適な値で動かす（以前に変えて保存された値も使わない）
+      for (const k of FIXED) delete saved[k];
+      // 3D の向きは「追従 / 固定」の 2 つにした
+      if (saved.cube3dView === "user") saved.cube3dView = "camera";
+      return { ...DEFAULT_SETTINGS, ...saved, ...urlFlags() };
     }
   } catch {
     // 保存領域が使えない（プライベートモードなど）
   }
-  return { ...DEFAULT_SETTINGS };
+  return { ...DEFAULT_SETTINGS, ...urlFlags() };
 }
 
 export const settingsStore = createStore<Settings>(load());
