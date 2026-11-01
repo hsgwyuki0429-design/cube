@@ -1,7 +1,9 @@
 // 録画（WebCodecs で圧縮したもの）を1フレームずつ復号して画素にする。精密解析の Worker で使う。
+import { framePixels } from "./framePixels";
+import type { PixelSource } from "./image";
 import type { Recording } from "./recorder";
 
-export async function decodeRecording(rec: Recording, onFrame: (img: ImageData, t: number) => void): Promise<number> {
+export async function decodeRecording(rec: Recording, onFrame: (img: PixelSource, t: number) => void): Promise<number> {
   const canvas = new OffscreenCanvas(rec.width, rec.height);
   const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) throw new Error("2D canvas を使えません");
@@ -20,17 +22,23 @@ export async function decodeRecording(rec: Recording, onFrame: (img: ImageData, 
   });
   decoder.configure(rec.config);
   let count = 0;
+  let copy = true; // canvas を通さずに取り出せる形式か（framePixels。だめなら以後は canvas で）
   // 復号済みのフレームを処理する（解析は重いので、溜めすぎないよう1枚ずつ閉じる）
-  const drain = () => {
+  const drain = async () => {
     while (pending.length) {
       const f = pending.shift()!;
       const t = f.timestamp / 1000;
+      let img: PixelSource | null = null;
       try {
-        ctx.drawImage(f, 0, 0, rec.width, rec.height);
+        if (copy) {
+          img = await framePixels(f, rec.width, rec.height);
+          copy = !!img;
+        }
+        if (!img) ctx.drawImage(f, 0, 0, rec.width, rec.height);
       } finally {
         f.close();
       }
-      onFrame(ctx.getImageData(0, 0, rec.width, rec.height), t);
+      onFrame(img ?? ctx.getImageData(0, 0, rec.width, rec.height), t);
       count++;
     }
   };
@@ -46,14 +54,14 @@ export async function decodeRecording(rec: Recording, onFrame: (img: ImageData, 
     for (const c of rec.chunks) {
       if (error) throw error;
       decoder.decode(new EncodedVideoChunk({ type: c.type, timestamp: c.timestamp, duration: c.duration || undefined, data: c.data }));
-      drain();
+      await drain();
       while (decoder.decodeQueueSize > 2 && !error) {
         await waitOutput();
-        drain();
+        await drain();
       }
     }
     await decoder.flush();
-    drain();
+    await drain();
   } finally {
     for (const f of pending) f.close();
     if (decoder.state !== "closed") decoder.close();
@@ -72,12 +80,14 @@ export class StreamDecoder {
   private wake: (() => void) | null = null;
   private work: Promise<void> = Promise.resolve();
   frames = 0;
+  copied = 0; // canvas を通さずに取り出したフレームの数（framePixels）
+  private copy = true; // framePixels で取り出せる形式か（取り出せなかったら以後は canvas で）
 
   constructor(
     config: VideoDecoderConfig,
     private width: number,
     private height: number,
-    private onFrame: (img: ImageData, t: number) => void | Promise<void>,
+    private onFrame: (img: PixelSource, t: number) => void | Promise<void>,
   ) {
     this.canvas = new OffscreenCanvas(width, height);
     const ctx = this.canvas.getContext("2d", { willReadFrequently: true });
@@ -101,12 +111,18 @@ export class StreamDecoder {
     while (this.pending.length) {
       const f = this.pending.shift()!;
       const t = f.timestamp / 1000;
+      let img: PixelSource | null = null;
       try {
-        this.ctx.drawImage(f, 0, 0, this.width, this.height);
+        if (this.copy) {
+          img = await framePixels(f, this.width, this.height);
+          if (img) this.copied++;
+          else this.copy = false;
+        }
+        if (!img) this.ctx.drawImage(f, 0, 0, this.width, this.height);
       } finally {
         f.close();
       }
-      await this.onFrame(this.ctx.getImageData(0, 0, this.width, this.height), t);
+      await this.onFrame(img ?? this.ctx.getImageData(0, 0, this.width, this.height), t);
       this.frames++;
     }
   }

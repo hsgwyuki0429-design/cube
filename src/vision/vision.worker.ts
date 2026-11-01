@@ -11,7 +11,7 @@ import { stickerScheme } from "../aruco/codes";
 import { detectWithHint, detectorFor } from "./arucoFrame";
 import { DEFAULT_PIPELINE, type PipelineConfig, frameReading, processFrame } from "./pipeline";
 import type { FrameMessage, FromWorker, StreamPartial, ToWorker } from "./protocol";
-import type { CV } from "./image";
+import type { CV, PixelSource } from "./image";
 import { loadOpenCv } from "./opencv";
 
 let cv: CV | null = null;
@@ -40,7 +40,7 @@ const streams = new Map<number, Stream>();
 // 中止を頼まれた動画の解析
 const videoCancels = new Set<number>();
 
-function streamFrame(id: number, s: Stream, img: ImageData, t: number): void {
+function streamFrame(id: number, s: Stream, img: PixelSource, t: number): void {
   // 止まっている間は飛ばして追いつく（動き出したら直前の 1 枚も処理する）
   for (const f of s.still.next(img, t)) s.refiner.push(f.img, f.t);
   doAnchor(id, s);
@@ -184,7 +184,7 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
           const t1 = performance.now();
           const result = s.refiner.result(msg.target ? Uint8Array.from(msg.target) : null);
           // 調査用: 止めた時点の遅れ・残りの処理・解き直しの時間
-          console.info(`[analysis] behind ${behind.toFixed(0)}ms rest ${(t1 - t0).toFixed(0)}ms result ${(performance.now() - t1).toFixed(0)}ms frames ${s.refiner.frames} gated ${s.refiner.gated}`);
+          console.info(`[analysis] behind ${behind.toFixed(0)}ms rest ${(t1 - t0).toFixed(0)}ms result ${(performance.now() - t1).toFixed(0)}ms frames ${s.refiner.frames} gated ${s.refiner.gated} copied ${s.decoder?.copied ?? 0}`);
           post({ type: "refine-result", id: msg.id, result });
         } catch (e) {
           post({ type: "refine-error", id: msg.id, message: e instanceof Error ? e.message : String(e) });
