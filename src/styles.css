@@ -141,13 +141,15 @@ input {
   display: grid;
   place-items: center;
   text-align: center;
-  padding: 20px;
+  padding: 10px;
   color: #c9d1e0;
+  overflow: auto;
 }
 .camera .placeholder p {
   max-width: 440px;
-  margin: 8px auto 16px;
+  margin: 4px auto 10px;
   color: #9aa4b8;
+  font-size: 13px;
 }
 .camera .corner-tools {
   position: absolute;
@@ -709,7 +711,7 @@ input[type="range"] {
   padding: 8px;
   padding-top: max(8px, env(safe-area-inset-top));
   height: calc(100dvh - 62px - env(safe-area-inset-bottom));
-  min-height: 520px;
+  min-height: 400px;
 }
 @media (min-width: 900px) {
   .play {
@@ -789,7 +791,7 @@ input[type="range"] {
 }
 .time-value {
   font-family: var(--mono);
-  font-size: clamp(46px, 14vw, 88px);
+  font-size: clamp(38px, min(14vw, 8.5dvh), 88px);
   font-weight: 800;
   line-height: 1.05;
   letter-spacing: -0.02em;
@@ -1422,4 +1424,40 @@ button.mv,
 .page-tabs button,
 .chart-select {
   border: 0;
+}
+
+/* 縦が短いスマホでも 1 画面に収める（スクロールしない） */
+.start-card > * + * {
+  margin-top: 8px;
+}
+.start-card .btn-row {
+  margin: 8px 0 0;
+}
+.tips summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-weight: 700;
+}
+.tips ul {
+  padding-left: 18px;
+  margin: 6px 0 0;
+}
+.play-strip {
+  max-height: 34dvh;
+}
+@media (max-height: 760px) {
+  .play {
+    gap: 6px;
+    padding: 6px;
+  }
+  .play-top {
+    padding: 6px 8px 8px;
+  }
+  .play-strip {
+    padding: 8px 10px;
+  }
+  .time-sub {
+    min-height: 16px;
+    font-size: 12px;
+  }
 }
