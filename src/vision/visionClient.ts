@@ -53,7 +53,9 @@ export class VisionClient {
       };
       this.worker.onerror = (e) => {
         this.lastError = e.message;
+        console.error("vision worker:", e.message);
         if (!this.isReady) reject(new Error(e.message));
+        this.busy = false; // 処理中のフレームの結果は来ないので、次のフレームを送れるようにする
       };
     });
     this.post({ type: "init" });
