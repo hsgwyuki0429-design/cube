@@ -1,18 +1,18 @@
 :root {
-  --bg: #0f1218;
-  --bg-2: #161a22;
-  --card: #1b2029;
-  --card-2: #232936;
-  --line: #2c3342;
-  --text: #e9edf5;
-  --muted: #9aa4b8;
+  --bg: #000000;
+  --bg-2: #000000;
+  --card: #0e0e10;
+  --card-2: #1a1a1d;
+  --line: #26262a;
+  --text: #f2f2f4;
+  --muted: #8d8d96;
   --accent: #4f8cff;
   --accent-2: #6fd3ff;
   --ok: #33c27f;
   --warn: #ffb020;
   --bad: #ff5468;
   --radius: 14px;
-  --shadow: 0 6px 24px rgba(0, 0, 0, 0.28);
+  --shadow: none;
   --font: "Hiragino Sans", "Noto Sans JP", system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
   color-scheme: dark;
@@ -20,14 +20,14 @@
 
 @media (prefers-color-scheme: light) {
   :root:not([data-theme="dark"]) {
-    --bg: #f3f5f9;
-    --bg-2: #e9edf4;
+    --bg: #f2f2f4;
+    --bg-2: #f2f2f4;
     --card: #ffffff;
-    --card-2: #f2f4f8;
-    --line: #dfe4ec;
-    --text: #141821;
-    --muted: #5f6b80;
-    --shadow: 0 6px 24px rgba(20, 30, 50, 0.08);
+    --card-2: #ececef;
+    --line: #dcdce0;
+    --text: #111113;
+    --muted: #6b6b74;
+    --shadow: none;
     color-scheme: light;
   }
 }
@@ -95,7 +95,6 @@ input {
 
 .card {
   background: var(--card);
-  border: 1px solid var(--line);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
   min-width: 0;
@@ -105,7 +104,6 @@ input {
   align-items: center;
   gap: 8px;
   padding: 10px 14px;
-  border-bottom: 1px solid var(--line);
   font-weight: 700;
 }
 .card-head .spacer {
@@ -119,7 +117,7 @@ input {
 .camera {
   position: relative;
   aspect-ratio: 16 / 9;
-  background: #07090d;
+  background: #000;
   border-radius: var(--radius);
   overflow: hidden;
 }
@@ -205,7 +203,7 @@ input {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  border: 1px solid var(--line);
+  border: 1px solid transparent;
   background: var(--card-2);
   padding: 8px 14px;
   border-radius: 10px;
@@ -317,23 +315,20 @@ input {
 }
 
 .status-banner {
+  background: var(--card-2);
   border-radius: 12px;
   padding: 10px 12px;
   margin-bottom: 12px;
   font-size: 14px;
-  border: 1px solid var(--line);
 }
 .status-banner.ok {
   background: color-mix(in srgb, var(--ok) 12%, var(--card));
-  border-color: color-mix(in srgb, var(--ok) 35%, var(--line));
 }
 .status-banner.warn {
   background: color-mix(in srgb, var(--warn) 12%, var(--card));
-  border-color: color-mix(in srgb, var(--warn) 40%, var(--line));
 }
 .status-banner.bad {
   background: color-mix(in srgb, var(--bad) 12%, var(--card));
-  border-color: color-mix(in srgb, var(--bad) 40%, var(--line));
 }
 .status-banner strong {
   display: block;
@@ -491,7 +486,6 @@ table.list {
 table.list th,
 table.list td {
   padding: 8px 10px;
-  border-bottom: 1px solid var(--line);
   text-align: left;
 }
 table.list tr.sel {
@@ -588,7 +582,6 @@ input[type="range"] {
 }
 
 .result-block {
-  border: 1px solid var(--line);
   border-radius: 12px;
   padding: 10px 12px;
   margin-bottom: 12px;
@@ -640,7 +633,6 @@ input[type="range"] {
   grid-template-columns: repeat(4, 1fr);
   background: color-mix(in srgb, var(--bg-2) 90%, transparent);
   backdrop-filter: blur(12px);
-  border-top: 1px solid var(--line);
   padding-bottom: env(safe-area-inset-bottom);
 }
 .appnav button {
@@ -677,8 +669,6 @@ input[type="range"] {
     grid-template-columns: none;
     grid-auto-rows: min-content;
     gap: 6px;
-    border-top: 0;
-    border-right: 1px solid var(--line);
     padding: 16px 0;
   }
   .appnav button {
@@ -730,7 +720,6 @@ input[type="range"] {
 }
 .play-top {
   background: var(--card);
-  border: 1px solid var(--line);
   border-radius: var(--radius);
   padding: 8px 10px 10px;
 }
@@ -760,7 +749,6 @@ input[type="range"] {
 .mode-switch button[aria-selected="true"] {
   background: var(--card);
   color: var(--text);
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.18);
 }
 .mode-switch button:disabled {
   opacity: 0.4;
@@ -838,7 +826,6 @@ input[type="range"] {
   margin-top: 6px;
 }
 .penalty-row .seg {
-  border: 1px solid var(--line);
   background: var(--card-2);
   border-radius: 999px;
   padding: 4px 14px;
@@ -879,7 +866,6 @@ input[type="range"] {
 }
 .side-col {
   background: var(--card);
-  border: 1px solid var(--line);
   border-radius: var(--radius);
   display: flex;
   flex-direction: column;
@@ -891,7 +877,6 @@ input[type="range"] {
   padding: 8px 8px 6px;
   display: grid;
   gap: 4px;
-  border-bottom: 1px solid var(--line);
 }
 .side-stats div {
   display: flex;
@@ -968,7 +953,7 @@ input[type="range"] {
   min-height: 0;
   border-radius: var(--radius);
   overflow: hidden;
-  background: #07090d;
+  background: #000;
 }
 .cam-box .camera {
   position: absolute;
@@ -983,7 +968,6 @@ input[type="range"] {
   width: min(42%, 220px);
   aspect-ratio: 1;
   background: color-mix(in srgb, var(--card) 72%, transparent);
-  border: 1px solid var(--line);
   border-radius: 12px;
   backdrop-filter: blur(6px);
   overflow: hidden;
@@ -1012,7 +996,6 @@ input[type="range"] {
 }
 .play-strip {
   background: var(--card);
-  border: 1px solid var(--line);
   border-radius: var(--radius);
   padding: 10px 12px;
   max-height: 40dvh;
@@ -1085,7 +1068,6 @@ input[type="range"] {
   overflow-x: auto;
 }
 .page-tabs button {
-  border: 1px solid var(--line);
   background: var(--card);
   color: var(--muted);
   border-radius: 999px;
@@ -1133,7 +1115,6 @@ input[type="range"] {
 }
 .chart-select {
   width: 100%;
-  border: 1px solid var(--line);
   background: var(--card-2);
   border-radius: 8px;
   padding: 5px 6px;
@@ -1150,7 +1131,6 @@ input[type="range"] {
   padding: 0;
 }
 .history-list li + li {
-  border-top: 1px solid var(--line);
 }
 .history-list button {
   width: 100%;
@@ -1275,7 +1255,6 @@ input[type="range"] {
   position: absolute;
   transform: translate(-50%, -100%);
   background: var(--card-2);
-  border: 1px solid var(--line);
   border-radius: 8px;
   padding: 4px 8px;
   font-size: 11px;
@@ -1390,7 +1369,6 @@ input[type="range"] {
 }
 .split-table td {
   padding: 6px 4px;
-  border-top: 1px solid var(--line);
 }
 .split-table tr {
   cursor: pointer;
@@ -1422,7 +1400,6 @@ button.mv {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  border: 1px solid var(--line);
   background: var(--card-2);
   border-radius: 10px;
   padding: 10px 12px;
@@ -1436,4 +1413,13 @@ button.mv {
 .xcross-row.on {
   border-color: var(--accent);
   box-shadow: inset 0 0 0 1px var(--accent);
+}
+
+/* 線を消したボタン・選択欄は、ブラウザ既定の縁も出さない */
+.penalty-row .seg,
+.xcross-row,
+button.mv,
+.page-tabs button,
+.chart-select {
+  border: 0;
 }
