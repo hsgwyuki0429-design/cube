@@ -1461,3 +1461,38 @@ button.mv,
     font-size: 12px;
   }
 }
+
+/* 設定: 1 行に「ラベル | 選択欄・スイッチ」。説明はその下に小さく */
+.settings h2 {
+  margin: 4px 0 10px;
+}
+.settings .card-head {
+  padding: 10px 14px 0;
+}
+.settings .card-body.form {
+  padding: 4px 14px 10px;
+  gap: 0;
+}
+.settings .field {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 12px;
+  align-items: center;
+  padding: 8px 0;
+}
+.settings .field .desc {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+.settings .field select {
+  width: auto;
+  max-width: 58vw;
+}
+.settings .field input[type="checkbox"] {
+  width: 20px;
+  height: 20px;
+  accent-color: var(--accent);
+}
+.settings .card + .card {
+  margin-top: 8px !important;
+}
