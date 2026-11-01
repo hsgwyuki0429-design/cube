@@ -19,14 +19,14 @@ import { STICKERS } from "../aruco/design";
 import { loadSolves, personalSequences } from "./storage";
 import { createStore } from "./store";
 
-export type Screen = "main" | "history" | "settings" | "help" | "aruco";
+// 画面: プレイ・データ（グラフと履歴）・1 回の記録の詳しい画面・解析（スロー動画・ArUco の画面）・設定（使い方も）
+export type Screen = "play" | "data" | "solve" | "analyze" | "settings";
+// 解析の画面のタブ
+export type AnalyzeTab = "timer-video" | "free-video" | "aruco";
 
 // aruco.html（移動するだけのページ）や #aruco で開かれたら ArUco の画面から始める。古い Service Worker が
 // aruco.html への移動に本体の index.html を返したときも、URL を見て ArUco の画面を開く
-function initialScreen(): Screen {
-  if (typeof location === "undefined") return "main";
-  return /aruco\.html$/.test(location.pathname) || location.hash === "#aruco" ? "aruco" : "main";
-}
+const openedAruco = () => typeof location !== "undefined" && (/aruco\.html$/.test(location.pathname) || location.hash === "#aruco");
 export type Panel = "free" | "timer";
 
 export interface CubeSetup {
@@ -52,6 +52,8 @@ export interface ScanUi {
 
 export interface AppState {
   screen: Screen;
+  analyzeTab: AnalyzeTab;
+  solveId: string | null; // 詳しい画面で開いている記録
   panel: Panel;
   camera: "off" | "starting" | "on" | "error";
   cameraError: string | null;
@@ -78,8 +80,10 @@ export const VIDEO_MAX_FPS = 120;
 
 class Controller {
   readonly store = createStore<AppState>({
-    screen: initialScreen(),
-    panel: "free",
+    screen: openedAruco() ? "analyze" : "play",
+    analyzeTab: openedAruco() ? "aruco" : "timer-video",
+    solveId: null,
+    panel: "timer",
     camera: "off",
     cameraError: null,
     cameraInfo: null,
@@ -146,9 +150,9 @@ class Controller {
         const start = () => {
           if (this.store.get().camera === "off" && !this.store.get().demo) this.startCamera();
         };
-        if (this.store.get().screen === "main") return start();
+        if (this.store.get().screen === "play") return start();
         const off = this.store.subscribe((st) => {
-          if (st.screen !== "main") return;
+          if (st.screen !== "play") return;
           off();
           start();
         });
@@ -160,7 +164,7 @@ class Controller {
     if (!this.vision) return;
     this.vision.workWidth = s.workWidth;
     this.vision.setConfig(this.liveConfig());
-    this.vision.setTrackingOptions(this.engineOptions(s));
+    this.vision.setTrackingOptions(this.liveEngineOptions(s));
   }
 
   // 認識の設定（ステッカーの符号・マーカーの配置は STICKERS だけ）。ライブも直前のマーカーの周りだけで検出する（arucoRegion）
@@ -174,6 +178,18 @@ class Controller {
     return { ...this.pipelineConfig(), arucoTurn: false };
   }
 
+  // ライブの追跡: 見えているキューブに従う。手順の知識（PLL など・自分のソルブ）は使わない（精密解析では使う）。
+  // 3D は確定した手（有力な仮説がすべて同じ手で一致）だけ回す。有力とみなすコスト差は 1.0（2.5 だと、止めた後も最後の 1〜2 手が
+  // 確定しないことが多かった。合成の 10 手で、確定した手だけの正しさ 速い 15/20 → 18/20・普通 15/20 → 18/20・持ち替え 9/12 → 12/12。
+  // 残りは写らない面の手で、写らない手は回さない）
+  liveEngineOptions(s: Settings = settingsStore.get()): Partial<EngineOptions> {
+    return {
+      decoder: { beamWidth: s.beamWidth, maxMovesPerStep: s.maxMovesPerStep, rotationCost: s.rotationCost, priorWeight: 0, confirmMargin: 1 },
+      observer: { stableMs: s.stableMs, ...ARUCO_OBSERVER },
+    };
+  }
+
+  // 精密解析の追跡: 手順の知識と自分のソルブの手順も手がかりにする
   engineOptions(s: Settings = settingsStore.get()): Partial<EngineOptions> {
     return {
       decoder: { beamWidth: s.beamWidth, maxMovesPerStep: s.maxMovesPerStep, rotationCost: s.rotationCost },
@@ -381,11 +397,10 @@ class Controller {
     }
   }
 
+  // ライブは見えているキューブに従い、精密解析の結果で過去の手を書き換えない。精密解析はタイマーの計測（インスペクションから）だけ
   private restartTracking(state: number[], refs: Lab[]): void {
-    // 精密解析の途中結果に乗り換えるとき、その後の観測を通し直すので残しておく（1 分ほど）
-    this.vision?.startTracking(state, refs, { ...this.engineOptions(), keepObservations: true, maxObservations: 2000 });
-    // 追跡を始めたら、精密解析も最初から進めてリアルタイムの追跡に反映する
-    void this.startAnalysis({ state, refs, keep: 0, timed: false });
+    this.cancelAnalysis();
+    this.vision?.startTracking(state, refs, this.liveEngineOptions());
   }
 
   // ---- ソルブ中から進める精密解析 ----
@@ -437,16 +452,8 @@ class Controller {
 
   private onAnalysisPartial(session: AnalysisSession, p: StreamPartial): void {
     if (this.session !== session) return;
+    // ライブには反映しない（見えているキューブに従う）。遅れだけ画面に出す
     this.store.set({ analysis: { behindMs: p.behindMs, frames: p.frames } });
-    // 解析が辻褄の合う読みをしていて、遅れが小さいうちだけ乗り換える（大きく遅れていると通し直す観測が多すぎる）。
-    // 完成の区切りまでを解き直した結果は、遅れていても使う（終わりが分かっているので正確）
-    if (p.status !== "tracking" || p.behindMs > (p.anchored ? 30000 : 6000) || this.store.get().scan) return;
-    this.vision?.rebase(p.state, p.orient, p.moves, p.t, session.keep);
-    // フリーで長く続けたら、いまの追跡の続きから解析を始め直す（解析の記録が増え続けないように）
-    if (!session.timed && !session.restarting && performance.now() - session.from > 60000 && p.behindMs < 3000) {
-      session.restarting = true;
-      window.setTimeout(() => this.session === session && this.restartFreeAnalysis(), 300);
-    }
   }
 
   // タイマーを止めた: to までの録画を渡し切り、終わりの状態（完成）で解き直した結果を待つ Promise を返す
@@ -472,18 +479,6 @@ class Controller {
     this.store.set({ analysis: null });
   }
 
-  // いまの追跡の続きから、フリーの解析を始め直す（タイマーの計測が終わった後など）
-  // 解析を進めている途中か（タイマーを止めた後の解析の結果を待つ間に、次のソルブが解析を始めたか）
-  get analyzing(): boolean {
-    return !!this.session;
-  }
-
-  restartFreeAnalysis(): void {
-    const track = this.store.get().track;
-    const cube = this.store.get().cube;
-    if (!cube) return;
-    void this.startAnalysis({ state: track?.state ?? cube.state, refs: track?.refs ?? cube.refs, keep: track?.moves.length ?? 0, timed: false });
-  }
 
   // キューブを完成させた（見失った後など）: 完成状態からやり直す
   resetToSolved(): void {
@@ -508,23 +503,8 @@ class Controller {
     this.store.set({ baseMoves: this.store.get().track?.moves.length ?? 0 });
   }
 
-  // フリーで完成した: 精密解析にそこまでを前後から解き直させる（完成が終わりと分かっているので正確に直せる）
-  private lastAnchorMoves = -1;
-  private solvedRun = 0;
-  private checkAnchor(m: FrameMessage): void {
-    const session = this.session;
-    const track = m.track ?? this.store.get().track;
-    if (!session || session.timed || session.id < 0 || !track) return;
-    const solvedNow = (m.track ? m.track.solved && m.track.status === "tracking" : false) || !!m.looksSolved;
-    this.solvedRun = solvedNow ? this.solvedRun + 1 : 0;
-    if (this.solvedRun < 3 || track.moves.length === this.lastAnchorMoves || track.moves.length <= session.keep) return;
-    this.lastAnchorMoves = track.moves.length;
-    this.refiner.anchorStream(session.id, m.t, solvedState());
-  }
-
   private onFrame(m: FrameMessage): void {
     this.latestFrame = m;
-    this.checkAnchor(m);
     for (const l of this.frameListeners) l(m);
     if (this.store.get().scan) this.onScanFrame(m);
     if (m.track) {
@@ -562,7 +542,6 @@ interface AnalysisSession {
   timed: boolean;
   timer: number;
   started: boolean;
-  restarting?: boolean;
   from: number;
   input: RefineInput;
 }

@@ -1,13 +1,11 @@
-// フリー追跡: 状態表示・手順ログ・統計・解法ガイド
+// プレイ画面の部品: 追跡の状態・解法ガイド・始め方（揃った状態から / 6 面スキャン）
 import { useEffect, useRef, useState } from "preact/hooks";
 import { controller } from "../app/controller";
 import { settingsStore } from "../app/settings";
 import { useStore } from "../app/store";
 import { type CubeState, MOVE_NAMES, applyMoves, isSolved, relativeMove, statesEqual } from "../cube/model";
 import { solveState } from "../cube/solver";
-import { mergeQuickRepeats, simplifyMoves } from "../track/merge";
 import { viewOrient } from "./notation";
-import { VideoAnalysis } from "./VideoAnalysis";
 
 // カメラの実測 fps が低いと速い回転を取りこぼす（暗い場所ではカメラが露光を伸ばして fps が落ちる）
 function FpsWarning() {
@@ -56,17 +54,7 @@ function TrackStatusBanner() {
   );
 }
 
-function useElapsed(running: boolean, start: number) {
-  const [, tick] = useState(0);
-  useEffect(() => {
-    if (!running) return;
-    const id = setInterval(() => tick((n) => n + 1), 200);
-    return () => clearInterval(id);
-  }, [running]);
-  return running ? performance.now() - start : 0;
-}
-
-function SolutionGuide() {
+export function SolutionGuide() {
   const track = useStore(controller.store, (s) => s.track);
   const cube = useStore(controller.store, (s) => s.cube);
   const settings = useStore(settingsStore, (s) => ({ notation: s.notation, viewpoint: s.viewpoint }));
@@ -122,62 +110,6 @@ function SolutionGuide() {
         <button class="btn small" onClick={() => setGuide(null)}>
           閉じる
         </button>
-      </div>
-    </div>
-  );
-}
-
-export function FreePanel() {
-  const track = useStore(controller.store, (s) => s.track);
-  const base = useStore(controller.store, (s) => s.baseMoves);
-  const moves = track?.moves ?? [];
-  const recent = simplifyMoves(mergeQuickRepeats(moves.slice(base)));
-  const startT = recent[0]?.t ?? 0;
-  const lastT = recent[recent.length - 1]?.t ?? 0;
-  const running = recent.length > 0 && !track?.solved;
-  const elapsed = useElapsed(running, startT);
-  const duration = running ? elapsed : lastT - startT;
-  const tps = recent.length > 1 && lastT > startT ? (recent.length - 1) / ((lastT - startT) / 1000) : 0;
-  const [video, setVideo] = useState(false);
-
-  return (
-    <div>
-      <TrackStatus />
-      <div class="stats">
-        <div class="stat">
-          <div class="k">手数</div>
-          <div class="v">{recent.length}</div>
-        </div>
-        <div class="stat">
-          <div class="k">TPS</div>
-          <div class="v">{tps ? tps.toFixed(2) : "—"}</div>
-        </div>
-        <div class="stat">
-          <div class="k">経過</div>
-          <div class="v">{recent.length ? `${(duration / 1000).toFixed(1)}s` : "—"}</div>
-        </div>
-      </div>
-      <div class="section">
-        <h3>解法ガイド</h3>
-        <SolutionGuide />
-      </div>
-      <div class="section">
-        <h3>操作</h3>
-        <div class="btn-row">
-          <button class="btn small" onClick={() => controller.clearMoves()}>
-            手順をクリア
-          </button>
-          <button class="btn small" onClick={() => controller.resetToSolved()}>
-            完成状態にリセット
-          </button>
-          <button class="btn small" onClick={() => controller.beginScan()}>
-            再スキャン
-          </button>
-          <button class="btn small" onClick={() => setVideo(true)}>
-            動画を解析
-          </button>
-        </div>
-        {video && <VideoAnalysis mode="free" onClose={() => setVideo(false)} />}
       </div>
     </div>
   );

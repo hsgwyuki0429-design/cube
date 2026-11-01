@@ -29,11 +29,8 @@ export interface Split {
   index: number; // その区間が終わった手の番号（0 = 開始時点で既に満たしていた）
 }
 
-export function cfopSplits(start: CubeState, moves: number[]): Split[] | null {
-  const states: CubeState[] = [start];
-  for (const m of moves) states.push(applyMove(states[states.length - 1], m));
-  if (!isSolved(states[states.length - 1])) return null;
-  // F2L が最も早く揃った面をクロスの面とみなす
+// F2L が最も早く揃った面（クロスの面）。揃わなければ -1
+function crossFaceIn(states: CubeState[]): number {
   let bestFace = -1;
   let bestIdx = Infinity;
   for (let c = 0; c < 6; c++) {
@@ -43,8 +40,23 @@ export function cfopSplits(start: CubeState, moves: number[]): Split[] | null {
       bestFace = c;
     }
   }
-  if (bestFace < 0) return null;
-  const c = bestFace;
+  return bestFace;
+}
+
+// そのソルブでクロスを作った面（F2L が最も早く揃った面）。分からなければ -1
+export function crossFaceOf(start: CubeState, moves: number[]): number {
+  const states: CubeState[] = [start];
+  for (const m of moves) states.push(applyMove(states[states.length - 1], m));
+  return crossFaceIn(states);
+}
+
+export function cfopSplits(start: CubeState, moves: number[]): Split[] | null {
+  const states: CubeState[] = [start];
+  for (const m of moves) states.push(applyMove(states[states.length - 1], m));
+  if (!isSolved(states[states.length - 1])) return null;
+  // F2L が最も早く揃った面をクロスの面とみなす
+  const c = crossFaceIn(states);
+  if (c < 0) return null;
   const cross = states.findIndex((s) => crossDone(s, c));
   const f2l = states.findIndex((s, i) => i >= cross && f2lDone(s, c));
   const oll = states.findIndex((s, i) => i >= f2l && f2lDone(s, c) && ollDone(s, c));

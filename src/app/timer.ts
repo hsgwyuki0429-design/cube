@@ -4,8 +4,9 @@
 // 止めた瞬間はリアルタイムの追跡からの速報値を出し、計測中に録画しておいた全フレームを別の Worker で
 // 1枚ずつ解析し直して、数秒〜数十秒後に時間と手順を確定する（リアルタイムでは処理が追いつかないフレームも使う）。
 import { cfopSplits } from "../cube/analysis";
-import { type CubeState, MOVE_NAMES, applyMoves, isSolved, relativeMove, rotateOrientation, solvedState, statesEqual } from "../cube/model";
+import { type CubeState, MOVE_NAMES, applyMoves, isSolved, moveFace, relativeMove, rotateOrientation, solvedState, statesEqual } from "../cube/model";
 import { randomScramble, solveBetween } from "../cube/solver";
+import { ScrambleGuide, undoMoves } from "./scrambleGuide";
 import type { TrackUpdate } from "../track/engine";
 import { mergeQuickRepeats } from "../track/merge";
 import type { RefineResult } from "../vision/refine";
@@ -19,9 +20,11 @@ export type TimerPhase = "idle" | "preparing" | "scrambling" | "inspection" | "s
 export interface TimerState {
   phase: TimerPhase;
   scramble: number[];
-  guide: number[]; // 現在の状態からスクランブル完了までの手順
+  guide: number[]; // スクランブルの案内（揃った状態からならスクランブルそのもの。途中で作り直さない）
   guideDone: number; // guide のうち済んだ手数
-  recomputing: boolean;
+  guideHalf: boolean; // 次の手（半回転）を半分だけ回した
+  guideFix: number[] | null; // 案内からずれたときに戻す手（空 = ずれていない。null = 近くに戻り道がない）
+  recomputing: boolean; // 崩れた状態から始めたときの案内を計算中
   inspectionStart: number;
   startT: number;
   startIndex: number;
@@ -38,6 +41,8 @@ export const timerStore = createStore<TimerState>({
   scramble: [],
   guide: [],
   guideDone: 0,
+  guideHalf: false,
+  guideFix: [],
   recomputing: false,
   inspectionStart: 0,
   startT: 0,
@@ -51,9 +56,9 @@ export const timerStore = createStore<TimerState>({
 });
 
 let target: CubeState | null = null;
-let guideStates: CubeState[] = [];
+let guide: ScrambleGuide | null = null;
+let onPathMoves = 0; // 最後に案内の道筋の上にいたときの、追跡の手の数（戻り道が見つからないときに、その後の手を逆にたどる）
 let readyMoves = 0;
-let recomputeTimer = 0;
 let warned8 = false;
 let warned12 = false;
 let recording = false;
@@ -83,9 +88,18 @@ function liveTimed(u: TrackUpdate, from: number, to = u.moves.length): TimedMove
 const viewOrient = (o: number) => (settingsStore.get().viewpoint === "user" && !controller.store.get().demo ? rotateOrientation(o, "y", 2) : o);
 
 function setGuide(from: CubeState, moves: number[]): void {
-  guideStates = [from];
-  for (const m of moves) guideStates.push(applyMoves(guideStates[guideStates.length - 1], [m]));
-  timerStore.set({ guide: moves, guideDone: 0, recomputing: false });
+  guide = new ScrambleGuide(from, moves);
+  onPathMoves = controller.store.get().track?.moves.length ?? 0;
+  timerStore.set({ guide: moves, guideDone: 0, guideHalf: false, guideFix: [], recomputing: false });
+}
+
+// 次に回す手（案内の表示・デモ）: 戻す手があればその先頭、半回転の途中なら残りの 1/4 回転
+export function nextGuideMove(t: TimerState): number | null {
+  if (t.guideFix === null) return null;
+  if (t.guideFix.length) return t.guideFix[0];
+  const m = t.guide[t.guideDone];
+  if (m === undefined) return null;
+  return t.guideHalf ? moveFace(m) * 3 : m;
 }
 
 export async function newScramble(): Promise<void> {
@@ -109,20 +123,9 @@ export async function newScramble(): Promise<void> {
 
 export function cancelTimer(): void {
   target = null;
-  if (recording) controller.restartFreeAnalysis();
+  if (recording) controller.cancelAnalysis();
   recording = false;
   timerStore.set({ phase: "idle", guide: [], scramble: [], message: null });
-}
-
-function recompute(state: CubeState): void {
-  clearTimeout(recomputeTimer);
-  timerStore.set({ recomputing: true });
-  recomputeTimer = window.setTimeout(async () => {
-    if (!target || timerStore.get().phase !== "scrambling") return;
-    const latest = Uint8Array.from(controller.store.get().track?.state ?? state);
-    if (statesEqual(latest, target)) return;
-    setGuide(latest, await solveBetween(latest, target));
-  }, 350);
 }
 
 function onTrack(u: TrackUpdate): void {
@@ -134,15 +137,19 @@ function onTrack(u: TrackUpdate): void {
       unexplained = 0;
       warned8 = warned12 = false;
       controller.beep(660, 0.15);
-      timerStore.set({ phase: "inspection", inspectionStart: performance.now(), guideDone: s.guide.length, recomputing: false });
+      timerStore.set({ phase: "inspection", inspectionStart: performance.now(), guideDone: s.guide.length, guideHalf: false, guideFix: [], recomputing: false });
       recording = false;
       // 精密解析をここ（スクランブルの状態が分かっている所）から進める。止めたときには大半が終わっている
       controller.startAnalysis({ state, keep: readyMoves, timed: true }).then((ok) => (recording = ok && timerStore.get().phase !== "idle"));
       return;
     }
-    const k = guideStates.findIndex((g, i) => i >= s.guideDone && statesEqual(g, state));
-    if (k >= 0) timerStore.set({ guideDone: k });
-    else recompute(state);
+    if (!guide || s.recomputing) return;
+    const pos = guide.locate(state, s.guideDone);
+    let fix = pos.fix;
+    if (fix && !fix.length) onPathMoves = u.moves.length;
+    // 近くに戻り道がない（追跡がしばらく見失っていた）: 道筋から外れた後に読めた手を逆にたどる
+    if (fix === null && u.moves.length > onPathMoves) fix = undoMoves(u.moves.slice(onPathMoves).map((m) => m.move));
+    timerStore.set({ guideDone: pos.done, guideHalf: pos.half, guideFix: fix });
     return;
   }
   if (s.phase === "inspection") {
@@ -251,8 +258,8 @@ function finish(u: TrackUpdate | null, how: StopReason, lookT?: number): void {
     // 速報値を、止めた後のフレーム（最後の手が止まったところ）も使って更新する
     if (how === "tracked") await refreshLive(live, s.startIndex, endIndex);
     // 次のソルブ（とフリーの追跡）のための解析は、この解析が終わってから始める（同じ解析の Worker で取り合うと、確定が数倍遅れた）
-    if (analyze) void analyzeRecording(live, how === "manual" ? stopT : endT).finally(() => controller.analyzing || controller.restartFreeAnalysis());
-    else controller.restartFreeAnalysis();
+    if (analyze) void analyzeRecording(live, how === "manual" ? stopT : endT);
+    else controller.cancelAnalysis();
   }, POSTROLL_MS);
 }
 
