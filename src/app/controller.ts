@@ -123,6 +123,14 @@ class Controller {
   private lastRetry = -Infinity;
   private session: AnalysisSession | null = null;
   private liveResting = false; // 止めた後の残りの解析の間（ライブの認識を休む）
+  private snapLive = true; // ライブの作り変えを使うか（タイマーのスクランブル中は使わない）
+
+  // ライブの作り変え（見えている色に合わせる）を使うか。タイマーのスクランブル中は、前のライブ（一番合う手順を回して見せる）にする
+  setLiveSnap(on: boolean): void {
+    if (this.snapLive === on) return;
+    this.snapLive = on;
+    this.vision?.setTrackingOptions(this.liveEngineOptions());
+  }
 
   init(): void {
     if (this.vision) return;
@@ -195,8 +203,9 @@ class Controller {
     return {
       decoder: { beamWidth: s.beamWidth, maxMovesPerStep: s.maxMovesPerStep, rotationCost: s.rotationCost, priorWeight: 0, confirmMargin: 1 },
       observer: { stableMs: s.stableMs, ...ARUCO_OBSERVER },
-      // 見え方とはっきり合わなければ、見えている色に合う状態にその場で作り変え、そこから追跡をやり直す（src/track/snap.ts）
-      snapToView: true,
+      // 見え方とはっきり合わなければ、見えている色に合う状態にその場で作り変え、そこから追跡をやり直す（src/track/snap.ts）。
+      // スクランブル中は使わない（setLiveSnap。手順を追って案内するので、見えていない面の分からない作り変えは道筋を乱す）
+      snapToView: this.snapLive,
     };
   }
 

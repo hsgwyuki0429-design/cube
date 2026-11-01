@@ -131,6 +131,28 @@ export function cropRegion(img: ImageLike, r: Region): ImageLike {
   return { data: out, width: r.w, height: r.h };
 }
 
+// 画像の一部を dst（r.w × r.h × 4）に写す
+export function copyRegionInto(dst: Uint8Array | Uint8ClampedArray, img: ImageLike, r: Region): void {
+  for (let y = 0; y < r.h; y++) {
+    const from = ((r.y + y) * img.width + r.x) * 4;
+    dst.set(img.data.subarray(from, from + r.w * 4), y * r.w * 4);
+  }
+}
+
+// 画像の一部を縦横半分に縮めて dst（(r.w >> 1) × (r.h >> 1) × 4）に書く（2×2 の画素の平均。halve(cropRegion(img, r)) と同じ）
+export function halveRegionInto(dst: Uint8Array | Uint8ClampedArray, img: ImageLike, r: Region): void {
+  const w = r.w >> 1;
+  const h = r.h >> 1;
+  const src = img.data;
+  const stride = img.width * 4;
+  for (let y = 0; y < h; y++) {
+    let a = (r.y + 2 * y) * stride + r.x * 4;
+    let o = y * w * 4;
+    for (let x = 0; x < w; x++, a += 8, o += 4)
+      for (let c = 0; c < 4; c++) dst[o + c] = (src[a + c] + src[a + 4 + c] + src[a + stride + c] + src[a + stride + 4 + c] + 2) >> 2;
+  }
+}
+
 // 縦横半分に縮める（2×2 の画素の平均）
 export function halve(img: ImageLike): ImageLike {
   const w = img.width >> 1;
@@ -206,8 +228,11 @@ export class ArucoBench {
     if (region) {
       // マーカーの大きさの範囲（画素）は縮めた分だけ小さくなるので、切り出しの長辺に対する割合は縮めても同じ
       this.setRateScale(Math.max(img.width, img.height) / Math.max(region.w, region.h));
-      const crop = cropRegion(img, region);
-      const out = this.detectIn(shrink === 2 ? halve(crop) : crop);
+      // 切り出し（と縮小）は OpenCV の入れ物に直接書く（1 フレームごとに画像の大きさの配列を作らない: ライブは 1 秒に何枚も
+      // 処理するので、作り直すたびにメモリの山が高くなり、iPhone ではタブごと落ちる元になった）
+      const w = shrink === 2 ? region.w >> 1 : region.w;
+      const h = shrink === 2 ? region.h >> 1 : region.h;
+      const out = this.detectIn(w, h, (dst) => (shrink === 2 ? halveRegionInto(dst, img, region) : copyRegionInto(dst, img, region)));
       // 縮めた画像の画素 i の中心は、元の画素 2i と 2i+1 の間
       const back = (v: number) => (shrink === 2 ? v * 2 + 0.5 : v);
       for (const r of out)
@@ -218,17 +243,30 @@ export class ArucoBench {
       return out;
     }
     this.setRateScale(1);
-    return this.detectIn(img);
+    return this.detectIn(img.width, img.height, () => undefined, img);
   }
 
-  private detectIn(img: ImageLike): DetectResult[] {
+  // 切り出した画素の入れ物（使い回す。大きくなったときだけ作り直す）
+  private scratch: Uint8ClampedArray | null = null;
+
+  // fill: 画素（RGBA、w × h）を書く。読み直し・色の測定にも使うので、JS の入れ物に書いてから OpenCV の入れ物に写す
+  // （OpenCV のメモリは途中で伸びることがあり、そのときは OpenCV の入れ物の上の配列が使えなくなる）
+  private detectIn(w: number, h: number, fill: (dst: Uint8Array | Uint8ClampedArray) => void, whole?: ImageLike): DetectResult[] {
     const cv = this.cv;
-    const { width: w, height: h } = img;
     if (!this.rgba || this.rgba.cols !== w || this.rgba.rows !== h) {
       this.freeMats();
       this.rgba = new cv.Mat(h, w, cv.CV_8UC4);
       this.gray = new cv.Mat(h, w, cv.CV_8UC1);
       this.max = new cv.Mat(h, w, cv.CV_8UC1);
+    }
+    let img: ImageLike;
+    if (whole) img = whole;
+    else {
+      const n = w * h * 4;
+      if (!this.scratch || this.scratch.length < n) this.scratch = new Uint8ClampedArray(n);
+      const data = this.scratch.subarray(0, n);
+      fill(data);
+      img = { data, width: w, height: h };
     }
     this.rgba.data.set(img.data);
     // 前処理の時間。同じ前処理を使い回した方式にも、その時間を含める

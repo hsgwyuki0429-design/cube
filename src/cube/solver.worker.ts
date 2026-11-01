@@ -13,7 +13,18 @@ setSearchDebug({ scramblePrefetchLevel: "none", logPerf: false });
 
 type Req = { id: number; type: "solve"; data: KPatternData } | { id: number; type: "scramble" } | { id: number; type: "xcross"; state: number[]; face: number };
 
-self.onmessage = async (e: MessageEvent<Req>) => {
+// ビルドすると、cubing.js の探索の Worker（search-worker-entry）がこのファイルのまとまりを読み込むことがある（共通の部品が
+// ここに入る）。そのときこの受け口が探索の Worker の中でも動き、cubing.js 自身のメッセージ（comlink）を「スクランブルを作る」と
+// 受け取って、また探索の Worker を作り…と Worker が際限なく増え、iPhone ではメモリが尽きてタブごと落ちた（30 秒で 20 個）。
+// この Worker（名前で見分ける）の中だけで、自分の形のメッセージだけを受ける
+const SOLVER_WORKER_NAME = "cubevision-solver"; // solver.ts と同じ
+const isRequest = (m: unknown): m is Req =>
+  !!m && typeof m === "object" && typeof (m as Req).id === "number" && ["solve", "scramble", "xcross"].includes((m as Req).type);
+
+if ((self as unknown as { name?: string }).name === SOLVER_WORKER_NAME) self.addEventListener("message", (e: MessageEvent) => void handle(e));
+
+async function handle(e: MessageEvent) {
+  if (!isRequest(e.data)) return;
   const msg = e.data;
   const post = (m: unknown) => (self as unknown as Worker).postMessage(m);
   try {
@@ -30,4 +41,4 @@ self.onmessage = async (e: MessageEvent<Req>) => {
   } catch (err) {
     post({ id: msg.id, error: err instanceof Error ? err.message : String(err) });
   }
-};
+}
