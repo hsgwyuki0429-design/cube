@@ -16,6 +16,9 @@ export interface Cube3DProps {
   mirror?: boolean; // 鏡像で表示（インカメラの鏡像プレビューに合わせる）
   colors?: string[] | null; // 面 U R F D L B の色（標準配色以外のとき）
   controls?: boolean; // 再生コントロール（履歴のリプレイ用）
+  // ライブ: 見えているキューブと同じ状態を最優先にする。足された手は回して見せるが、溜まったら最後の 1 手の前まで回さずに進め、
+  // 前の手の解釈が変わったら回し直さずにその状態へ切り替える
+  live?: boolean;
   setupAlg?: string;
   alg?: string;
 }
@@ -26,6 +29,7 @@ export interface Cube3DProps {
 const BASE_TEMPO = 3;
 const MAX_TEMPO = 6;
 const CATCH_UP_MS = 500; // cubing.js の 1 手の長さ（tempoScale 1 のとき）
+const LIVE_BACKLOG = 2; // ライブで回さずに待たせておく手の数の上限（これより溜まったら、見えているキューブに追いつかせる）
 
 // cubing.js の Cube3D は面ごとの素材を共有している（U L F R B D の順の色）
 const DEFAULT_HEX: Record<number, number> = { 0: 0xffffff, 4: 0xff8800, 2: 0x00ff00, 1: 0xff0000, 5: 0x2266ff, 3: 0xffff00 };
@@ -179,7 +183,19 @@ export function Cube3D(props: Cube3DProps) {
     let k = 0;
     while (k < old.length && k < props.moves.length && old[k] === props.moves[k]) k++;
     const done = old.length - queue.current.length; // 回し終えた（回している）手の数
-    if (k >= done) {
+    if (props.live && (k < done || props.moves.length - done > LIVE_BACKLOG)) {
+      // 解釈が変わった・手が溜まった: 最後の 1 手の前までは回さずに合わせ、足された最後の手だけ回して見せる
+      clearTimeout(pumping.current);
+      pumping.current = 0;
+      const appended = k >= old.length && props.moves.length > k;
+      const upto = appended ? props.moves.length - 1 : props.moves.length;
+      p.alg = props.moves
+        .slice(0, upto)
+        .map((m) => MOVE_NAMES[m])
+        .join(" ");
+      p.jumpToEnd();
+      queue.current = props.moves.slice(upto);
+    } else if (k >= done) {
       // 回した手はそのまま: 待っている手を新しい手順の続きに置き換える
       queue.current = props.moves.slice(done);
     } else {

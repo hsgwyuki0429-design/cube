@@ -176,12 +176,13 @@ function CubeInset() {
   const mirror = useStore(controller.store, (s) => s.mirror);
   const demo = useStore(controller.store, (s) => s.demo);
   if (!cube) return null;
-  // 確かになった手だけ回す（前後の見え方で回したと分かった手。推定の途中の手は回さない）
-  const moves = (track?.moves ?? []).slice(0, track?.confirmed ?? 0).map((m) => m.move);
+  // 見えているキューブと同じ状態にする: いまの見え方に一番合う仮説の手順（確定を待つと、その間 3D が見えているキューブとずれた）。
+  // 足された手は回して見せ、解釈が変わったら回さずにその状態へ切り替える（Cube3D の live）
+  const moves = (track?.moves ?? []).map((m) => m.move);
   const orient = settings.view === "fixed" || !track ? null : settings.view === "user" ? rotateOrientation(track.orient, "y", 2) : track.orient;
   return (
     <div class="cube-inset">
-      <Cube3D epoch={cube.epoch} setupMoves={cube.setupMoves} moves={moves} orient={orient} view={settings.view} mirror={settings.view === "camera" && mirror && !demo} colors={null} />
+      <Cube3D epoch={cube.epoch} setupMoves={cube.setupMoves} moves={moves} orient={orient} view={settings.view} mirror={settings.view === "camera" && mirror && !demo} colors={null} live />
     </div>
   );
 }

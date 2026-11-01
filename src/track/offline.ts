@@ -161,91 +161,178 @@ function hash53(s: Uint8Array): number {
   return (h1 >>> 0) * 0x200000 + ((h2 >>> 0) & 0x1fffff);
 }
 
+// 起点の状態から DEPTH 手以内で届く状態（同じ面の連続・反対面の並べ替えは片方だけ）。状態のハッシュの昇順に並べ、
+// 手順は 1 つの数（19 進で 1 手ずつ、手 + 1）にして持つ（配列やオブジェクトを状態の数だけ作るとメモリが膨らむ）
 interface Reach {
-  path: number[]; // 起点から（後ろ向きなら、起点へ戻る向きの手を順に）
+  keys: Float64Array;
+  codes: Uint16Array;
 }
 
-// 起点の状態から depth 手以内で届く状態（同じ面の連続・反対面の並べ替えは片方だけ）
-function reachable(start: Uint8Array, depth: number, out: Map<number, Reach>, limit: number): void {
-  const stack: { s: Uint8Array; path: number[] }[] = [{ s: start, path: [] }];
-  while (stack.length) {
-    const { s, path } = stack.pop()!;
+const pathLength = (code: number): number => {
+  let n = 0;
+  for (; code > 0; code = Math.floor(code / 19)) n++;
+  return n;
+};
+const pathOf = (code: number): number[] => {
+  const out: number[] = [];
+  for (; code > 0; code = Math.floor(code / 19)) out.push((code % 19) - 1);
+  return out.reverse();
+};
+
+function reachable(start: Uint8Array, depth: number): Reach {
+  const best = new Map<number, number>(); // 状態 → 一番短い手順
+  const lens = new Map<number, number>();
+  const visit = (s: Uint8Array, code: number, len: number, last: number) => {
     const k = hash53(s);
-    const prev = out.get(k);
-    if (!prev || prev.path.length > path.length) out.set(k, { path });
-    if (out.size > limit || path.length >= depth) continue;
-    const last = path[path.length - 1];
+    const prev = lens.get(k);
+    if (prev === undefined || prev > len) {
+      best.set(k, code);
+      lens.set(k, len);
+    }
+    if (len >= depth) return;
+    const next = new Uint8Array(54);
     for (let m = 0; m < NUM_MOVES; m++) {
-      if (last !== undefined) {
+      if (last >= 0) {
         const fa = moveFace(last);
         const fb = moveFace(m);
         if (fb === fa || (OPPOSITE[fa] === fb && fa > fb)) continue;
       }
-      const next = new Uint8Array(54);
       const p = MOVE_SRC[m];
       for (let i = 0; i < 54; i++) next[i] = s[p[i]];
-      stack.push({ s: next, path: [...path, m] });
+      visit(next, code * 19 + m + 1, len + 1, m);
     }
-  }
+  };
+  visit(start, 0, 0, -1);
+  const keys = Float64Array.from(best.keys()).sort();
+  const codes = new Uint16Array(keys.length);
+  for (let i = 0; i < keys.length; i++) codes[i] = best.get(keys[i])!;
+  return { keys, codes };
 }
+
+// 観測 1 つの上位の仮説から DEPTH 手で届く状態の表（ハッシュの昇順。同じ状態なら仮説のコスト + 手数が小さい方）
+interface Table {
+  keys: Float64Array;
+  cost: Float64Array; // 仮説のコスト + 観測のオフセット + 手数
+  hyp: Uint8Array; // 上位の何番目の仮説か
+  code: Uint16Array;
+}
+
+function tableOf(snap: Snapshot, top: number, reachOf: (s: Uint8Array) => Reach): Table {
+  const hyps = snap.hyps.slice(0, top);
+  const rs = hyps.map((h) => reachOf(h.state));
+  const total = rs.reduce((a, r) => a + r.keys.length, 0);
+  const t: Table = { keys: new Float64Array(total), cost: new Float64Array(total), hyp: new Uint8Array(total), code: new Uint16Array(total) };
+  // 仮説ごとの昇順の並びを 1 本にまとめる（いちばん小さい先頭を選び続ける）
+  const at = new Int32Array(rs.length);
+  let n = 0;
+  for (;;) {
+    let pick = -1;
+    let key = Infinity;
+    for (let i = 0; i < rs.length; i++) {
+      if (at[i] < rs[i].keys.length && rs[i].keys[at[i]] < key) {
+        key = rs[i].keys[at[i]];
+        pick = i;
+      }
+    }
+    if (pick < 0) break;
+    const code = rs[pick].codes[at[pick]++];
+    const cost = hyps[pick].cost + snap.offset + pathLength(code);
+    if (n > 0 && t.keys[n - 1] === key) {
+      if (cost < t.cost[n - 1]) {
+        t.cost[n - 1] = cost;
+        t.hyp[n - 1] = pick;
+        t.code[n - 1] = code;
+      }
+      continue;
+    }
+    t.keys[n] = key;
+    t.cost[n] = cost;
+    t.hyp[n] = pick;
+    t.code[n] = code;
+    n++;
+  }
+  return { keys: t.keys.subarray(0, n), cost: t.cost.subarray(0, n), hyp: t.hyp.subarray(0, n), code: t.code.subarray(0, n) };
+}
+
+// 隠れる前の前向きの上位と隠れた後の後ろ向きの上位を、3 手 + 3 手で届く状態の突き合わせでつなぐ（間が 10 観測まで。
+// 間の短い方を優先し、同じ間ならコストの小さい方）。表は前向きの直近 10 観測分と、後ろ向きの 1 観測分だけを持つ
+// （以前は全観測の表を持ち続け、観測が数百あると数 GB になって iPhone でタブごと落ちた）。届く状態は状態ごとに覚えておく（直近の分だけ）。
+// 探すのは、まず前向きが観測と合わなくなった所と後ろ向きが合わなくなった所の間（隠れていた区間の前後）。見つからなければ残りを、
+// 時間の上限（BRIDGE_MS）まで
+const BRIDGE_MS = 4000;
+const LOST_COST = 3; // 観測の矛盾がこれ以上の観測が 3 つ続いたら見失っている
 
 function bridge(F: Snapshot[], B: Snapshot[], obs: Observation[]): OfflineResult | null {
   const N = obs.length;
   const TOP = 16;
   const DEPTH = 3;
-  type Best = { cost: number; k1: number; k2: number; f: Hypothesis; b: Hypothesis; mid: number[] };
-  let best = null as Best | null;
-  // 観測 k の前向きの上位の仮説から 3 手で届く状態を 1 つの表に（同じ状態なら安い方）
-  type Entry = { f: Hypothesis; path: number[]; cost: number };
-  const fwdCache = new Map<number, Map<number, Entry>>();
-  const fwdReach = (k: number) => {
-    let table = fwdCache.get(k);
-    if (!table) {
-      table = new Map();
-      for (const f of F[k].hyps.slice(0, TOP)) {
-        const reach = new Map<number, Reach>();
-        reachable(f.state, DEPTH, reach, 8000);
-        for (const [key, r] of reach) {
-          const cost = f.cost + F[k].offset + r.path.length;
-          const prev = table.get(key);
-          if (!prev || cost < prev.cost) table.set(key, { f, path: r.path, cost });
-        }
-      }
-      fwdCache.set(k, table);
+  const GAP = 10;
+  const deadline = performance.now() + BRIDGE_MS;
+  const cache = new Map<number, Reach>();
+  const reachOf = (s: Uint8Array): Reach => {
+    const h = hash53(s);
+    let r = cache.get(h);
+    if (r) {
+      cache.delete(h);
+      cache.set(h, r); // 最近使ったものを後ろへ
+      return r;
     }
-    return table;
-  };
-  const bwdCache = new Map<number, { b: Hypothesis; reach: Map<number, Reach> }[]>();
-  const bwdReach = (k: number) => {
-    let r = bwdCache.get(k);
-    if (!r) {
-      r = B[k].hyps.slice(0, TOP).map((b) => {
-        const reach = new Map<number, Reach>();
-        reachable(b.state, DEPTH, reach, 8000);
-        return { b, reach };
-      });
-      bwdCache.set(k, r);
-    }
+    r = reachable(s, DEPTH);
+    cache.set(h, r);
+    if (cache.size > 96) cache.delete(cache.keys().next().value!);
     return r;
   };
-  for (let gap = 1; gap <= 10 && !best; gap++) {
-    for (let k1 = 0; k1 + gap < N; k1++) {
-      const k2 = k1 + gap;
-      const table = fwdReach(k1);
-      for (const { b, reach } of bwdReach(k2)) {
-        for (const [key, rb] of reach) {
-          const e = table.get(key);
-          if (!e) continue;
-          // 前向き: f から e.path、そこから rb.path の逆を逆順に、で b に着く
-          const mid = [...e.path, ...rb.path.slice().reverse().map(inverseMove)];
-          const cost = e.cost + b.cost + B[k2].offset + rb.path.length;
-          if (!best || cost < best.cost) best = { cost, k1, k2, f: e.f, b, mid };
+  type Best = { gap: number; cost: number; k1: number; k2: number; fi: number; fc: number; bi: number; bc: number };
+  let best = null as Best | null;
+  // k2 が lo..hi の範囲を探す
+  const scan = (lo: number, hi: number) => {
+    const window = new Map<number, Table>();
+    for (let k = Math.max(0, lo - GAP); k < lo - 1; k++) window.set(k, tableOf(F[k], TOP, reachOf));
+    for (let k2 = Math.max(1, lo); k2 <= Math.min(hi, N - 1); k2++) {
+      if (performance.now() > deadline) return;
+      window.set(k2 - 1, tableOf(F[k2 - 1], TOP, reachOf));
+      window.delete(k2 - 1 - GAP);
+      const bt = tableOf(B[k2], TOP, reachOf);
+      for (let k1 = k2 - 1; k1 >= Math.max(0, k2 - GAP); k1--) {
+        const gap = k2 - k1;
+        if (best && gap > best.gap) break;
+        const ft = window.get(k1)!;
+        // 2 つの昇順の並びの突き合わせ
+        let i = 0;
+        let j = 0;
+        while (i < ft.keys.length && j < bt.keys.length) {
+          const a = ft.keys[i];
+          const b = bt.keys[j];
+          if (a < b) i++;
+          else if (a > b) j++;
+          else {
+            // 前向き: 仮説 f から f の手順、そこから b の手順の逆を逆順に、で b に着く（どちらの表のコストもオフセット込み）
+            const cost = ft.cost[i] + bt.cost[j];
+            if (!best || gap < best.gap || cost < best.cost) best = { gap, cost, k1, k2, fi: ft.hyp[i], fc: ft.code[i], bi: bt.hyp[j], bc: bt.code[j] };
+            i++;
+            j++;
+          }
         }
       }
     }
-  }
+  };
+  const bad = (S: Snapshot[], k: number) => k >= 0 && k < N && (S[k].hyps[0]?.obsCost ?? Infinity) >= LOST_COST;
+  let kA = -1; // 前向きが見失い始めた観測
+  for (let k = 0; k < N && kA < 0; k++) if (bad(F, k) && bad(F, k + 1) && bad(F, k + 2)) kA = k;
+  let kB = -1; // 後ろ向きが（時間を戻る向きに）見失い始めた観測
+  for (let k = N - 1; k >= 0 && kB < 0; k--) if (bad(B, k) && bad(B, k - 1) && bad(B, k - 2)) kB = k;
+  if (kA >= 0 && kB >= 0) {
+    const lo = Math.max(1, Math.min(kA, kB) - GAP);
+    const hi = Math.min(N - 1, Math.max(kA, kB) + GAP);
+    scan(lo, hi);
+    if (!best) scan(1, lo + GAP);
+    if (!best) scan(hi - GAP, N - 1);
+  } else scan(1, N - 1);
   if (!best) return null;
-  const { k1, k2, f, b, mid } = best;
+  const { k1, k2 } = best;
+  const f = F[k1].hyps[best.fi];
+  const b = B[k2].hyps[best.bi];
+  const mid = [...pathOf(best.fc), ...pathOf(best.bc).reverse().map(inverseMove)];
   const head = listOf(f);
   // 橋渡しの手は、隠れていた区間（観測 k1 の後から観測 k2 まで）に等分して置く
   const ta = obs[k1].t;

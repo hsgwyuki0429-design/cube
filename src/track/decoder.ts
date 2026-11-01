@@ -120,6 +120,23 @@ function sequenceTree(depth: number): SeqTree {
   return t;
 }
 
+// 手順の木の節点ごとの状態の入れ物（1 本の領域を 54 バイトずつに分けたもの）。木ごとに 1 つ作って使い回す: 観測のたびに節点の数だけ
+// 配列を作っていた間は、深さ 4 で 1 回 7MB、見失ったときの深さ 5 では 1 回 100MB 近くになり、iPhone では解析の途中で落ちる元になった。
+// expand は入れ子に呼ばれず、残す仮説の状態は作り直すので、使い回してよい
+const bufferCache = new WeakMap<SeqTree, Uint8Array[]>();
+function stateBuffers(tree: SeqTree): Uint8Array[] {
+  let b = bufferCache.get(tree);
+  if (!b) {
+    const n = tree.move.length;
+    const all = new Uint8Array(n * 54);
+    b = new Array(n);
+    for (let i = 0; i < n; i++) b[i] = all.subarray(i * 54, i * 54 + 54);
+    // 深さ 4（4.8 万節点・入れ物 3MB ほど）までは覚えておく。それより大きい木は使うときだけ（覚えると居座る）
+    if (n <= 60000) bufferCache.set(tree, b);
+  }
+  return b;
+}
+
 // 手順の木の各節点までの、軸（x・y・z = 0・1・2）ごとの層の回転: 軸の正の側の層を負の側に対して、軸の正の向きのまわりに
 // 右手で 90° 単位（0〜3）と、その軸の手があるか。正の側の面の手（時計回り = 法線のまわりに -90°）も負の側の面の手（法線は軸の
 // 負の向き）も、正の側の層から見た回転は「-(回した量)」になる
@@ -327,7 +344,7 @@ export class MoveDecoder {
     };
     const tree = sequenceTree(depth);
     const nodes = tree.move.length;
-    const states = Array.from({ length: nodes }, () => new Uint8Array(54));
+    const states = stateBuffers(tree);
     // 手順の木の各節点までの手のコスト（手順の知識で上乗せ）と、その時点の直前 3 手
     const prior = this.options.priorWeight > 0 ? this.prior : null;
     const pw = this.options.priorWeight;

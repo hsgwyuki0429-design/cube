@@ -140,9 +140,11 @@ function bothFacesAt(moves: { move: number }[], from: number, dir: 1 | -1): bool
   return false;
 }
 
-// 重い設定: 全フレームを処理するので、1回の観測で起きる手は少ないが、取りこぼしを深く探し直せるように
+// 重い設定: 全フレームを処理するので、1回の観測で起きる手は少ないが、取りこぼしを探し直せるように。見失ったときの探し直しは
+// 4 手まで（5 手は手順の木が 65 万節点になり、1 回でメモリを 100MB 近く使っていた。手順は decodeOffline が前後から解き直して決める
+// ので、こちらの探し直しは結果にほとんど効かない）
 export const REFINE_ENGINE: Partial<EngineOptions> = {
-  decoder: { beamWidth: 64, maxMovesPerStep: 4, recoveryDepth: 5 },
+  decoder: { beamWidth: 64, maxMovesPerStep: 4, recoveryDepth: 4 },
   logMs: Infinity,
 };
 
