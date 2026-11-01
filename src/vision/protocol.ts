@@ -63,6 +63,7 @@ export type FromWorker =
   | FrameMessage
   | { type: "track-snapshot"; id: number; track: TrackUpdate | null }
   | { type: "refine-progress"; id: number; done: number; total: number }
+  | { type: "refine-phase"; id: number; phase: "flush" | "decode" | "timing" }
   | { type: "refine-result"; id: number; result: RefineResult }
   | { type: "refine-error"; id: number; message: string }
   | { type: "stream-partial"; id: number; partial: StreamPartial }

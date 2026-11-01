@@ -18,6 +18,7 @@ import { type Settings, facingOf, settingsStore } from "./settings";
 import { STICKERS } from "../aruco/design";
 import { loadSolves, personalSequences } from "./storage";
 import { createStore } from "./store";
+import { markPhase, safeLevel } from "./crashGuard";
 
 // 画面: プレイ・データ（グラフと履歴）・1 回の記録の詳しい画面・解析（スロー動画・ArUco の画面）・設定（使い方も）
 export type Screen = "play" | "data" | "solve" | "analyze" | "settings";
@@ -79,6 +80,8 @@ export const displayColors = (names: string[]): string[] => names.map((n) => NAM
 // 動画ファイルを解析するフレームの間隔の上限（実際の時間で）。240fps のスロー撮影は 2 枚に 1 枚
 export const VIDEO_MAX_FPS = 120;
 
+const LIVE_REST_MAX_MS = 20000; // 止めた後の残りの解析の間、ライブの認識を休むのは長くてもこれだけ
+
 class Controller {
   readonly store = createStore<AppState>({
     screen: openedAruco() ? "analyze" : "play",
@@ -119,10 +122,12 @@ class Controller {
   private stalled = 0;
   private lastRetry = -Infinity;
   private session: AnalysisSession | null = null;
+  private liveResting = false; // 止めた後の残りの解析の間（ライブの認識を休む）
 
   init(): void {
     if (this.vision) return;
     this.vision = new VisionClient();
+    this.refiner.onPhase = (phase) => markPhase(phase);
     this.applySettings(settingsStore.get());
     settingsStore.subscribe((s) => this.applySettings(s));
     this.vision.ready
@@ -130,7 +135,9 @@ class Controller {
       .catch(() => this.store.set({ vision: "error" }));
     this.vision.onResult((m) => this.onFrame(m));
     this.camera.onFrame((t) => {
-      this.vision?.submit(this.camera.video, t);
+      // 止めた後の残りの解析の間は、ライブの認識を休む（1 秒に何枚も作る画像でメモリの山が高くなり、iPhone で落ちる元になる。
+      // 休んでいる間に回した手は、再開したときに見えている色への作り変えで追いつく）
+      if (!this.liveResting) this.vision?.submit(this.camera.video, t);
       if (this.recorder.recording) this.recorder.add(this.camera.video, t);
     });
     this.camera.onEnded(() => this.onCameraLost());
@@ -188,6 +195,8 @@ class Controller {
     return {
       decoder: { beamWidth: s.beamWidth, maxMovesPerStep: s.maxMovesPerStep, rotationCost: s.rotationCost, priorWeight: 0, confirmMargin: 1 },
       observer: { stableMs: s.stableMs, ...ARUCO_OBSERVER },
+      // 見え方とはっきり合わなければ、見えている色に合う状態にその場で作り変え、そこから追跡をやり直す（src/track/snap.ts）
+      snapToView: true,
     };
   }
 
@@ -420,7 +429,8 @@ class Controller {
     this.cancelAnalysis();
     const s = settingsStore.get();
     const refs = opts.refs ?? this.store.get().track?.refs ?? this.store.get().cube?.refs;
-    if (!s.analyzeSolves || !refs || this.store.get().camera !== "on" || !FrameRecorder.available()) return false;
+    // 前回の解析中に 2 回落ちていたら解析しない（速報値のまま。設定から戻せる: src/app/crashGuard.ts）
+    if (!s.analyzeSolves || safeLevel() >= 2 || !refs || this.store.get().camera !== "on" || !FrameRecorder.available()) return false;
     this.recorder.clear();
     const session: AnalysisSession = { id: -1, keep: opts.keep, timed: opts.timed, timer: 0, started: false, from: performance.now(), input: null as unknown as RefineInput };
     this.session = session;
@@ -437,6 +447,7 @@ class Controller {
       engine: this.engineOptions(),
       pipeline: this.pipelineConfig(),
       ...(opts.timed ? {} : { keepPatchesMs: 3000 }),
+      ...(safeLevel() === 1 ? { light: true } : {}),
     };
     const id = await this.refiner.startStream((p) => this.onAnalysisPartial(session, p));
     if (id === null || this.session !== session) {
@@ -471,12 +482,24 @@ class Controller {
     await this.recorder.finish(to);
     this.feedAnalysis(session, to);
     this.recorder.clear(); // 渡し終えた録画は使わない（解析の Worker が自分の分を持っている）
-    return this.refiner.endStream(session.id, to, target, progress);
+    const result = this.refiner.endStream(session.id, to, target, progress);
+    this.liveResting = true;
+    const rest = window.setTimeout(() => (this.liveResting = false), LIVE_REST_MAX_MS);
+    // 終わったら解析の Worker を閉じてメモリを返す（次のインスペクションで作り直す）
+    void result
+      .catch(() => undefined)
+      .finally(() => {
+        clearTimeout(rest);
+        this.liveResting = false;
+        this.refiner.closeIfIdle();
+      });
+    return result;
   }
 
   cancelAnalysis(): void {
     const session = this.session;
     if (!session) return;
+    markPhase(null);
     clearInterval(session.timer);
     if (session.id >= 0) this.refiner.cancelStream(session.id);
     this.session = null;

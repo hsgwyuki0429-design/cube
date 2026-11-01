@@ -7,6 +7,7 @@ import { cfopSplits } from "../cube/analysis";
 import { type CubeState, MOVE_NAMES, applyMoves, isSolved, moveFace, relativeMove, rotateOrientation, solvedState, statesEqual } from "../cube/model";
 import { randomScramble, solveBetween } from "../cube/solver";
 import { StartDetector } from "./startDetect";
+import { markPhase } from "./crashGuard";
 import { ScrambleGuide, undoMoves } from "./scrambleGuide";
 import type { TrackUpdate } from "../track/engine";
 import { mergeQuickRepeats } from "../track/merge";
@@ -65,6 +66,7 @@ let warned12 = false;
 let recording = false;
 let lookRun = 0;
 let lookStartT = 0;
+let replanKey = ""; // スクランブルの案内を作り直した追跡の状態（同じ状態で何度も作り直さない）
 const startDetector = new StartDetector(); // インスペクション中に回し始めたか（src/app/startDetect.ts）
 
 const POSTROLL_MS = 1200; // 止めた後も録画を続ける時間（最後の手の回し終わりを確かめる）
@@ -135,21 +137,41 @@ function onTrack(u: TrackUpdate): void {
   if (s.phase === "scrambling" && target) {
     if (statesEqual(state, target)) {
       readyMoves = u.moves.length;
-      startDetector.reset();
+      startDetector.reset(u.base?.n ?? 0);
       warned8 = warned12 = false;
       controller.beep(660, 0.15);
       timerStore.set({ phase: "inspection", inspectionStart: performance.now(), guideDone: s.guide.length, guideHalf: false, guideFix: [], recomputing: false });
       recording = false;
       // 精密解析をここ（スクランブルの状態が分かっている所）から進める。止めたときには大半が終わっている
-      controller.startAnalysis({ state, keep: readyMoves, timed: true }).then((ok) => (recording = ok && timerStore.get().phase !== "idle"));
+      controller.startAnalysis({ state, keep: readyMoves, timed: true }).then((ok) => {
+        recording = ok && timerStore.get().phase !== "idle";
+        if (recording) markPhase("solving");
+      });
       return;
     }
     if (!guide || s.recomputing) return;
     const pos = guide.locate(state, s.guideDone);
     let fix = pos.fix;
     if (fix && !fix.length) onPathMoves = u.moves.length;
-    // 近くに戻り道がない（追跡がしばらく見失っていた）: 道筋から外れた後に読めた手を逆にたどる
-    if (fix === null && u.moves.length > onPathMoves) fix = undoMoves(u.moves.slice(onPathMoves).map((m) => m.move));
+    // 近くに戻り道がない（追跡がしばらく見失っていた）: 道筋から外れた後に読めた手を逆にたどる。
+    // 見えている色に合わせて作り変えた後（手順がつながらない）・たどる手がないときは、いまの状態からスクランブルの状態までを
+    // 1 回だけ作り直す（作り変えで状態が飛ぶと、戻し方のないまま案内が止まっていた）
+    const snapped = !!u.base && u.base.at >= onPathMoves;
+    if (fix === null && (snapped || u.moves.length <= onPathMoves)) {
+      const key = `${u.base?.n ?? 0}:${u.moves.length}`;
+      if (replanKey !== key && target) {
+        replanKey = key;
+        const want = target;
+        timerStore.set({ recomputing: true });
+        solveBetween(state, want)
+          .then((ms) => {
+            if (timerStore.get().phase === "scrambling" && target === want) setGuide(state, ms);
+          })
+          .catch(() => timerStore.set({ recomputing: false }));
+      }
+      return;
+    }
+    if (fix === null) fix = undoMoves(u.moves.slice(onPathMoves).map((m) => m.move));
     timerStore.set({ guideDone: pos.done, guideHalf: pos.half, guideFix: fix });
     return;
   }
@@ -230,7 +252,8 @@ function finish(u: TrackUpdate | null, how: StopReason, lookT?: number): void {
     penalty,
     moves: solveMoves(moves, s.startT),
     tps: timeMs > 0 ? moves.length / (timeMs / 1000) : 0,
-    splits: how === "tracked" ? splitsOf(startState, moves, s.startT) : undefined,
+    // ソルブ中に見えている色に合わせて作り変えた（手順がつながらない）ときは、分割タイムは精密解析で決める
+    splits: how === "tracked" && !(u?.base && u.base.at > s.startIndex) ? splitsOf(startState, moves, s.startT) : undefined,
     tracked: how !== "manual",
     ...(analyze ? { analysis: "pending" as const, provisionalMs: timeMs } : {}),
   };
@@ -266,7 +289,10 @@ async function refreshLive(live: LiveSpan, from: number, to: number): Promise<vo
   if (!moves.length || !isSolved(applyMoves(live.start, moves.map((m) => m.move)))) return;
   const cur = timerStore.get().solves.find((x) => x.id === live.id);
   if (!cur || cur.analysis === "done") return;
-  const begin = Math.min(live.startT, moves[0].start);
+  // 回し始めは、層が動き出したフレームが分かったときだけ更新する（分からない手の開始は前の読みが最後に見えた時刻で、指で隠して
+  // いた間が長いとその分だけ前になり、タイムが長くなっていた）
+  const first = u.timings?.[from];
+  const begin = first?.exact ? Math.max(first.start, live.startT - 600) : live.startT;
   live.startT = begin;
   live.endT = moves[moves.length - 1].end;
   const timeMs = Math.max(0, live.endT - begin);
@@ -274,6 +300,16 @@ async function refreshLive(live: LiveSpan, from: number, to: number): Promise<vo
 }
 
 async function analyzeRecording(live: LiveSpan, endT: number): Promise<void> {
+  // 解析の段階の印を残す（落ちずに終わったら消す。落ちたら次から軽くする: src/app/crashGuard.ts）
+  markPhase("finishing");
+  try {
+    await analyzeRecordingInner(live, endT);
+  } finally {
+    markPhase(null);
+  }
+}
+
+async function analyzeRecordingInner(live: LiveSpan, endT: number): Promise<void> {
   const { id, start, how } = live;
   const rec = controller.recorder;
   const to = endT + POSTROLL_MS - 100;
@@ -295,6 +331,7 @@ async function analyzeRecording(live: LiveSpan, endT: number): Promise<void> {
     updateSolve(id, { analysis: "failed" });
     return;
   }
+  markPhase("saving");
   debug.result = result;
   // 手動で止めたときは、最後に足した（見えていない）手で完成にしたものは採らない
   const ok = result.solved && result.start !== null && result.end !== null && result.moves.length > 0 && (how !== "manual" || result.forced === 0);

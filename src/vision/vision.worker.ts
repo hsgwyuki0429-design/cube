@@ -180,9 +180,11 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
         try {
           const t0 = performance.now();
           const behind = s.fedUntil - s.refiner.lastT;
+          post({ type: "refine-phase", id: msg.id, phase: "flush" });
           await s.decoder?.flush();
           const t1 = performance.now();
-          const result = s.refiner.result(msg.target ? Uint8Array.from(msg.target) : null);
+          post({ type: "refine-phase", id: msg.id, phase: "decode" });
+          const result = s.refiner.result(msg.target ? Uint8Array.from(msg.target) : null, (phase) => post({ type: "refine-phase", id: msg.id, phase }));
           // 調査用: 止めた時点の遅れ・残りの処理・解き直しの時間
           console.info(`[analysis] behind ${behind.toFixed(0)}ms rest ${(t1 - t0).toFixed(0)}ms result ${(performance.now() - t1).toFixed(0)}ms frames ${s.refiner.frames} gated ${s.refiner.gated} copied ${s.decoder?.copied ?? 0}`);
           post({ type: "refine-result", id: msg.id, result });

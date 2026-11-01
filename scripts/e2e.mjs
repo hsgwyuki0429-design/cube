@@ -120,6 +120,15 @@ try {
       console.log(
         `seed ${seed} timer: ${ok ? "OK" : "NG"} live ${(live?.timeMs / 1000).toFixed(3)}s → ${r.result?.analysis} ${(r.result?.timeMs / 1000).toFixed(3)}s (truth ≈ ${(truthMs / 1000).toFixed(3)}s, ${sol.length} moves) moves ${n} tps ${r.result?.tps.toFixed(2)} splits ${JSON.stringify(r.result?.splits?.map((x) => [x.name, x.moves]))} analysis-wait ${((Date.now() - waitFrom) / 1000).toFixed(1)}s ${logs.filter((l) => l.includes("[analysis]")).map((l) => l.replace(/^.*\[analysis\] /, "")).join(" / ")}`,
       );
+      if (!ok || process.env.E2E_TRACK) {
+        // NG のとき: 終わった後のライブの追跡の様子（揃っていると見ているか・作り変えたか）
+        const tr = await page.evaluate(() => {
+          const t = window.__cubevision.store.get().track;
+          return t && { status: t.status, solved: t.solved, obsCost: t.obsCost, moves: t.moves.length, base: t.base && { n: t.base.n, at: t.base.at }, faces: t.observation.faces.map((f) => f.labels.join("")) };
+        });
+        console.log(`  track after: ${JSON.stringify(tr)}`);
+        console.log(logs.filter((l) => l.includes("[snap]")).slice(-12).join("\n"));
+      }
       if (process.env.E2E_VERBOSE) {
         const t0 = sol[0]?.start ?? 0;
         console.log(`  truth : ${sol.map((x) => `${name(x.move)}@${Math.round(x.start - t0)}-${Math.round(x.t - t0)}`).join(" ")}`);

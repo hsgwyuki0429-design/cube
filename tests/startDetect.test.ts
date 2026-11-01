@@ -47,4 +47,11 @@ describe("StartDetector", () => {
     expect(d.push(update(4000, "B", 0), target, 0)).toBeNull();
     expect(d.push(update(4400, "B L", 0, undefined, 4000), target, 0)).toBe(3960);
   });
+
+  it("does not reach far back when the previous reading was last seen long ago (fingers covered the cube)", () => {
+    const d = new StartDetector();
+    // 手の t0（前の読みが最後に見えた時刻）が 5 秒前。層の動き出しは分からない
+    expect(d.push(update(6000, "F", 0, undefined, 1000), target, 0)).toBeNull();
+    expect(d.push(update(6400, "F R", 0, undefined, 1000), target, 0)).toBe(5700);
+  });
 });

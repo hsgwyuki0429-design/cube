@@ -5,6 +5,7 @@ import { Color, Matrix4, Quaternion, Vector3, type Object3D } from "three";
 import type { TwistyPlayer } from "cubing/twisty";
 import { controller } from "../app/controller";
 import { MOVE_NAMES, ORIENTATIONS, ROTATION, mul } from "../cube/model";
+import { setupMovesFor } from "../cube/solver";
 import { DEFAULT_GYRO, GyroFilter, follow } from "./gyro";
 
 export interface Cube3DProps {
@@ -19,6 +20,10 @@ export interface Cube3DProps {
   // ライブ: 見えているキューブと同じ状態を最優先にする。足された手は回して見せるが、溜まったら最後の 1 手の前まで回さずに進め、
   // 前の手の解釈が変わったら回し直さずにその状態へ切り替える
   live?: boolean;
+  // ライブの作り変え（TrackUpdate.base）: 見えている色に合わせて作り変えた状態。3D はその場でこの状態にして、at 番目以降の手を回す
+  base?: { n: number; at: number; state: number[] } | null;
+  // ライブの表示だけの作り変え（TrackUpdate.view）: 追跡が見え方を説明できない間は、見えている色に合う状態をそのまま出す
+  seen?: { n: number; state: number[] } | null;
   setupAlg?: string;
   alg?: string;
 }
@@ -70,7 +75,11 @@ export function Cube3D(props: Cube3DProps) {
   const shown = useRef<number[]>([]); // 表示する手（回し終えたものと、queue で待っているもの）
   const queue = useRef<number[]>([]); // まだ回していない手
   const pumping = useRef(0); // 次の手を回すタイマー
-  const epochRef = useRef(-1);
+  const epochRef = useRef("");
+  // 作り変えた状態を作る手順（ソルバーの Worker で求める。求まるまでは前の表示のまま）
+  const baseSetup = useRef<{ key: string; alg: string } | null>(null);
+  const pendingBase = useRef("");
+  const applyRef = useRef<() => void>(() => undefined);
   const puzzleObj = useRef<Object3D | null>(null);
   const targetQ = useRef(new Quaternion());
   const raf = useRef(0);
@@ -119,7 +128,7 @@ export function Cube3D(props: Cube3DProps) {
       player.current?.remove();
       player.current = null;
       puzzleObj.current = null;
-      epochRef.current = -1;
+      epochRef.current = "";
       shown.current = [];
     };
   }, []);
@@ -168,52 +177,80 @@ export function Cube3D(props: Cube3DProps) {
     const p = player.current;
     if (!p || props.controls) return;
     if (props.setupMoves === null) return;
-    if (epochRef.current !== props.epoch) {
-      epochRef.current = props.epoch;
+    // 表示の始まりの状態と、そこから回す手。ライブで作り変えたら、作り変えた状態からその後の手
+    let setup = props.setupMoves.map((m) => MOVE_NAMES[m]).join(" ");
+    let moves = props.moves;
+    let key = `${props.epoch}`;
+    // 表示だけの作り変え（view）があればその状態、なければ追跡の作り変え（base）からの手
+    const v = props.live ? props.seen : null;
+    const b = props.live ? props.base : null;
+    const fixed = v ? { key: `${props.epoch}:v${v.n}`, state: v.state, at: props.moves.length } : b ? { key: `${props.epoch}:b${b.n}`, state: b.state, at: b.at } : null;
+    if (fixed) {
+      if (baseSetup.current?.key !== fixed.key) {
+        if (pendingBase.current !== fixed.key) {
+          pendingBase.current = fixed.key;
+          setupMovesFor(Uint8Array.from(fixed.state))
+            .then((ms) => {
+              if (pendingBase.current !== fixed.key) return;
+              baseSetup.current = { key: fixed.key, alg: ms.map((m) => MOVE_NAMES[m]).join(" ") };
+              applyRef.current();
+            })
+            .catch((e) => console.warn("3D: 作り変えた状態を作れませんでした", e));
+        }
+        return;
+      }
+      setup = baseSetup.current.alg;
+      moves = v ? [] : props.moves.slice(fixed.at);
+      key = fixed.key;
+    }
+    if (epochRef.current !== key) {
+      // 始まりが変わった（スキャン・やり直し・作り変え）: 回さずにその場でその状態にする
+      epochRef.current = key;
       clearTimeout(pumping.current);
       pumping.current = 0;
       queue.current = [];
-      p.experimentalSetupAlg = props.setupMoves.map((m) => MOVE_NAMES[m]).join(" ");
-      p.alg = props.moves.map((m) => MOVE_NAMES[m]).join(" ");
+      p.experimentalSetupAlg = setup;
+      p.alg = moves.map((m) => MOVE_NAMES[m]).join(" ");
       p.jumpToEnd();
-      shown.current = [...props.moves];
+      shown.current = [...moves];
       return;
     }
     const old = shown.current;
     let k = 0;
-    while (k < old.length && k < props.moves.length && old[k] === props.moves[k]) k++;
+    while (k < old.length && k < moves.length && old[k] === moves[k]) k++;
     const done = old.length - queue.current.length; // 回し終えた（回している）手の数
-    if (props.live && (k < done || props.moves.length - done > LIVE_BACKLOG)) {
+    if (props.live && (k < done || moves.length - done > LIVE_BACKLOG)) {
       // 解釈が変わった・手が溜まった: 最後の 1 手の前までは回さずに合わせ、足された最後の手だけ回して見せる
       clearTimeout(pumping.current);
       pumping.current = 0;
-      const appended = k >= old.length && props.moves.length > k;
-      const upto = appended ? props.moves.length - 1 : props.moves.length;
-      p.alg = props.moves
+      const appended = k >= old.length && moves.length > k;
+      const upto = appended ? moves.length - 1 : moves.length;
+      p.alg = moves
         .slice(0, upto)
         .map((m) => MOVE_NAMES[m])
         .join(" ");
       p.jumpToEnd();
-      queue.current = props.moves.slice(upto);
+      queue.current = moves.slice(upto);
     } else if (k >= done) {
       // 回した手はそのまま: 待っている手を新しい手順の続きに置き換える
-      queue.current = props.moves.slice(done);
+      queue.current = moves.slice(done);
     } else {
-      // 回した手の解釈が変わった（精密解析の結果に乗り換えたなど）: 変わらない所まで戻し、そこから先を 1 手ずつ回し直す
+      // 回した手の解釈が変わった: 変わらない所まで戻し、そこから先を 1 手ずつ回し直す
       clearTimeout(pumping.current);
       pumping.current = 0;
-      p.alg = props.moves
+      p.alg = moves
         .slice(0, k)
         .map((m) => MOVE_NAMES[m])
         .join(" ");
       p.jumpToEnd();
-      queue.current = props.moves.slice(k);
+      queue.current = moves.slice(k);
     }
-    shown.current = [...props.moves];
+    shown.current = [...moves];
     if (!pumping.current && queue.current.length) pump();
   };
+  applyRef.current = apply;
 
-  useEffect(apply, [props.epoch, props.setupMoves, props.moves]);
+  useEffect(apply, [props.epoch, props.setupMoves, props.moves, props.base?.n, props.seen?.n]);
 
   useEffect(() => {
     if (puzzleObj.current) {
