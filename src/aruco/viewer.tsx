@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { MOVE_NAMES } from "../cube/model";
 import { applyH } from "../vision/homography";
-import { estimatePose } from "../vision/pose";
+import { FocalTracker, estimatePose } from "../vision/pose";
 import { smoothedPose } from "../ui/gyro";
 import { TimedCube3D } from "./timedCube";
 import type { CubeFrame, CubeResult, VisibleFace } from "./cube";
@@ -243,10 +243,14 @@ export function Viewer({ url, frames, info, timeScale, configNames, scheme, summ
   const turning = moves.find((m) => (m.t0 ?? m.t) <= nowReal && nowReal < m.t);
   // カメラに映ったキューブの傾き（組み立てた面の格子から。src/vision/pose.ts）。1 フレームごとに数度揺れるので、前後のフレームで
   // 時間の重みを付けて平均する（src/ui/gyro.ts）
-  const poses = useMemo(
-    () => (cube && info ? cube.faces.map((fs) => (fs.length ? (estimatePose(fs.map((f) => ({ slot: f.slot, H: f.H, rot: 0, held: !!f.partial })), info.analyzedWidth, info.analyzedHeight)?.R ?? null) : null)) : []),
-    [cube, info],
-  );
+  // 焦点距離はカメラ（レンズ）で違う（超広角は長辺の 0.4 倍ほど）ので、全フレームで一度見積もってから姿勢を求める（FocalTracker）
+  const poses = useMemo(() => {
+    if (!cube || !info) return [];
+    const tracker = new FocalTracker();
+    const facesOf = (fs: (typeof cube.faces)[number]) => fs.map((f) => ({ slot: f.slot, H: f.H, rot: 0, held: !!f.partial }));
+    for (const fs of cube.faces) if (fs.length) tracker.estimate(facesOf(fs), info.analyzedWidth, info.analyzedHeight);
+    return cube.faces.map((fs) => (fs.length ? (estimatePose(facesOf(fs), info.analyzedWidth, info.analyzedHeight, tracker.focal)?.R ?? null) : null));
+  }, [cube, info]);
   const poseTimes = useMemo(() => frames.map((fr) => fr.t), [frames, cube]);
   const tilt = poses.length ? smoothedPose(poses, poseTimes, index) : null;
   const missedHere = slots.filter((s) => s.track[index] === 1);
