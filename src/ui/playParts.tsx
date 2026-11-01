@@ -118,11 +118,10 @@ export function SolutionGuide() {
 export function StartCard() {
   const camera = useStore(controller.store, (s) => s.camera);
   return (
-    <div>
-      <div class="status-banner">
-        <strong>ArUco マーカーのキューブ</strong>
-        色をマーカーの ID で判定するので、揃ったキューブならスキャンなしで始められます。崩れたキューブは 6 面をスキャンしてください。
-      </div>
+    <div class="start-card">
+      <p class="small" style={{ margin: 0 }}>
+        揃ったキューブならスキャンなしで始められます。崩れていたら 6 面をスキャンしてください。
+      </p>
       <div class="btn-row">
         <button class="btn primary" disabled={camera !== "on"} onClick={() => controller.startFromSolved()}>
           揃った状態から開始
@@ -131,16 +130,16 @@ export function StartCard() {
           6面スキャン
         </button>
       </div>
-      {camera !== "on" && <p class="muted small">先にカメラを開始してください。カメラがなくても「デモで試す」で動きを確認できます。</p>}
-      <div class="section">
-        <h3>うまく追跡するコツ</h3>
-        <ul class="small muted" style={{ paddingLeft: 18, margin: 0 }}>
+      {camera !== "on" && <p class="muted small" style={{ margin: 0 }}>先にカメラを開始してください（「デモで試す」でも動きを確認できます）。</p>}
+      <details class="tips">
+        <summary class="small">うまく追跡するコツ</summary>
+        <ul class="small muted">
           <li>カメラを少し上に置き、キューブの「正面」と「上面」の2面が映るようにする</li>
           <li>明るい場所で。強い反射や逆光は避ける</li>
           <li>キューブは画面の中央付近に。マーカーが小さすぎると読めません（マスの間隔が 40px 以上）</li>
           <li>最初はゆっくり（1秒に1〜2手）。慣れたら速く</li>
         </ul>
-      </div>
+      </details>
     </div>
   );
 }
