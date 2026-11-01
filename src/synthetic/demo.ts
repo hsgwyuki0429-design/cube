@@ -77,20 +77,20 @@ export async function runDemo(app: Controller, syn: SyntheticCube, seed = Date.n
   const turn = (m: number) => syn.move(m, Math.min(260, 1000 / tps / 1.6)).then(() => sleep(1000 / tps));
 
   if (options.timer) {
-    const { newScramble, timerStore } = await import("../app/timer");
+    const { newScramble, nextGuideMove, timerStore } = await import("../app/timer");
     app.store.set({ panel: "timer" });
     await newScramble();
     // 案内された手順どおりに崩す（案内は状態に応じて更新されるので、毎回先頭の未完了の手を回す）
     for (let guard = 0; guard < 80 && timerStore.get().phase === "scrambling"; guard++) {
       const t = timerStore.get();
-      if (t.recomputing || t.guideDone >= t.guide.length) {
+      const next = nextGuideMove(t);
+      if (t.recomputing || next === null) {
         await sleep(200);
         continue;
       }
-      const target = t.guide.length;
-      const next = t.guide[t.guideDone];
       await turn(next);
-      await waitFor(() => timerStore.get().phase !== "scrambling" || timerStore.get().guideDone > t.guideDone || timerStore.get().guide.length !== target, 3000);
+      const sig = (x: typeof t) => `${x.guideDone}:${x.guideHalf}:${x.guideFix?.join(",")}`;
+      await waitFor(() => timerStore.get().phase !== "scrambling" || sig(timerStore.get()) !== sig(t), 3000);
     }
     await waitFor(() => timerStore.get().phase === "inspection", 5000);
     await sleep(1500);
