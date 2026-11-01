@@ -70,4 +70,50 @@ describe("offline reconstruction (forward + backward meet)", () => {
     expect(acc(off.moves.map((m) => m.move), s.truth)).toBe(1);
     expect(off.reachedEnd).toBe(true);
   });
+
+  // 前後どちらも、まったく見えない同じ区間で見失う: 3 手 + 3 手の突き合わせでつなぐ（橋渡し）
+  function hiddenStretch(seed: number, moves: number, b0: number, b1: number, perMove = 1, dark = { misread: 0, hidden: 1, mismatchCost: 1.5 }) {
+    const rnd = rng(seed);
+    const truth: number[] = [];
+    let prev: number | undefined;
+    for (let i = 0; i < moves; i++) truth.push((prev = randomMove(rnd, prev, ALL_MOVES)));
+    const start = applyMoves(solvedState(), invertMoves(truth));
+    const obs: Observation[] = [];
+    let state = start;
+    let t = 0;
+    const clean = { misread: 0.03, hidden: 0.1, mismatchCost: 1.5 };
+    obs.push(observe(state, 0, [F, U, R], t, t, rnd, clean));
+    for (let i = 0; i < truth.length; i++) {
+      state = applyMove(state, truth[i]);
+      for (let j = 0; j < perMove; j++) {
+        t += 200 / perMove;
+        obs.push(observe(state, 0, [F, U, R], t, t - 150 / perMove, rnd, i >= b0 && i < b1 ? dark : clean));
+      }
+    }
+    return { truth, start, obs, lastT: t };
+  }
+
+  it("bridges a stretch hidden from both directions", () => {
+    for (const seed of [20, 32]) {
+      const s = hiddenStretch(seed, 20, 6 + (seed % 5), 8 + (seed % 5) + (seed % 3));
+      const off = decodeOffline(s.obs, s.start, solvedState(), s.lastT);
+      expect(off.method).toBe("bridge");
+      expect(isSolved(applyMoves(s.start, off.moves.map((m) => m.move)))).toBe(true);
+      expect(acc(off.moves.map((m) => m.move), s.truth)).toBe(1);
+    }
+  });
+
+  // 観測の多い長いソルブで長く隠れて、つなげない: 橋渡しの表を全観測ぶん持っていた間は数 GB 使って落ちた（iPhone でタブごと）。
+  // いまは表を直近の分だけ持ち、時間の上限で打ち切る
+  it("gives up bridging a long hidden stretch without blowing up memory", () => {
+    const s = hiddenStretch(3, 40, 15, 30, 3, { misread: 0.4, hidden: 0.9, mismatchCost: 1.5 });
+    const before = process.memoryUsage().heapUsed;
+    let peak = 0;
+    const t0 = performance.now();
+    const off = decodeOffline(s.obs, s.start, solvedState(), s.lastT);
+    peak = Math.max(peak, process.memoryUsage().heapUsed - before);
+    expect(performance.now() - t0).toBeLessThan(40000);
+    expect(peak / 1e6).toBeLessThan(400);
+    expect(off.moves.length).toBeGreaterThan(0);
+  }, 60000);
 });

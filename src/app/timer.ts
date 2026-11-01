@@ -6,6 +6,7 @@
 import { cfopSplits } from "../cube/analysis";
 import { type CubeState, MOVE_NAMES, applyMoves, isSolved, moveFace, relativeMove, rotateOrientation, solvedState, statesEqual } from "../cube/model";
 import { randomScramble, solveBetween } from "../cube/solver";
+import { StartDetector } from "./startDetect";
 import { ScrambleGuide, undoMoves } from "./scrambleGuide";
 import type { TrackUpdate } from "../track/engine";
 import { mergeQuickRepeats } from "../track/merge";
@@ -64,7 +65,7 @@ let warned12 = false;
 let recording = false;
 let lookRun = 0;
 let lookStartT = 0;
-let unexplained = 0;
+const startDetector = new StartDetector(); // インスペクション中に回し始めたか（src/app/startDetect.ts）
 
 const POSTROLL_MS = 1200; // 止めた後も録画を続ける時間（最後の手の回し終わりを確かめる）
 
@@ -134,7 +135,7 @@ function onTrack(u: TrackUpdate): void {
   if (s.phase === "scrambling" && target) {
     if (statesEqual(state, target)) {
       readyMoves = u.moves.length;
-      unexplained = 0;
+      startDetector.reset();
       warned8 = warned12 = false;
       controller.beep(660, 0.15);
       timerStore.set({ phase: "inspection", inspectionStart: performance.now(), guideDone: s.guide.length, guideHalf: false, guideFix: [], recomputing: false });
@@ -153,26 +154,13 @@ function onTrack(u: TrackUpdate): void {
     return;
   }
   if (s.phase === "inspection") {
-    // 最初の手を追跡で読めなくても（指で隠れた・速すぎた）、見え方がスクランブルの状態と合わなくなったら始める。
-    // 正確な開始時刻は、止めた後の精密解析で録画から決め直す
-    if (u.status !== "tracking" && u.observations > 0 && !(target && statesEqual(state, target))) unexplained++;
-    else unexplained = 0;
-    if (unexplained >= 2 && u.moves.length <= readyMoves) {
-      timerStore.set({ phase: "solving", startT: u.observation.t, startIndex: readyMoves, liveMoves: 0 });
-      controller.recorder.keepMs = 150000;
-      lookRun = 0;
-      controller.beep(990, 0.08);
-      return;
-    }
-    if (u.moves.length > readyMoves && !(target && statesEqual(state, target))) {
-      const first = u.moves[readyMoves];
-      // 回し始め（フレームの記録から）。分からなければ観測の時刻
-      const startT = u.timings?.[readyMoves]?.start ?? first.t0 ?? first.t;
-      timerStore.set({ phase: "solving", startT, startIndex: readyMoves, liveMoves: u.moves.length - readyMoves });
-      controller.recorder.keepMs = 150000;
-      lookRun = 0;
-      controller.beep(990, 0.08);
-    }
+    // 回し始めたか: 最初の手が確定して層が動いたのを見たか、スクランブルの状態から外れたまま続いたとき（src/app/startDetect.ts）
+    const startT = startDetector.push(u, target, readyMoves);
+    if (startT === null) return;
+    timerStore.set({ phase: "solving", startT, startIndex: readyMoves, liveMoves: Math.max(0, u.moves.length - readyMoves) });
+    controller.recorder.keepMs = 150000;
+    lookRun = 0;
+    controller.beep(990, 0.08);
     return;
   }
   if (s.phase === "solving") {
