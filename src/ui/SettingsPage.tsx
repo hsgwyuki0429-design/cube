@@ -39,9 +39,45 @@ function Toggle<K extends keyof Settings>({ k }: { k: K }) {
   return <input type="checkbox" checked={!!v} onChange={(e) => updateSettings({ [k]: (e.target as HTMLInputElement).checked } as Partial<Settings>)} />;
 }
 
+// 使うカメラ: 「インカメラ / 背面カメラ」（向きで選ぶ）と、端末が持っているカメラ（超広角など。名前は一度カメラを許可すると出る）
+function CameraSelect() {
+  const cameras = useStore(controller.store, (s) => s.cameras);
+  const cameraId = useStore(settingsStore, (s) => s.cameraId);
+  const facing = useStore(settingsStore, (s) => s.facingMode);
+  const value = cameraId || facing;
+  const known = cameras.some((c) => c.id === cameraId);
+  return (
+    <select
+      value={value}
+      onChange={(e) => {
+        const v = (e.target as HTMLSelectElement).value;
+        if (v === "user" || v === "environment") updateSettings({ cameraId: "", facingMode: v });
+        else updateSettings({ cameraId: v });
+      }}
+    >
+      <option value="user">インカメラ（自分側）</option>
+      <option value="environment">背面カメラ</option>
+      {cameras.length > 0 && (
+        <optgroup label="このデバイスのカメラ">
+          {cameras.map((c) => (
+            <option key={c.id} value={c.id}>
+              {c.label}
+            </option>
+          ))}
+        </optgroup>
+      )}
+      {cameraId && !known && <option value={cameraId}>選んだカメラ</option>}
+    </select>
+  );
+}
+
 export function SettingsPage() {
   const info = useStore(controller.store, (s) => s.cameraInfo);
   const facing = useStore(settingsStore, (s) => s.facingMode);
+  const cameraId = useStore(settingsStore, (s) => s.cameraId);
+  useEffect(() => {
+    controller.refreshCameras();
+  }, []);
   // カメラを変えたら、動いているカメラをそのまま切り替える
   const first = useRef(true);
   useEffect(() => {
@@ -50,7 +86,7 @@ export function SettingsPage() {
       return;
     }
     if (controller.store.get().camera === "on" && !controller.store.get().demo) void controller.startCamera();
-  }, [facing]);
+  }, [facing, cameraId]);
 
   return (
     <div class="page settings">
@@ -58,8 +94,8 @@ export function SettingsPage() {
       <div class="card">
         <div class="card-head">カメラ</div>
         <div class="card-body form">
-          <Field label="使うカメラ" desc={info ? `使用中: ${info.label || "カメラ"}（${info.width}×${info.height}${info.frameRate ? `・${Math.round(info.frameRate)}fps` : ""}）。インカメラは鏡像で映します` : "インカメラは鏡像で映します"}>
-            <Select k="facingMode" options={[["user", "インカメラ（自分側）"], ["environment", "背面カメラ"]]} />
+          <Field label="使うカメラ" desc={info ? `使用中: ${info.label || "カメラ"}（${info.width}×${info.height}${info.frameRate ? `・${Math.round(info.frameRate)}fps` : ""}）。インカメラは鏡像で映します` : "インカメラは鏡像で映します。超広角などは、一度カメラを許可すると一覧に出ます"}>
+            <CameraSelect />
           </Field>
         </div>
       </div>
