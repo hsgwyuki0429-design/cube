@@ -13,9 +13,13 @@ export interface DetectSettings {
   thorough: boolean;
 }
 
-// 端末のコア数から、検出に使う Worker の数（解析の Worker とライブの認識の分を残す）
-export function poolSize(cores = (globalThis.navigator as { hardwareConcurrency?: number } | undefined)?.hardwareConcurrency ?? 4): number {
-  return Math.max(0, Math.min(3, cores - 2));
+// 端末のコア数から、検出に使う Worker の数（解析の Worker とライブの認識の分を残す）。スマホは 1 個まで: Worker 1 個で
+// OpenCV が 130MB ほど確保するので、ライブの認識・解析と合わせて 4〜5 個にすると iPhone ではタブごと落ちる
+export function poolSize(
+  cores = (globalThis.navigator as { hardwareConcurrency?: number } | undefined)?.hardwareConcurrency ?? 4,
+  mobile = /iPhone|iPad|iPod|Android|Mobile/i.test((globalThis.navigator as { userAgent?: string } | undefined)?.userAgent ?? ""),
+): number {
+  return Math.max(0, Math.min(mobile ? 1 : 3, cores - 2));
 }
 
 export class DetectPool {
