@@ -26,6 +26,10 @@ const LIVE_ONLY: Partial<PipelineConfig> = { arucoTurn: false }; // ライブだ
 // decoder: 追跡のデコーダの設定（認識の設定ではない）
 const LIVE: Record<string, Partial<PipelineConfig> & { decoder?: Partial<DecoderOptions> }> = {
   base: {},
+  noprior: { decoder: { priorWeight: 0 } }, // 手順の知識を使わない（本体のライブ: controller.liveEngineOptions）
+  m15: { decoder: { priorWeight: 0, confirmMargin: 1.5 } }, // 確定を緩める（有力な仮説とみなすコスト差）
+  m1: { decoder: { priorWeight: 0, confirmMargin: 1 } },
+  m05: { decoder: { priorWeight: 0, confirmMargin: 0.5 } },
   notrack: { arucoTrack: false },
   noshrink: { arucoShrink: false },
   noregion: { arucoRegion: false },
@@ -207,7 +211,9 @@ it("手順の総合評価", async () => {
     const rows: object[] = [];
     for (const l of lives) {
       const got = simplifyMoves(l.engine.decoder.bestMoves()).map((m) => MOVE_NAMES[m.move]);
-      rows.push({ seed, view: sc.view.name, kind: "live", cfg: l.name, ok: correct(got), dist: dist(got, truth), got: got.join(" "), truth: truthAlg, ms: l.ms / l.processed, fps: (l.processed * 1000) / sc.endT, p90: [...l.spent].sort((a, b) => a - b)[Math.floor(l.spent.length * 0.9)], max: Math.max(...l.spent) });
+      // 確定した手だけ（本体のライブの 3D は確定した手だけ回す）
+      const sure = simplifyMoves(l.engine.decoder.bestMoves().slice(0, l.engine.decoder.confirmedCount())).map((m) => MOVE_NAMES[m.move]);
+      rows.push({ seed, view: sc.view.name, kind: "live", cfg: l.name, ok: correct(got), dist: dist(got, truth), okSure: correct(sure), distSure: dist(sure, truth), sure: sure.join(" "), got: got.join(" "), truth: truthAlg, ms: l.ms / l.processed, fps: (l.processed * 1000) / sc.endT, p90: [...l.spent].sort((a, b) => a - b)[Math.floor(l.spent.length * 0.9)], max: Math.max(...l.spent) });
     }
     const target = applyMoves(solvedState(), sc.alg);
     const tStart = sc.timing[0].start;

@@ -3,6 +3,7 @@ import { controller } from "../app/controller";
 import { DEFAULT_SETTINGS, type Settings, settingsStore, updateSettings } from "../app/settings";
 import { useStore } from "../app/store";
 import { FrameRecorder } from "../vision/recorder";
+import { HelpPage } from "./HelpPage";
 
 function Field(props: { label: string; desc?: string; children: preact.ComponentChildren }) {
   return (
@@ -150,6 +151,10 @@ export function SettingsPage() {
           </div>
         </div>
       </div>
+      <details class="help-details" id="help">
+        <summary>使い方</summary>
+        <HelpPage />
+      </details>
     </div>
   );
 }

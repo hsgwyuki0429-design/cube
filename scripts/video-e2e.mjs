@@ -70,8 +70,8 @@ async function analyze(page, file, fps) {
 try {
   if (FREE) {
     const { page, logs } = await open();
-    await page.evaluate(() => window.__cubevision.store.set({ panel: "free" }));
-    await page.locator("button", { hasText: "動画を解析" }).click();
+    // 解析の画面の「動画を解析」
+    await page.evaluate(() => window.__cubevision.store.set({ screen: "analyze", analyzeTab: "free-video" }));
     const r = await analyze(page, FREE);
     await page.screenshot({ path: `${OUT}/free.png`, fullPage: true });
     const want = `${TPERM} ${TPERM}`;
@@ -83,14 +83,14 @@ try {
   }
   if (TIMER) {
     const { page, logs } = await open();
-    await page.evaluate(() => window.__cubevision.store.set({ panel: "timer" }));
     // 動画の前に回したスクランブルを表示しておく
     await page.evaluate((s) => {
       const F = ["U", "R", "F", "D", "L", "B"];
       const moves = s.split(" ").map((t) => F.indexOf(t[0]) * 3 + (t[1] === "2" ? 1 : t[1] === "'" ? 2 : 0));
       window.__cubevisionTimer.set({ scramble: moves });
     }, TIMER_SCRAMBLE);
-    await page.locator("button", { hasText: "スロー動画から記録" }).click();
+    // 解析の画面の「スロー動画から記録」
+    await page.evaluate(() => window.__cubevision.store.set({ screen: "analyze", analyzeTab: "timer-video" }));
     const r = await analyze(page, TIMER, 240);
     await page.screenshot({ path: `${OUT}/timer.png`, fullPage: true });
     const solve = await page.evaluate(() => window.__cubevisionTimer.get().solves[0]);

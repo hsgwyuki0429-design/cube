@@ -3,6 +3,7 @@
 import type { KPatternData } from "cubing/kpuzzle";
 import { type CubeState, MOVE_NAMES, invertMoves, parseMoves } from "./model";
 import { loadKPuzzle, stateToPattern } from "./pattern";
+import { type XCrossResult, solveXCross } from "./xcross";
 
 const normalize = (alg: string) =>
   alg
@@ -18,7 +19,7 @@ function useWorker(): boolean {
   return typeof window !== "undefined" && typeof Worker !== "undefined";
 }
 
-function call(msg: { type: "solve"; data: KPatternData } | { type: "scramble" }): Promise<string> {
+function call(msg: { type: "solve"; data: KPatternData } | { type: "scramble" } | { type: "xcross"; state: number[]; face: number }): Promise<string> {
   if (!worker) {
     worker = new Worker(new URL("./solver.worker.ts", import.meta.url), { type: "module" });
     worker.onmessage = (e) => {
@@ -75,6 +76,12 @@ export async function randomScramble(): Promise<number[]> {
   if (useWorker()) return parseMoves(normalize(await call({ type: "scramble" })));
   const { randomScrambleForEvent } = await import("cubing/scramble");
   return parseMoves(normalize((await randomScrambleForEvent("333")).toString()));
+}
+
+// 面 face のクロスとペア 1 組（X クロス）の最短手順（src/cube/xcross.ts。Worker で）
+export async function optimalXCross(state: CubeState, face: number): Promise<XCrossResult | null> {
+  if (useWorker()) return JSON.parse(await call({ type: "xcross", state: Array.from(state), face })) as XCrossResult | null;
+  return solveXCross(state, face);
 }
 
 export const movesText = (moves: number[]) => moves.map((m) => MOVE_NAMES[m]).join(" ");

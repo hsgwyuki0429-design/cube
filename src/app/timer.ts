@@ -123,7 +123,7 @@ export async function newScramble(): Promise<void> {
 
 export function cancelTimer(): void {
   target = null;
-  if (recording) controller.restartFreeAnalysis();
+  if (recording) controller.cancelAnalysis();
   recording = false;
   timerStore.set({ phase: "idle", guide: [], scramble: [], message: null });
 }
@@ -258,8 +258,8 @@ function finish(u: TrackUpdate | null, how: StopReason, lookT?: number): void {
     // 速報値を、止めた後のフレーム（最後の手が止まったところ）も使って更新する
     if (how === "tracked") await refreshLive(live, s.startIndex, endIndex);
     // 次のソルブ（とフリーの追跡）のための解析は、この解析が終わってから始める（同じ解析の Worker で取り合うと、確定が数倍遅れた）
-    if (analyze) void analyzeRecording(live, how === "manual" ? stopT : endT).finally(() => controller.analyzing || controller.restartFreeAnalysis());
-    else controller.restartFreeAnalysis();
+    if (analyze) void analyzeRecording(live, how === "manual" ? stopT : endT);
+    else controller.cancelAnalysis();
   }, POSTROLL_MS);
 }
 

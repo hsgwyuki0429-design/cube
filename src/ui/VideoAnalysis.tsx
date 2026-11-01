@@ -20,7 +20,7 @@ interface FileInfo {
 
 type Phase = "select" | "running" | "done" | "error";
 
-export function VideoAnalysis({ mode, onClose }: { mode: "timer" | "free"; onClose: () => void }) {
+export function VideoAnalysis({ mode, onClose }: { mode: "timer" | "free"; onClose?: () => void }) {
   const [scramble, setScramble] = useState<number[]>(() => (mode === "timer" ? timerStore.get().scramble : []));
   const [file, setFile] = useState<File | null>(null);
   const [info, setInfo] = useState<FileInfo | null>(null);
@@ -115,9 +115,11 @@ export function VideoAnalysis({ mode, onClose }: { mode: "timer" | "free"; onClo
       <div class="result-head">
         {mode === "timer" ? "スロー動画から記録" : "動画を解析"}
         <span class="spacer" />
-        <button class="btn small" onClick={() => (job.current?.cancel(), onClose())}>
-          閉じる
-        </button>
+        {onClose && (
+          <button class="btn small" onClick={() => (job.current?.cancel(), onClose())}>
+            閉じる
+          </button>
+        )}
       </div>
       <p class="muted small" style={{ marginTop: 0 }}>
         アプリのカメラ（ブラウザ）は 60fps 前後までです。速い回転を細かく見たいときは、スマホのカメラアプリのスロー撮影（120・240fps）で撮った動画を読み込むと、
