@@ -470,7 +470,7 @@ class Controller {
     this.store.set({ analysis: null });
     await this.recorder.finish(to);
     this.feedAnalysis(session, to);
-    this.recorder.stop();
+    this.recorder.clear(); // 渡し終えた録画は使わない（解析の Worker が自分の分を持っている）
     return this.refiner.endStream(session.id, to, target, progress);
   }
 

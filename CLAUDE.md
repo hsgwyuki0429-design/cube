@@ -392,7 +392,10 @@ facelet の直接置換テーブルを手書きすると必ず間違える。**3
   取り合い、確定までが 4 秒 → 16 秒になる回があった（いまはフリーでは解析しない。`Refiner.checkpoint` は使っていない）
 - タイム = 最初の手の回し始め 〜 最後の手の回し終わり。止めた瞬間はリアルタイムの値（速報値）、止めた 1.2 秒後に
   その後のフレームも使って更新、録画の解析が終わったら確定（`Solve.analysis`: pending / done / failed）
-- 録画（`src/vision/recorder.ts`）: 精密解析を始めたときから WebCodecs で圧縮して保持（解析に渡した後も、タイマーは 150 秒、フリーは 20 秒残す）。
+- 録画（`src/vision/recorder.ts`）: 精密解析を始めたときから WebCodecs で圧縮して保持（解析に渡した後も、タイマーは 150 秒、フリーは 20 秒残す。
+  止めて渡し切ったら捨てる）。解析の Worker は復号したフレームを `VideoFrame.copyTo` で YUV のまま取り出して RGBA に直す（`src/vision/framePixels.ts`。
+  canvas に描いて getImageData で読むのを繰り返すと、iPhone では止めた後の残りの解析の途中でタブごと落ちた。取り出せない形式なら canvas）。
+  解析の JS のメモリはソルブの長さでほぼ増えない（`tests/debug/refineMem.debug.test.ts`）。
   H.264（ハードウェア）優先。符号化が詰まったらフレームを間引く。映像は保存も送信もしない。長辺を `workWidth` に縮める（ライブの認識と同じ）
 - 解析（`Refiner`）: 全フレーム（止まっているものを除く）を `processFrame` + エンジンに通して観測をすべて残し、`decodeOffline` で解き直す
 - `decodeOffline`: スクランブル後の状態から前向き、完成から後ろ向き（観測を逆順、手は逆向き）にビームサーチし、
