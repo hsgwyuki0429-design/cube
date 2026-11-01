@@ -172,7 +172,8 @@ function TrackBadge() {
 function CubeInset() {
   const cube = useStore(controller.store, (s) => s.cube);
   const track = useStore(controller.store, (s) => s.track);
-  const settings = useStore(settingsStore, (s) => ({ view: s.cube3dView, mirror: s.mirror }));
+  const settings = useStore(settingsStore, (s) => ({ view: s.cube3dView }));
+  const mirror = useStore(controller.store, (s) => s.mirror);
   const demo = useStore(controller.store, (s) => s.demo);
   if (!cube) return null;
   // 確かになった手だけ回す（前後の見え方で回したと分かった手。推定の途中の手は回さない）
@@ -180,7 +181,7 @@ function CubeInset() {
   const orient = settings.view === "fixed" || !track ? null : settings.view === "user" ? rotateOrientation(track.orient, "y", 2) : track.orient;
   return (
     <div class="cube-inset">
-      <Cube3D epoch={cube.epoch} setupMoves={cube.setupMoves} moves={moves} orient={orient} view={settings.view} mirror={settings.view === "camera" && settings.mirror && !demo} colors={null} />
+      <Cube3D epoch={cube.epoch} setupMoves={cube.setupMoves} moves={moves} orient={orient} view={settings.view} mirror={settings.view === "camera" && mirror && !demo} colors={null} />
     </div>
   );
 }

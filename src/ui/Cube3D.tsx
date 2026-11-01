@@ -1,7 +1,7 @@
 // 3D キューブ（cubing.js の <twisty-player>）。追跡した手を順にアニメーションし、
 // キューブの姿勢（カメラに映っている傾き）に合わせて全体を回す。
 import { useEffect, useRef } from "preact/hooks";
-import { Color, Matrix4, Quaternion, type Object3D } from "three";
+import { Color, Matrix4, Quaternion, Vector3, type Object3D } from "three";
 import type { TwistyPlayer } from "cubing/twisty";
 import { controller } from "../app/controller";
 import { MOVE_NAMES, ORIENTATIONS, ROTATION, mul } from "../cube/model";
@@ -48,6 +48,14 @@ function recolor(root: Object3D, colors: string[] | null) {
   });
 }
 
+// 傾きに追従する表示で姿勢が届かないとき（1 面しか読めない・見失った）の向き: 真正面からだと 1 面しか見えないので、
+// 少し上と右から見た向き（上・正面・右の 3 面が見える）にする
+const NO_POSE_MS = 800;
+const FALLBACK_TILT = new Quaternion()
+  .setFromAxisAngle(new Vector3(0, 1, 0), (-30 * Math.PI) / 180)
+  .multiply(new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), (25 * Math.PI) / 180));
+const tilted = (q: Quaternion) => new Quaternion().multiplyQuaternions(FALLBACK_TILT, q);
+
 export function matToQuat(m: readonly number[]): Quaternion {
   return new Quaternion().setFromRotationMatrix(new Matrix4().set(m[0], m[1], m[2], 0, m[3], m[4], m[5], 0, m[6], m[7], m[8], 0, 0, 0, 0, 1));
 }
@@ -65,6 +73,8 @@ export function Cube3D(props: Cube3DProps) {
   const lastPoseAt = useRef(0);
   // 毎フレームの姿勢をならし、回る速さで次の姿勢までつなぐ（src/ui/gyro.ts）
   const gyro = useRef(new GyroFilter());
+  const orientRef = useRef(props.orient);
+  orientRef.current = props.orient;
   const following = () => !props.controls && (props.view === "camera" || props.view === "user");
 
   useEffect(() => {
@@ -200,7 +210,8 @@ export function Cube3D(props: Cube3DProps) {
     // 連続的な姿勢が届いている間は、それに任せる
     if (following() && performance.now() - lastPoseAt.current < 600) return;
     gyro.current.reset();
-    targetQ.current = props.orient === null ? new Quaternion() : matToQuat(ORIENTATIONS[props.orient]);
+    const q = props.orient === null ? new Quaternion() : matToQuat(ORIENTATIONS[props.orient]);
+    targetQ.current = following() ? tilted(q) : q;
     animateOrientation();
   }, [props.orient]);
 
@@ -219,7 +230,17 @@ export function Cube3D(props: Cube3DProps) {
     let cur = -1;
     let pending = -1;
     let count = 0;
-    return controller.onFrameResult((m) => {
+    // 姿勢が届かなくなったら、3 面が見える向きに（真正面のままだと 1 面しか見えない）
+    let fallback = false;
+    const timer = window.setInterval(() => {
+      if (performance.now() - lastPoseAt.current < NO_POSE_MS || fallback) return;
+      fallback = true;
+      gyro.current.reset();
+      const o = orientRef.current;
+      targetQ.current = tilted(o === null ? new Quaternion() : matToQuat(ORIENTATIONS[o]));
+      animateOrientation();
+    }, 250);
+    const off = controller.onFrameResult((m) => {
       if (!m.pose) return;
       const o = m.pose.orient;
       // 持ち替えの判定は 2 フレーム続いてから（1 フレームの誤読で 90° 跳ねないように）。待つ間は向きを動かさない:
@@ -238,8 +259,13 @@ export function Cube3D(props: Cube3DProps) {
       gyro.current.push(q, now);
       targetQ.current = q;
       lastPoseAt.current = now;
+      fallback = false;
       animateOrientation();
     });
+    return () => {
+      clearInterval(timer);
+      off();
+    };
   }, [props.view, props.controls]);
 
   useEffect(() => {

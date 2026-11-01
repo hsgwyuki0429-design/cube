@@ -4,7 +4,7 @@ import { type Mat3, ORIENTATIONS, mul } from "../cube/model";
 import { TrackerEngine, focusCells } from "../track/engine";
 import { StreamDecoder, decodeRecording } from "./decode";
 import { StillSkipper } from "./motion";
-import { estimatePose, rotationAngle } from "./pose";
+import { FocalTracker, rotationAngle } from "./pose";
 import { Refiner } from "./refine";
 import { DetectPool, ParallelFeeder, poolSize } from "./detectPool";
 import { stickerScheme } from "../aruco/codes";
@@ -19,6 +19,8 @@ let config: PipelineConfig = { ...DEFAULT_PIPELINE };
 let ctx: OffscreenCanvasRenderingContext2D | null = null;
 let engine: TrackerEngine | null = null;
 const memory = {}; // フレームの間で引き継ぐもの（processFrame）
+// 焦点距離の見積もり（カメラごとに違う。超広角は長辺の 0.4 倍ほど: src/vision/pose.ts）
+const focal = new FocalTracker();
 let lastPose: { t: number; M: Mat3 } | null = null; // 直前に送った 3D の向き（キューブ固定 → カメラ）
 let focus: number[] | undefined; // 追跡が未確定・推定とみているマス（ArUco で先に読み直す）
 
@@ -301,7 +303,7 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
         if (engine && reading.faces.length) {
           const labels = engine.labelsOf(reading);
           looksSolved = engine.looksSolved(reading, labels);
-          const p = estimatePose(result.faces, w, h);
+          const p = focal.estimate(result.faces, w, h);
           if (p && p.err < Math.max(4, w / 100)) {
             // 直前の 3D の向き（キューブ固定 → カメラ）に近い姿勢を優先する（見え方で区別できないときに跳ねない）
             const prev = lastPose && msg.t - lastPose.t < 1500 ? lastPose.M : null;

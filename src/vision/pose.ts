@@ -23,6 +23,7 @@ export interface Pose {
   t: Vec3; // キューブの中心（カメラ座標、+z = カメラ側。単位はキューブの 1/3）
   err: number; // 再投影誤差（px、二乗平均）
   faces: number;
+  focal: number; // 使った焦点距離（px。fitFocal なら当てはめた値）
 }
 
 const LATTICE: Pt[] = [
@@ -113,7 +114,8 @@ const flip = (v: number[]) => [v[0], -v[1], -v[2]];
 const FLIP = [1, 0, 0, 0, -1, 0, 0, 0, -1];
 
 // center: 画像上の光軸の位置（既定は画像の中心。切り出した画像ではフレームの中心）
-export function estimatePose(faces: PoseFace[], width: number, height: number, focal = defaultFocal(width, height), center: Pt = [width / 2, height / 2]): Pose | null {
+// fitFocal: 焦点距離も当てはめる（2 面以上見えているか、1 面が斜めに見えているときだけ。正面向きの 1 面では焦点距離と距離の区別がつかない）
+export function estimatePose(faces: PoseFace[], width: number, height: number, focal = defaultFocal(width, height), center: Pt = [width / 2, height / 2], fitFocal = false): Pose | null {
   const used = faces.filter((f) => !f.held);
   const front = used.find((f) => f.slot === F);
   if (!front) return null;
@@ -158,7 +160,10 @@ export function estimatePose(faces: PoseFace[], width: number, height: number, f
   let t = [tp[0] + 1.5 * r3[0], tp[1] + 1.5 * r3[1], tp[2] + 1.5 * r3[2]];
   let w = logRot(R0);
 
-  const residuals = (wv: number[], tv: number[]): number[] => {
+  // 1 面だけのときは、面が斜めに見えている（法線が光軸から 20° 以上傾いている）ときだけ。正面向きの 1 面では距離と区別がつかない
+  const fit = fitFocal && (new Set(used.map((f) => f.slot)).size >= 2 || Math.abs(r3[2]) < Math.cos((20 * Math.PI) / 180));
+  const residuals = (wv: number[], tv: number[], lf = Math.log(focal)): number[] => {
+    const fo = Math.exp(lf);
     const R = rodrigues(wv);
     const out: number[] = [];
     for (let i = 0; i < pts3.length; i++) {
@@ -170,35 +175,37 @@ export function estimatePose(faces: PoseFace[], width: number, height: number, f
         out.push(1e4, 1e4);
         continue;
       }
-      out.push(cx + (focal * X) / Z - pts2[i][0], cy + (focal * Y) / Z - pts2[i][1]);
+      out.push(cx + (fo * X) / Z - pts2[i][0], cy + (fo * Y) / Z - pts2[i][1]);
     }
     return out;
   };
   const sq = (r: number[]) => r.reduce((s, v) => s + v * v, 0);
 
   // レーベンバーグ・マーカート法（数値微分）
-  let params = [...w, ...t];
-  let r = residuals(w, t);
+  const n = fit ? 7 : 6;
+  let params = fit ? [...w, ...t, Math.log(focal)] : [...w, ...t];
+  const res = (p: number[]) => residuals(p.slice(0, 3), p.slice(3, 6), fit ? p[6] : Math.log(focal));
+  let r = res(params);
   let cost = sq(r);
   let damping = 1e-3;
   for (let it = 0; it < 15; it++) {
     const J: number[][] = [];
-    for (let k = 0; k < 6; k++) {
+    for (let k = 0; k < n; k++) {
       const p2 = [...params];
       const h = k < 3 ? 1e-5 : 1e-4;
       p2[k] += h;
-      const r2v = residuals(p2.slice(0, 3), p2.slice(3));
+      const r2v = res(p2);
       J.push(r2v.map((v, i) => (v - r[i]) / h));
     }
-    const A = Array.from({ length: 6 }, (_, i) => Array.from({ length: 6 }, (_, j) => J[i].reduce((s, v, n) => s + v * J[j][n], 0)));
-    const g = Array.from({ length: 6 }, (_, i) => -J[i].reduce((s, v, n) => s + v * r[n], 0));
+    const A = Array.from({ length: n }, (_, i) => Array.from({ length: n }, (_, j) => J[i].reduce((s, v, q) => s + v * J[j][q], 0)));
+    const g = Array.from({ length: n }, (_, i) => -J[i].reduce((s, v, q) => s + v * r[q], 0));
     let improved = false;
     for (let tries = 0; tries < 5 && !improved; tries++) {
       const Ad = A.map((row, i) => row.map((v, j) => (i === j ? v * (1 + damping) + 1e-9 : v)));
       const d = solve(Ad, g);
       if (!d) break;
       const cand = params.map((v, i) => v + d[i]);
-      const rc = residuals(cand.slice(0, 3), cand.slice(3));
+      const rc = res(cand);
       const cc = sq(rc);
       if (cc < cost) {
         params = cand;
@@ -213,10 +220,46 @@ export function estimatePose(faces: PoseFace[], width: number, height: number, f
     if (!improved) break;
   }
   w = params.slice(0, 3);
-  t = params.slice(3);
+  t = params.slice(3, 6);
   // アプリのカメラフレームへ: R_app = FLIP · R · FLIP
   const Rapp = mul3(mul3(FLIP, rodrigues(w)), FLIP);
-  return { R: Rapp, t: flip(t) as Vec3, err: Math.sqrt(cost / pts3.length), faces: new Set(used.map((f) => f.slot)).size };
+  return { R: Rapp, t: flip(t) as Vec3, err: Math.sqrt(cost / pts3.length), faces: new Set(used.map((f) => f.slot)).size, focal: fit ? Math.exp(params[6]) : focal };
+}
+
+// 映像ごとの焦点距離の見積もり。焦点距離はカメラ（レンズ）で大きく違い、超広角では長辺の 0.4 倍ほどしかない。決め打ち（0.8 倍）のままだと
+// 再投影の誤差が 70〜160px になって姿勢を捨て、3D が傾きに追従せず真正面（1 面だけ）のままだった。2 面以上見えたフレームで焦点距離も
+// 当てはめ、合う値をならして覚え、1 面しか見えないフレームにも使う。大きさ（解像度・縦横）が変わったら（カメラを替えた）やり直す
+export class FocalTracker {
+  private size = "";
+  private logF = 0;
+  private samples = 0;
+
+  get focal(): number {
+    return Math.exp(this.logF);
+  }
+
+  estimate(faces: PoseFace[], width: number, height: number): Pose | null {
+    const key = `${width}x${height}`;
+    if (key !== this.size) {
+      this.size = key;
+      this.logF = Math.log(defaultFocal(width, height));
+      this.samples = 0;
+    }
+    const long = Math.max(width, height);
+    const full = new Set(faces.filter((f) => !f.held).map((f) => f.slot)).size;
+    if (full >= 1) {
+      const p = estimatePose(faces, width, height, this.focal, undefined, true);
+      const k = p ? p.focal / long : 0;
+      if (p && p.focal !== this.focal && p.err < Math.max(4, width / 100) && k > 0.25 && k < 2) {
+        // 最初の数回は大きく動かし、その後はならす（1 面だけのときは控えめに）
+        const a = (this.samples < 5 ? 0.5 : 0.15) * (full >= 2 ? 1 : 0.5);
+        this.logF = (1 - a) * this.logF + a * Math.log(p.focal);
+        this.samples++;
+        return p;
+      }
+    }
+    return estimatePose(faces, width, height, this.focal);
+  }
 }
 
 // 2 つの回転の間の角度（ラジアン）

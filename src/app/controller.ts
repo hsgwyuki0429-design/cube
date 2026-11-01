@@ -14,7 +14,7 @@ import type { VideoFileInfo } from "../vision/videoFile";
 import { RefineClient, VisionClient } from "../vision/visionClient";
 import { ARUCO_OBSERVER } from "../track/observer";
 import { ARUCO_NAMES, ARUCO_REFS } from "../aruco/palette";
-import { type Settings, settingsStore } from "./settings";
+import { type Settings, mirrorFor, settingsStore } from "./settings";
 import { STICKERS } from "../aruco/design";
 import { loadSolves, personalSequences } from "./storage";
 import { createStore } from "./store";
@@ -58,6 +58,7 @@ export interface AppState {
   camera: "off" | "starting" | "on" | "error";
   cameraError: string | null;
   cameraInfo: CameraInfo | null;
+  mirror: boolean; // プレビューを鏡像にする（インカメラ。背面カメラ・デモはしない: mirrorFor）
   cameras: { id: string; label: string }[];
   vision: "loading" | "ready" | "error"; // error: 画像認識（OpenCV）を読み込めなかった
   visionLoadMs: number;
@@ -87,6 +88,7 @@ class Controller {
     camera: "off",
     cameraError: null,
     cameraInfo: null,
+    mirror: true,
     cameras: [],
     vision: "loading",
     visionLoadMs: 0,
@@ -228,7 +230,7 @@ class Controller {
     this.store.set({ camera: "starting", cameraError: null });
     try {
       const info = await this.camera.start({ deviceId: s.cameraId || undefined, facingMode: s.facingMode, height: s.resolution, frameRate: s.cameraFps });
-      this.store.set({ camera: "on", cameraInfo: info });
+      this.store.set({ camera: "on", cameraInfo: info, mirror: mirrorFor(info.facingMode, s.facingMode) });
       this.refreshCameras();
     } catch (e) {
       // 指定したカメラが無くなっていたら既定のカメラで再試行

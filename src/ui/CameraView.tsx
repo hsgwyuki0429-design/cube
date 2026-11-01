@@ -35,7 +35,7 @@ function classifyColor(lab: Lab, refs: Lab[] | null, display: string[] | null): 
 
 export function CameraView() {
   const app = useStore(controller.store, (s) => ({ camera: s.camera, error: s.cameraError, demo: s.demo, scanning: !!s.scan && !s.scan.result, vision: s.vision }));
-  const settings = useStore(settingsStore, (s) => ({ mirror: s.mirror, debug: s.debug }));
+  const mirrored = useStore(controller.store, (s) => s.mirror);
   const host = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
   const hint = useRef<HTMLDivElement>(null);
@@ -48,8 +48,8 @@ export function CameraView() {
   }, []);
 
   useEffect(() => {
-    controller.camera.video.classList.toggle("mirror", settings.mirror && !app.demo);
-  }, [settings.mirror, app.demo]);
+    controller.camera.video.classList.toggle("mirror", mirrored && !app.demo);
+  }, [mirrored, app.demo]);
 
   useEffect(() => {
     const draw = (m: FrameMessage) => {
@@ -70,7 +70,7 @@ export function CameraView() {
       const s = Math.min(W / m.width, H / m.height);
       const ox = (W - m.width * s) / 2;
       const oy = (H - m.height * s) / 2;
-      const mirror = settingsStore.get().mirror && !controller.store.get().demo;
+      const mirror = controller.store.get().mirror && !controller.store.get().demo;
       const map = ([x, y]: Pt): Pt => [mirror ? ox + (m.width - x) * s : ox + x * s, oy + y * s];
       const st = controller.store.get();
       const track = st.track;
