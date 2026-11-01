@@ -11,6 +11,7 @@ const normalize = (alg: string) =>
     .replace(/\s+/g, " ")
     .trim();
 
+export const SOLVER_WORKER_NAME = "cubevision-solver";
 let worker: Worker | null = null;
 let nextId = 1;
 const pending = new Map<number, { resolve: (s: string) => void; reject: (e: Error) => void }>();
@@ -21,7 +22,8 @@ function useWorker(): boolean {
 
 function call(msg: { type: "solve"; data: KPatternData } | { type: "scramble" } | { type: "xcross"; state: number[]; face: number }): Promise<string> {
   if (!worker) {
-    worker = new Worker(new URL("./solver.worker.ts", import.meta.url), { type: "module" });
+    // 名前で、この Worker の中だけでメッセージを受けるようにする（solver.worker.ts の SOLVER_WORKER_NAME）
+    worker = new Worker(new URL("./solver.worker.ts", import.meta.url), { type: "module", name: SOLVER_WORKER_NAME });
     worker.onmessage = (e) => {
       const { id, result, error } = e.data as { id: number; result?: string; error?: string };
       const p = pending.get(id);

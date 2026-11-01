@@ -170,7 +170,13 @@ export class TrackerEngine {
     if (options.observer) Object.assign(this.observer.options, options.observer);
     if (options.colors) Object.assign(this.colors.options, options.colors);
     if (options.logMs !== undefined) this.logMs = options.logMs;
-    if (options.snapToView !== undefined) this.snapToView = options.snapToView;
+    if (options.snapToView !== undefined) {
+      this.snapToView = options.snapToView;
+      if (!this.snapToView) {
+        this.view = null;
+        this.snapStreak = 0;
+      }
+    }
     if (options.personal && this.decoder.options.priorWeight > 0) this.decoder.prior = movePrior(options.personal);
   }
 
