@@ -27,14 +27,6 @@ export interface EngineOptions {
   // ライブ: 一番合う仮説でも見え方とはっきり合わなければ、見えている色に合う状態にその場で作り変え、そこから追跡をやり直す
   // （src/track/snap.ts。3D を見えているキューブと同じ色の組み合わせに保つ。精密解析は使わない）
   snapToView?: boolean;
-  // デコーダを外から渡す（精密解析: 前向きの再構成と同じデコーダを 1 つだけ回す）。渡したら、観測はエンジンではなく driver に渡す
-  driver?: DecoderDriver;
-}
-
-// エンジンの代わりに観測を受け取って、デコーダを進めるもの（decoder は driver が進めるものと同じ）
-export interface DecoderDriver {
-  readonly decoder: MoveDecoder;
-  observe(obs: Observation): void;
 }
 
 const REPEAT_COST = 0.8;
@@ -156,16 +148,14 @@ export class TrackerEngine {
   constructor(start: CubeState, refs: Lab[], options: Partial<EngineOptions> = {}, orients?: number[]) {
     this.colors = new ColorModel(refs, options.colors);
     this.observer = new FaceObserver(this.colors, options.observer);
-    this.driver = options.driver ?? null;
-    this.decoder = this.driver?.decoder ?? new MoveDecoder(start, options.decoder, orients);
+    this.decoder = new MoveDecoder(start, options.decoder, orients);
     this.logMs = options.logMs ?? 12000;
     this.keepObservations = !!options.keepObservations;
     this.maxObservations = options.maxObservations ?? Infinity;
     this.repeatMs = options.repeatMs ?? 250;
     this.snapToView = !!options.snapToView;
-    if (!this.driver && options.personal?.length && this.decoder.prior) this.decoder.prior = movePrior(options.personal);
+    if (options.personal?.length && this.decoder.prior) this.decoder.prior = movePrior(options.personal);
   }
-  private driver: DecoderDriver | null;
   private maxObservations: number;
   private repeatMs: number;
   private snapToView: boolean;
@@ -218,19 +208,6 @@ export class TrackerEngine {
   }
 
   push(frame: FrameReading): TrackUpdate | null {
-    const obs = this.ingest(frame);
-    return obs ? this.observe(obs, frame) : null;
-  }
-
-  // push と同じに追跡を進めるが、TrackUpdate は作らない（精密解析: 戻り値を使わない。手の時刻とマスの確からしさを毎回
-  // すべての手について求めるのは無駄）
-  advanceOnly(frame: FrameReading): void {
-    const obs = this.ingest(frame);
-    if (obs) this.advance(obs, frame);
-  }
-
-  // フレームを記録して観測器に通し、観測が出たら返す（観測の記録・回転の手がかりまで）
-  private ingest(frame: FrameReading): Observation | null {
     this.frames.push({ t: frame.t, faces: frame.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, spread: f.spread, masked: f.masked, shift: f.shift, ids: f.ids })) });
     while (this.frames.length && frame.t - this.frames[0].t > this.logMs) this.frames.shift();
     this.collectTurn(frame);
@@ -248,7 +225,7 @@ export class TrackerEngine {
       this.observationLog.push(obs);
       if (this.observationLog.length > this.maxObservations) this.observationLog.splice(0, this.observationLog.length - this.maxObservations);
     }
-    return obs;
+    return this.observe(obs, frame);
   }
 
   // 回転途中の形で見えている層の回転（フレームごとのつながり）をためる。つながりが変わった・途切れたら 1 つの回転としてまとめる
@@ -268,14 +245,7 @@ export class TrackerEngine {
   }
 
   observe(obs: Observation, frame?: FrameReading): TrackUpdate {
-    this.advance(obs, frame);
-    return this.snapshot(obs);
-  }
-
-  // 観測でデコーダを進め、代表色を寄せる
-  private advance(obs: Observation, frame?: FrameReading): void {
-    if (this.driver) this.driver.observe(obs);
-    else this.decoder.observe(obs);
+    this.decoder.observe(obs);
     if (this.snapToView) this.snap(obs);
     const best = this.decoder.best();
     this.markSeen(obs);
@@ -288,6 +258,7 @@ export class TrackerEngine {
         });
       }
     }
+    return this.snapshot(obs);
   }
 
   // 作り変え（snapToView）: 一番合う仮説でもはっきり合わない見え方が続いたら、見えている色に合う状態を作る。

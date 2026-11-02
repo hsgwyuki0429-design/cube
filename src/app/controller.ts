@@ -199,12 +199,6 @@ class Controller {
     return { ...this.pipelineConfig(), arucoTurn: false };
   }
 
-  // タイマーの精密解析の認識: 回転途中の形（arucoTurn）は使わない。回している途中が読めるのは露光の短いスロー撮影の動画だけで、
-  // 30〜60fps のカメラの録画ではぶれてほとんど出ず、1 フレームの 15% ほどを使っていた（動画ファイルの解析には使う）
-  timerRefineConfig(): Partial<PipelineConfig> {
-    return { ...this.pipelineConfig(), arucoTurn: false };
-  }
-
   // ライブの追跡: 見えているキューブに従う。手順の知識（PLL など・自分のソルブ）は使わない（精密解析では使う）。
   // 3D は確定した手（有力な仮説がすべて同じ手で一致）だけ回す。有力とみなすコスト差は 1.0（2.5 だと、止めた後も最後の 1〜2 手が
   // 確定しないことが多かった。合成の 10 手で、確定した手だけの正しさ 速い 15/20 → 18/20・普通 15/20 → 18/20・持ち替え 9/12 → 12/12。
@@ -466,7 +460,7 @@ class Controller {
       from: session.from,
       to: Infinity,
       engine: this.engineOptions(),
-      pipeline: this.timerRefineConfig(),
+      pipeline: this.pipelineConfig(),
       ...(opts.timed ? {} : { keepPatchesMs: 3000 }),
       ...(safeLevel() === 1 ? { light: true } : {}),
     };
