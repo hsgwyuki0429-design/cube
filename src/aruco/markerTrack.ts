@@ -1,7 +1,7 @@
 // マーカーを検出せずに追う（ライブ）: 前のフレームで読めたマーカーの近くを少しずつずらして、符号のマス（枠を含む）の明暗が合う位置を探す。
 // OpenCV の検出（二値化を何回も繰り返して輪郭を探す）より 1 桁軽い。ずらすだけなので、回している層・持ち替え（傾きが変わる）・
 // 指がかかったマーカーは合わずに外れる。外れたマーカーが多ければ検出し直す（src/vision/arucoFrame.ts）。DOM もカメラも知らない
-import { type Mat3, type Pt, applyH, fitHomography } from "../vision/homography";
+import { type Mat3, type Pt, applyH, cornerPoints, fitSquare } from "../vision/homography";
 import type { ImageLike, Marker } from "./detect";
 
 export interface TrackOptions {
@@ -15,15 +15,7 @@ export const DEFAULT_TRACK: TrackOptions = { minFit: 0.96, minContrast: 40, reac
 // マーカーの各マス（枠を含む cells × cells）の画像上の位置。sub: マスの中で真ん中から ±0.35 マス（マスの縁の近く）ずらした 3×3 点も
 // （位置を詰めるとき）
 function moduleCenters(corners: number[], cells: number, sub = false): Pt[] | null {
-  const H: Mat3 | null = fitHomography(
-    [
-      [0, 0],
-      [cells, 0],
-      [cells, cells],
-      [0, cells],
-    ],
-    [0, 1, 2, 3].map((i) => [corners[i * 2], corners[i * 2 + 1]] as Pt),
-  );
+  const H: Mat3 | null = fitSquare(cells, cornerPoints(corners));
   if (!H) return null;
   const out: Pt[] = [];
   const offs = sub ? [-0.35, 0, 0.35] : [0];

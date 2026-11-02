@@ -6,7 +6,8 @@
 // の 2 本を走らせ、途中のどこかの観測で「同じ状態・同じ姿勢」になる仮説どうしを、合計のコストが
 // 最も小さくなる所でつなぐ。指で隠れて途中がしばらく分からなくても、前後の両側から辻褄の合う道を選べる。
 // つながらなければ、前向きの結果を終わりの状態に合わせる（finish）。
-import { type CubeState, MOVE_SRC, NUM_MOVES, OPPOSITE, inverseMove, moveFace, statesEqual } from "../cube/model";
+import { hash53 } from "../cube/hash";
+import { type CubeState, MOVE_SRC, NUM_MOVES, inverseMove, redundantAfter, statesEqual } from "../cube/model";
 import { type DecoderOptions, type Hypothesis, MoveDecoder } from "./decoder";
 import { movePrior } from "./prior";
 import type { DecodedMove, Observation } from "./types";
@@ -151,17 +152,6 @@ export function decodeOffline(obs: Observation[], start: CubeState, end: CubeSta
 
 // ---- 隠れた区間の橋渡し ----
 
-function hash53(s: Uint8Array): number {
-  let h1 = 0x811c9dc5;
-  let h2 = 0x1b873593;
-  for (let i = 0; i < 54; i++) {
-    h1 = Math.imul(h1 ^ s[i], 0x01000193);
-    h2 = Math.imul(h2 ^ (s[i] + i * 7), 0x5bd1e995);
-    h2 ^= h2 >>> 13;
-  }
-  return (h1 >>> 0) * 0x200000 + ((h2 >>> 0) & 0x1fffff);
-}
-
 // 起点の状態から DEPTH 手以内で届く状態（同じ面の連続・反対面の並べ替えは片方だけ）。状態のハッシュの昇順に並べ、
 // 手順は 1 つの数（19 進で 1 手ずつ、手 + 1）にして持つ（配列やオブジェクトを状態の数だけ作るとメモリが膨らむ）
 interface Reach {
@@ -193,11 +183,7 @@ function reachable(start: Uint8Array, depth: number): Reach {
     if (len >= depth) return;
     const next = new Uint8Array(54);
     for (let m = 0; m < NUM_MOVES; m++) {
-      if (last >= 0) {
-        const fa = moveFace(last);
-        const fb = moveFace(m);
-        if (fb === fa || (OPPOSITE[fa] === fb && fa > fb)) continue;
-      }
+      if (redundantAfter(last, m)) continue;
       const p = MOVE_SRC[m];
       for (let i = 0; i < 54; i++) next[i] = s[p[i]];
       visit(next, code * 19 + m + 1, len + 1, m);

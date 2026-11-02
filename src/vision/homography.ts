@@ -2,25 +2,56 @@
 export type Pt = [number, number];
 export type Mat3 = number[]; // 行優先 9 要素
 
+// マーカーの角（x0 y0 x1 y1 … の 8 つの数）を 4 つの点にする
+export const cornerPoints = (c: ArrayLike<number>): Pt[] => [0, 1, 2, 3].map((i) => [c[i * 2], c[i * 2 + 1]]);
+
+// マーカーの角の真ん中
+export const cornerCenter = (c: ArrayLike<number>): Pt => [(c[0] + c[2] + c[4] + c[6]) / 4, (c[1] + c[3] + c[5] + c[7]) / 4];
+
 export function applyH(H: Mat3, x: number, y: number): Pt {
   const w = H[6] * x + H[7] * y + H[8];
   return [(H[0] * x + H[1] * y + H[2]) / w, (H[3] * x + H[4] * y + H[5]) / w];
 }
 
-export function invertH(m: Mat3): Mat3 {
+// 余因子行列と行列式
+function adjugate(m: Mat3): { adj: Mat3; det: number } {
   const [a, b, c, d, e, f, g, h, i] = m;
   const A = e * i - f * h;
   const B = -(d * i - f * g);
   const C = d * h - e * g;
   const det = a * A + b * B + c * C;
-  const inv = [A, -(b * i - c * h), b * f - c * e, B, a * i - c * g, -(a * f - c * d), C, -(a * h - b * g), a * e - b * d];
-  return inv.map((v) => v / det);
+  return { adj: [A, -(b * i - c * h), b * f - c * e, B, a * i - c * g, -(a * f - c * d), C, -(a * h - b * g), a * e - b * d], det };
+}
+
+export function invertH(m: Mat3): Mat3 {
+  const { adj, det } = adjugate(m);
+  return adj.map((v) => v / det);
+}
+
+// 逆行列（ほぼ特異なら null）
+export function invert3(m: Mat3): Mat3 | null {
+  const { adj, det } = adjugate(m);
+  if (Math.abs(det) < 1e-12) return null;
+  return adj.map((v) => v / det);
 }
 
 export function mulH(a: Mat3, b: Mat3): Mat3 {
   const out = new Array(9).fill(0);
   for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) for (let k = 0; k < 3; k++) out[r * 3 + c] += a[r * 3 + k] * b[k * 3 + c];
   return out;
+}
+
+// 四角（4 隅 pts、時計回り）を n×n のマスに分ける射影変換（マスの座標 0..n → 画像）
+export function fitSquare(n: number, pts: Pt[]): Mat3 | null {
+  return fitHomography(
+    [
+      [0, 0],
+      [n, 0],
+      [n, n],
+      [0, n],
+    ],
+    pts,
+  );
 }
 
 // 対称行列の最小固有値に対応する固有ベクトル（ヤコビ法）

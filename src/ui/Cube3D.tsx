@@ -8,6 +8,12 @@ import { MOVE_NAMES, ORIENTATIONS, ROTATION, mul } from "../cube/model";
 import { setupMovesFor } from "../cube/solver";
 import { DEFAULT_GYRO, GyroFilter, follow } from "./gyro";
 
+// 3D の TwistyPlayer の共通の設定（背景・ヒント・裏面の表示なし）
+export const PLAYER_BASE = { puzzle: "3x3x3", visualization: "3D", background: "none", hintFacelets: "none", backView: "none" } as const;
+
+// 3D の視点: 傾きに追従するときは正面から（カメラと同じ視点）。固定のときは 3 面が見える標準の角度
+export const viewAngles = (front: boolean) => ({ cameraLatitude: front ? 0 : 28, cameraLongitude: front ? 0 : 32 });
+
 export interface Cube3DProps {
   epoch: number; // 変わったら setup からやり直す
   setupMoves: number[] | null;
@@ -96,17 +102,11 @@ export function Cube3D(props: Cube3DProps) {
       const { TwistyPlayer } = await import("cubing/twisty");
       if (cancelled || !host.current) return;
       const p = new TwistyPlayer({
-        puzzle: "3x3x3",
-        visualization: "3D",
+        ...PLAYER_BASE,
         controlPanel: props.controls ? "bottom-row" : "none",
-        background: "none",
-        hintFacelets: "none",
-        backView: "none",
         experimentalDragInput: props.controls ? "auto" : "none",
         tempoScale: props.controls ? 1 : 3,
-        // 追従するときは正面から（カメラと同じ視点）。固定のときは 3 面が見える標準の角度
-        cameraLatitude: following() ? 0 : 28,
-        cameraLongitude: following() ? 0 : 32,
+        ...viewAngles(following()),
       });
       host.current.appendChild(p);
       player.current = p;
@@ -272,8 +272,7 @@ export function Cube3D(props: Cube3DProps) {
   useEffect(() => {
     const p = player.current;
     if (p) {
-      p.cameraLatitude = following() ? 0 : 28;
-      p.cameraLongitude = following() ? 0 : 32;
+      Object.assign(p, viewAngles(following()));
     }
     if (!following()) {
       targetQ.current = props.orient === null ? new Quaternion() : matToQuat(ORIENTATIONS[props.orient]);

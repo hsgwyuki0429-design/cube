@@ -4,6 +4,7 @@ import type { ComponentType } from "preact";
 import { useEffect, useState } from "preact/hooks";
 import { controller } from "../app/controller";
 import { useStore } from "../app/store";
+import { errorMessage } from "../lib/util";
 
 export function ArucoScreen({ active }: { active: boolean }) {
   const [Page, setPage] = useState<ComponentType | null>(null);
@@ -13,7 +14,7 @@ export function ArucoScreen({ active }: { active: boolean }) {
     if (!active || Page) return;
     import("../aruco/page")
       .then((m) => setPage(() => m.ArucoPage))
-      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+      .catch((e) => setError(errorMessage(e)));
   }, [active, Page]);
   if (!Page && !active) return null;
   return (

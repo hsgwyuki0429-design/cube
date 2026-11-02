@@ -13,6 +13,7 @@ import type { FromArucoWorker, VideoInfo } from "./protocol";
 import { type FrameRecord, SPEED_LABELS, type Summary, colorLabel, summarize, toCsv, toMarkdown } from "./stats";
 import { SHEETS } from "./stickers";
 import { Viewer } from "./viewer";
+import { errorMessage } from "../lib/util";
 
 type Mode = "cube" | "sheet";
 
@@ -98,7 +99,7 @@ export function ArucoPage() {
       for (const k of PARAM_KEYS) if (typeof v[k] === "number") out[k] = v[k];
       return { params: out, error: null as string | null };
     } catch (e) {
-      return { params: null, error: e instanceof Error ? e.message : String(e) };
+      return { params: null, error: errorMessage(e) };
     }
   }, [tunedText]);
 

@@ -2,12 +2,14 @@
 // ライブではないので間引かない（stride を指定したときだけ）。映像はどこにも送らない。
 import type { CV } from "../vision/image";
 import { loadOpenCv } from "../vision/opencv";
+import { DecodeQueue, readableCanvas } from "../vision/videoDecoder";
 import { decodeCube, facesOverTime } from "./cube";
 import { type StickerDesign, designOf } from "./design";
 import { ArucoBench } from "./detect";
-import { demuxFile, readSamples } from "./demux";
+import { displayGeometry, drawDisplayed, openVideo, readSamples } from "./demux";
 import type { AnalyzeOptions, FromArucoWorker, ToArucoWorker } from "./protocol";
 import type { FrameRecord } from "./stats";
+import { errorMessage } from "../lib/util";
 
 let cv: CV | null = null;
 let cancelled = false;
@@ -52,56 +54,28 @@ self.onmessage = async (event: MessageEvent<ToArucoWorker>) => {
       }
     }
   } catch (e) {
-    post({ type: "error", message: e instanceof Error ? e.message : String(e) });
+    post({ type: "error", message: errorMessage(e) });
   }
 };
 
 async function analyze(file: Blob, opt: AnalyzeOptions): Promise<void> {
   const t0 = performance.now();
   const cvm = await ensureCv();
-  if (typeof VideoDecoder === "undefined") throw new Error("このブラウザは WebCodecs（VideoDecoder）に対応していません。最新の Chrome・Edge・Safari で開いてください");
-  const d = await demuxFile(file);
-  const support = await VideoDecoder.isConfigSupported(d.config).catch(() => ({ supported: false }));
-  if (!support.supported) {
-    const hevc = /^(hvc1|hev1)/.test(d.codec);
-    throw new Error(
-      `このブラウザでは ${d.codec} を復号できません。` +
-        (hevc ? "HEVC（iPhone の「高効率」）は、Safari か、ハードウェア復号のある端末の Chrome で開いてください。" : "別のブラウザで試してください。"),
-    );
-  }
-  const rotated = d.rotation === 90 || d.rotation === 270;
-  const dispW = rotated ? d.height : d.width;
-  const dispH = rotated ? d.width : d.height;
-  const scale = opt.maxSide > 0 ? Math.min(1, opt.maxSide / Math.max(dispW, dispH)) : 1;
-  const aw = Math.round(dispW * scale);
-  const ah = Math.round(dispH * scale);
+  const d = await openVideo(file);
+  const geo = displayGeometry(d, opt.maxSide > 0 ? opt.maxSide : Infinity);
+  const { dispW, dispH, aw, ah } = geo;
   post({
     type: "info",
     info: { codec: d.codec, width: dispW, height: dispH, rotation: d.rotation, samples: d.samples.length, fps: d.fps, durationMs: d.durationMs, analyzedWidth: aw, analyzedHeight: ah },
   });
 
-  const canvas = new OffscreenCanvas(aw, ah);
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  if (!ctx) throw new Error("2D canvas を使えません");
+  const ctx = readableCanvas(aw, ah);
   const design = designOf(opt.design ?? "standard");
   const bench = new ArucoBench(cvm, opt.configs, opt.scheme, design);
   const all: FrameRecord[] = [];
   last = { frames: all, width: aw, height: ah, scheme: opt.scheme, design };
   const stride = Math.max(1, Math.floor(opt.stride));
-  const pending: VideoFrame[] = [];
-  let error: unknown = null;
-  let wake: (() => void) | null = null;
-  const decoder = new VideoDecoder({
-    output: (f) => {
-      pending.push(f);
-      wake?.();
-    },
-    error: (e) => {
-      error = e;
-      wake?.();
-    },
-  });
-  decoder.configure(d.config);
+  const queue = new DecodeQueue(d.config);
 
   let outIndex = 0;
   let analyzed = 0;
@@ -119,13 +93,8 @@ async function analyze(file: Blob, opt: AnalyzeOptions): Promise<void> {
   const process = (f: VideoFrame) => {
     try {
       if (outIndex++ % stride !== 0) return;
-      ctx.setTransform(1, 0, 0, 1, 0, 0);
       // 表示の向きに回してから縮める（オーバーレイと動画の表示を合わせる）
-      if (d.rotation === 90) ctx.setTransform(0, scale, -scale, 0, aw, 0);
-      else if (d.rotation === 180) ctx.setTransform(-scale, 0, 0, -scale, aw, ah);
-      else if (d.rotation === 270) ctx.setTransform(0, -scale, scale, 0, 0, ah);
-      else ctx.setTransform(scale, 0, 0, scale, 0, 0);
-      ctx.drawImage(f, 0, 0, d.width, d.height);
+      drawDisplayed(ctx, f, d, geo);
       const img = ctx.getImageData(0, 0, aw, ah);
       const rec = { t: (f.timestamp - d.firstCts) / 1000, results: bench.detect(img) };
       batch.push(rec);
@@ -137,37 +106,22 @@ async function analyze(file: Blob, opt: AnalyzeOptions): Promise<void> {
     flushBatch();
   };
   const drain = () => {
-    while (pending.length && !cancelled) process(pending.shift()!);
+    while (queue.pending.length && !cancelled) process(queue.pending.shift()!);
   };
-  const waitOutput = () =>
-    new Promise<void>((resolve) => {
-      wake = () => {
-        wake = null;
-        resolve();
-      };
-      setTimeout(() => wake?.(), 30);
-    });
 
   try {
     for await (const { index, data } of readSamples(file, d.samples)) {
       if (cancelled) break;
-      if (error) throw error;
       const s = d.samples[index];
-      decoder.decode(new EncodedVideoChunk({ type: s.key ? "key" : "delta", timestamp: s.cts, duration: s.duration || undefined, data }));
-      drain();
-      while (decoder.decodeQueueSize > 3 && !error && !cancelled) {
-        await waitOutput();
-        drain();
-      }
+      await queue.decode({ type: s.key ? "key" : "delta", timestamp: s.cts, duration: s.duration, data }, 3, drain, () => cancelled);
     }
     if (!cancelled) {
-      await decoder.flush();
+      await queue.flush();
       drain();
     }
-    if (error) throw error;
+    if (queue.error) throw queue.error;
   } finally {
-    for (const f of pending) f.close();
-    if (decoder.state !== "closed") decoder.close();
+    queue.close();
     bench.delete();
   }
   flushBatch(true);

@@ -1,6 +1,8 @@
 // 検出結果の集計（純粋な計算。Node でも動く）。
 // 写したシートの各マーカー（ID × 大きさ = スロット）について、見えていた区間での検出率・最長の途切れ・
 // 動きの速さ別の検出率を出し、方式 × 色 × 大きさの表にまとめる。
+import { median as medianOf } from "../lib/util";
+import { cornerCenter } from "../vision/homography";
 import type { Marker } from "./detect";
 import { COLOR_LABEL, COLOR_ORDER, type ColorKey, FACE_COLORS, type SheetSpec, classifyColor, markerLabel, stickerOf } from "./stickers";
 
@@ -87,17 +89,9 @@ interface Hit {
   m: Marker;
 }
 
-const median = (xs: number[]) => {
-  if (!xs.length) return 0;
-  const s = [...xs].sort((a, b) => a - b);
-  const k = s.length >> 1;
-  return s.length % 2 ? s[k] : (s[k - 1] + s[k]) / 2;
-};
+const median = (xs: number[]) => (xs.length ? medianOf(xs) : 0);
 
-const center = (m: Marker): [number, number] => {
-  const c = m.corners;
-  return [(c[0] + c[2] + c[4] + c[6]) / 4, (c[1] + c[3] + c[5] + c[7]) / 4];
-};
+const center = (m: Marker): [number, number] => cornerCenter(m.corners);
 
 export function summarize(input: StatsInput): Summary {
   const { frames, sheet } = input;

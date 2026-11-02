@@ -8,7 +8,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { Quaternion, type Object3D } from "three";
 import { MOVE_NAMES, ORIENTATIONS } from "../cube/model";
 import type { DecodedMove } from "../track/types";
-import { matToQuat } from "../ui/Cube3D";
+import { PLAYER_BASE, matToQuat, viewAngles } from "../ui/Cube3D";
 import { moveAt, moveSpans } from "./timeline";
 
 const TURN_MS = 220;
@@ -107,16 +107,11 @@ export function TimedCube3D({ moves, time, held, pose }: { moves: DecodedMove[];
       const { TwistyPlayer } = await import("cubing/twisty");
       if (cancelled || !host.current) return;
       const p = new TwistyPlayer({
-        puzzle: "3x3x3",
-        visualization: "3D",
+        ...PLAYER_BASE,
         controlPanel: "none",
-        background: "none",
-        hintFacelets: "none",
-        backView: "none",
         experimentalDragInput: held ? "none" : "auto",
         // カメラの傾きに追従するときは正面から（カメラと同じ視点）
-        cameraLatitude: gyro ? 0 : 28,
-        cameraLongitude: gyro ? 0 : 32,
+        ...viewAngles(gyro),
       });
       p.indexer = "simple"; // 手を 1 つずつ順に（同時に回す手をまとめない）
       host.current.appendChild(p);
@@ -137,8 +132,7 @@ export function TimedCube3D({ moves, time, held, pose }: { moves: DecodedMove[];
   useEffect(() => {
     const p = player.current;
     if (!p) return;
-    p.cameraLatitude = gyro ? 0 : 28;
-    p.cameraLongitude = gyro ? 0 : 32;
+    Object.assign(p, viewAngles(gyro));
   }, [gyro]);
 
   // 手順が変わったら、3D 側の手ごとの位置と長さを読み直す

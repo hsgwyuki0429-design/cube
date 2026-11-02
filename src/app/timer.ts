@@ -214,6 +214,11 @@ function splitsOf(start: CubeState, moves: TimedMove[], startT: number): Solve["
   return sp?.map((x) => ({ name: x.name, moves: x.index, t: x.index > 0 ? moves[x.index - 1].end - startT : 0 }));
 }
 
+// 手順から決まる記録の項目（手・TPS・分割タイム）
+function solveFields(start: CubeState, moves: TimedMove[], startT: number, timeMs: number): Pick<Solve, "moves" | "tps" | "splits"> {
+  return { moves: solveMoves(moves, startT), tps: moves.length / Math.max(0.001, timeMs / 1000), splits: splitsOf(start, moves, startT) };
+}
+
 function solveMoves(moves: TimedMove[], startT: number): Solve["moves"] {
   return moves.map((m) => ({
     m: MOVE_NAMES[m.move],
@@ -296,7 +301,7 @@ async function refreshLive(live: LiveSpan, from: number, to: number): Promise<vo
   live.startT = begin;
   live.endT = moves[moves.length - 1].end;
   const timeMs = Math.max(0, live.endT - begin);
-  updateSolve(live.id, { timeMs, provisionalMs: timeMs, moves: solveMoves(moves, begin), tps: moves.length / Math.max(0.001, timeMs / 1000), splits: splitsOf(live.start, moves, begin) });
+  updateSolve(live.id, { timeMs, provisionalMs: timeMs, ...solveFields(live.start, moves, begin, timeMs) });
 }
 
 async function analyzeRecording(live: LiveSpan, endT: number): Promise<void> {
@@ -355,9 +360,7 @@ async function analyzeRecordingInner(live: LiveSpan, endT: number): Promise<void
   updateSolve(id, {
     analysis: "done",
     timeMs,
-    moves: solveMoves(result.moves, begin),
-    tps: result.moves.length / Math.max(0.001, timeMs / 1000),
-    splits: splitsOf(start, result.moves, begin),
+    ...solveFields(start, result.moves, begin, timeMs),
     tracked: true,
   });
 }
@@ -378,9 +381,7 @@ export function addVideoSolve(result: RefineResult, scramble: number[]): { solve
     scramble: scramble.map((m) => MOVE_NAMES[m]).join(" "),
     timeMs,
     penalty: "",
-    moves: solveMoves(result.moves, begin),
-    tps: result.moves.length / Math.max(0.001, timeMs / 1000),
-    splits: splitsOf(start, result.moves, begin),
+    ...solveFields(start, result.moves, begin, timeMs),
     tracked: true,
     analysis: "done",
     video: true,

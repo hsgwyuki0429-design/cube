@@ -82,6 +82,10 @@ export const VIDEO_MAX_FPS = 120;
 
 const LIVE_REST_MAX_MS = 20000; // 止めた後の残りの解析の間、ライブの認識を休むのは長くてもこれだけ
 
+// 追跡の探索と観測器の設定（ライブと精密解析で共通の部分）
+const searchOptions = (s: Settings) => ({ beamWidth: s.beamWidth, maxMovesPerStep: s.maxMovesPerStep, rotationCost: s.rotationCost });
+const observerOptions = (s: Settings) => ({ stableMs: s.stableMs, ...ARUCO_OBSERVER });
+
 class Controller {
   readonly store = createStore<AppState>({
     screen: openedAruco() ? "analyze" : "play",
@@ -201,8 +205,8 @@ class Controller {
   // 残りは写らない面の手で、写らない手は回さない）
   liveEngineOptions(s: Settings = settingsStore.get()): Partial<EngineOptions> {
     return {
-      decoder: { beamWidth: s.beamWidth, maxMovesPerStep: s.maxMovesPerStep, rotationCost: s.rotationCost, priorWeight: 0, confirmMargin: 1 },
-      observer: { stableMs: s.stableMs, ...ARUCO_OBSERVER },
+      decoder: { ...searchOptions(s), priorWeight: 0, confirmMargin: 1 },
+      observer: observerOptions(s),
       // 見え方とはっきり合わなければ、見えている色に合う状態にその場で作り変え、そこから追跡をやり直す（src/track/snap.ts）。
       // スクランブル中は使わない（setLiveSnap。手順を追って案内するので、見えていない面の分からない作り変えは道筋を乱す）
       snapToView: this.snapLive,
@@ -212,8 +216,8 @@ class Controller {
   // 精密解析の追跡: 手順の知識と自分のソルブの手順も手がかりにする
   engineOptions(s: Settings = settingsStore.get()): Partial<EngineOptions> {
     return {
-      decoder: { beamWidth: s.beamWidth, maxMovesPerStep: s.maxMovesPerStep, rotationCost: s.rotationCost },
-      observer: { stableMs: s.stableMs, ...ARUCO_OBSERVER },
+      decoder: searchOptions(s),
+      observer: observerOptions(s),
       personal: personalSequences(loadSolves()),
     };
   }
@@ -443,10 +447,12 @@ class Controller {
     this.recorder.clear();
     const session: AnalysisSession = { id: -1, keep: opts.keep, timed: opts.timed, timer: 0, started: false, from: performance.now(), input: null as unknown as RefineInput };
     this.session = session;
-    if (!(await this.recorder.start(this.camera.video, s.workWidth, opts.timed ? 150000 : 20000)) || this.session !== session) {
+    // 始められなかった・待っている間に別の解析に替わった
+    const abandon = () => {
       if (this.session === session) this.session = null;
       return false;
-    }
+    };
+    if (!(await this.recorder.start(this.camera.video, s.workWidth, opts.timed ? 150000 : 20000)) || this.session !== session) return abandon();
     session.from = performance.now();
     session.input = {
       state: Array.from(opts.state),
@@ -459,10 +465,7 @@ class Controller {
       ...(safeLevel() === 1 ? { light: true } : {}),
     };
     const id = await this.refiner.startStream((p) => this.onAnalysisPartial(session, p));
-    if (id === null || this.session !== session) {
-      if (this.session === session) this.session = null;
-      return false;
-    }
+    if (id === null || this.session !== session) return abandon();
     session.id = id;
     session.timer = window.setInterval(() => this.feedAnalysis(session), 250);
     return true;
