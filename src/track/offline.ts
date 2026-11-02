@@ -9,6 +9,7 @@
 import { hash53 } from "../cube/hash";
 import { type CubeState, MOVE_SRC, NUM_MOVES, inverseMove, redundantAfter, statesEqual } from "../cube/model";
 import { type DecoderOptions, type Hypothesis, MoveDecoder } from "./decoder";
+import type { DecoderDriver } from "./engine";
 import { movePrior } from "./prior";
 import type { DecodedMove, Observation } from "./types";
 
@@ -65,16 +66,24 @@ export function reversedObservations(obs: Observation[], lastT: number): Observa
 
 // 前向きの再構成を、観測が出るたびに進めておく（精密解析はソルブ中から観測を出すので、止めた後は後ろ向きとつなぐだけで済む）。
 // 観測は追加した後で書き換わらないこと。decodeOffline に渡すと、同じ観測をすべて通してあればそれを使う
-export class OfflineForward {
+// 追跡エンジンにこのデコーダを渡すと（EngineOptions.driver）、エンジンは自分のデコーダを回さずに観測をここへ渡す
+export class OfflineForward implements DecoderDriver {
   readonly fwd: MoveDecoder;
   readonly F: Snapshot[] = [];
   private seen: Observation[] = [];
   constructor(
     readonly start: CubeState,
     readonly options: OfflineOptions = DEFAULT_OFFLINE,
+    orients?: number[],
   ) {
-    this.fwd = new MoveDecoder(start, options.decoder);
+    this.fwd = new MoveDecoder(start, options.decoder, orients);
     if (options.personal?.length && this.fwd.prior) this.fwd.prior = movePrior(options.personal);
+  }
+  get decoder(): MoveDecoder {
+    return this.fwd;
+  }
+  observe(o: Observation): void {
+    this.feed(o);
   }
   feed(o: Observation): void {
     if (!o.faces.length) return;
