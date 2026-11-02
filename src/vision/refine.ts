@@ -171,21 +171,23 @@ export class Refiner {
   method = "";
   // 前向きの再構成を観測が出るたびに進めておく（result で後ろ向きとつなぐだけにする）。区切り（checkpoint）を使うフリーでは使わない
   private forward: OfflineForward | null;
-  private fedObs = 0;
 
   constructor(
     private cv: CV,
     private input: RefineInput,
   ) {
     const opts = input.engine ?? {};
+    // 前向きの再構成を使うとき（タイマー・動画）は、そのデコーダ 1 つを途中結果・後始末・代表色の適応にも使い、エンジンは自分のデコーダを
+    // 回さない（同じ観測を 2 つのデコーダで前向きに解いていた）。使わないとき（フリー）はエンジンのデコーダを回す
+    this.forward = input.keepPatchesMs === undefined ? new OfflineForward(Uint8Array.from(input.state), this.offlineOptions(), input.orients) : null;
     this.engine = new TrackerEngine(Uint8Array.from(input.state), input.refs, {
       ...opts,
       decoder: { ...opts.decoder, ...REFINE_ENGINE.decoder, ...(input.light ? LIGHT_DECODER : {}) },
       logMs: Infinity,
       keepObservations: true,
       repeatMs: 0,
+      driver: this.forward ?? undefined,
     }, input.orients);
-    this.forward = input.keepPatchesMs === undefined ? new OfflineForward(Uint8Array.from(input.state), this.offlineOptions()) : null;
     // ソルブ後の解析は時間をかけてよいので、二値化の窓を細かく試し、読めなかったマスは全部読み直す。
     // 直前のフレームのマーカーの周りだけで検出する（縁の近くに見つかったら全体でやり直す）
     this.config = { ...DEFAULT_PIPELINE, ...input.pipeline, arucoThorough: true, arucoRegion: true };
@@ -270,11 +272,7 @@ export class Refiner {
     const latest = this.picked && this.picked.t > t ? this.picked.img : img;
     this.ref = signatureOf(latest, r.faces);
     const reading = frameReading(t, r);
-    this.engine.push(reading);
-    if (this.forward) {
-      const log = this.engine.observationLog;
-      for (; this.fedObs < log.length; this.fedObs++) this.forward.feed(log[this.fedObs]);
-    }
+    this.engine.advanceOnly(reading);
     this.looks.push({ t, solved: reading.faces.length > 0 && this.engine.looksSolved(reading) });
     this.patches.push({ t, faces: r.faces.map((f) => facePatch(img, { ...f, labs: f.labs })) });
     this.prunePatches(t);
