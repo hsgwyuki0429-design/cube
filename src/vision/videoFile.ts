@@ -2,7 +2,8 @@
 // （解析 Worker が動画を読み込むときだけ読み込む）。映像はどこにも送らない。
 // 時刻は「実際の時間」に直す: スロー再生用に書き出された動画（240fps で撮って 30fps の再生に変換したものなど）は、ファイルの時刻が
 // 実際より長いので、撮影した fps を渡すと timeScale = ファイルの fps / 撮影した fps を掛ける。
-import { type Demuxed, demuxFile, readSamples } from "../aruco/demux";
+import { type Demuxed, displayGeometry, drawDisplayed, openVideo, readSamples } from "../aruco/demux";
+import { DecodeQueue, readableCanvas } from "./videoDecoder";
 
 export interface VideoFileInfo {
   codec: string;
@@ -29,95 +30,46 @@ export function videoStride(captureFps: number, maxFps: number): number {
 // onFrame の t は実際の時間（ms、最初のフレーム = 0）
 // onFrame が Promise を返したら、終わるまで次のフレームを渡さない（精密解析の並列化で、頼んだ検出が溜まりすぎないように）
 export async function decodeVideoFile(file: Blob, o: VideoFileOptions, onFrame: (img: ImageData, t: number) => void | Promise<void>): Promise<number> {
-  if (typeof VideoDecoder === "undefined") throw new Error("このブラウザは WebCodecs（VideoDecoder）に対応していません。最新の Chrome・Edge・Safari で開いてください");
-  const d: Demuxed = await demuxFile(file);
-  const support = await VideoDecoder.isConfigSupported(d.config).catch(() => ({ supported: false }));
-  if (!support.supported) {
-    const hevc = /^(hvc1|hev1)/.test(d.codec);
-    throw new Error(
-      `このブラウザでは ${d.codec} を復号できません。` +
-        (hevc ? "HEVC（iPhone の「高効率」）は、Safari か、ハードウェア復号のある端末の Chrome で開いてください。" : "別のブラウザで試してください。"),
-    );
-  }
-  const rotated = d.rotation === 90 || d.rotation === 270;
-  const dispW = rotated ? d.height : d.width;
-  const dispH = rotated ? d.width : d.height;
-  const scale = Math.min(1, o.maxSide / Math.max(dispW, dispH));
-  const aw = Math.round(dispW * scale);
-  const ah = Math.round(dispH * scale);
+  const d: Demuxed = await openVideo(file);
+  const g = displayGeometry(d, o.maxSide);
   const captureFps = o.captureFps && o.captureFps > 0 ? o.captureFps : d.fps;
   const timeScale = d.fps / captureFps;
   const stride = videoStride(captureFps, o.maxFps);
-  o.onInfo?.({ codec: d.codec, width: dispW, height: dispH, fps: d.fps, frames: d.samples.length, durationMs: d.durationMs }, Math.ceil(d.samples.length / stride));
+  o.onInfo?.({ codec: d.codec, width: g.dispW, height: g.dispH, fps: d.fps, frames: d.samples.length, durationMs: d.durationMs }, Math.ceil(d.samples.length / stride));
 
-  const canvas = new OffscreenCanvas(aw, ah);
-  const ctx = canvas.getContext("2d", { willReadFrequently: true });
-  if (!ctx) throw new Error("2D canvas を使えません");
-  const pending: VideoFrame[] = [];
-  let error: unknown = null;
-  let wake: (() => void) | null = null;
-  const decoder = new VideoDecoder({
-    output: (f) => {
-      pending.push(f);
-      wake?.();
-    },
-    error: (e) => {
-      error = e;
-      wake?.();
-    },
-  });
-  decoder.configure(d.config);
+  const ctx = readableCanvas(g.aw, g.ah);
+  const queue = new DecodeQueue(d.config);
   let index = 0;
   let count = 0;
   const cancelled = () => !!o.cancelled?.();
   const drain = async () => {
-    while (pending.length && !cancelled()) {
-      const f = pending.shift()!;
+    while (queue.pending.length && !cancelled()) {
+      const f = queue.pending.shift()!;
       try {
         if (index++ % stride !== 0) continue;
-        // 表示の向きに回してから縮める
-        if (d.rotation === 90) ctx.setTransform(0, scale, -scale, 0, aw, 0);
-        else if (d.rotation === 180) ctx.setTransform(-scale, 0, 0, -scale, aw, ah);
-        else if (d.rotation === 270) ctx.setTransform(0, -scale, scale, 0, 0, ah);
-        else ctx.setTransform(scale, 0, 0, scale, 0, 0);
-        ctx.drawImage(f, 0, 0, d.width, d.height);
+        drawDisplayed(ctx, f, d, g);
         const t = ((f.timestamp - d.firstCts) / 1000) * timeScale;
         f.close();
-        await onFrame(ctx.getImageData(0, 0, aw, ah), t);
+        await onFrame(ctx.getImageData(0, 0, g.aw, g.ah), t);
         count++;
       } finally {
         f.close();
       }
     }
   };
-  const waitOutput = () =>
-    new Promise<void>((resolve) => {
-      wake = () => {
-        wake = null;
-        resolve();
-      };
-      setTimeout(() => wake?.(), 30);
-    });
   try {
     for await (const { index: i, data } of readSamples(file, d.samples)) {
       if (cancelled()) break;
-      if (error) throw error;
       const s = d.samples[i];
-      decoder.decode(new EncodedVideoChunk({ type: s.key ? "key" : "delta", timestamp: s.cts, duration: s.duration || undefined, data }));
-      await drain();
-      while (decoder.decodeQueueSize > 3 && !error && !cancelled()) {
-        await waitOutput();
-        await drain();
-      }
+      await queue.decode({ type: s.key ? "key" : "delta", timestamp: s.cts, duration: s.duration, data }, 3, drain, cancelled);
     }
     if (!cancelled()) {
-      await decoder.flush();
+      await queue.flush();
       await drain();
     }
-    if (error) throw error;
+    if (queue.error) throw queue.error;
   } finally {
-    for (const f of pending) f.close();
-    if (decoder.state !== "closed") decoder.close();
+    queue.close();
   }
   return count;
 }

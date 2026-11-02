@@ -5,6 +5,7 @@
 // 照明で色がずれても、同じフレームの同じ色のステッカーは同じようにずれるので、そのフレームのマーカーの色を基準にする。
 // どの色にも十分近くない・2 番目の色とあまり差がない・肌らしい読みは「不明」のまま（決めつけない）。ID は分からないので色だけ。
 // DOM もカメラも知らない
+import { median } from "../lib/util";
 import { rgbToLab } from "../vision/color";
 import { skinLike } from "../track/colorModel";
 import { type Mat3, applyH } from "../vision/homography";
@@ -29,11 +30,6 @@ const chroma = (rgb: readonly number[]): Chroma => {
   return [rgb[0] / m, rgb[1] / m, rgb[2] / m];
 };
 const dist = (a: Chroma, b: Chroma) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
-const median = (xs: number[]) => {
-  const s = [...xs].sort((a, b) => a - b);
-  const k = s.length >> 1;
-  return s.length % 2 ? s[k] : (s[k - 1] + s[k]) / 2;
-};
 
 // フレームの色の基準: 面（色）ごとに、読めたマーカーの明るいマスの色味の中央値（その色のマーカーがなければ null）
 export function frameRefs(markers: { rgb: [number, number, number]; face: number }[]): (Chroma | null)[] {

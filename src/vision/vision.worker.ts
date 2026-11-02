@@ -5,7 +5,7 @@ import { TrackerEngine, focusCells } from "../track/engine";
 import { StreamDecoder, decodeRecording } from "./decode";
 import { StillSkipper } from "./motion";
 import { FocalTracker, rotationAngle } from "./pose";
-import { Refiner } from "./refine";
+import { type RefineInput, Refiner } from "./refine";
 import { DetectPool, ParallelFeeder, poolSize } from "./detectPool";
 import { stickerScheme } from "../aruco/codes";
 import { detectWithHint, detectorFor } from "./arucoFrame";
@@ -13,6 +13,7 @@ import { DEFAULT_PIPELINE, type PipelineConfig, frameReading, processFrame } fro
 import type { FrameMessage, FromWorker, StreamPartial, ToWorker } from "./protocol";
 import type { CV, PixelSource } from "./image";
 import { loadOpenCv } from "./opencv";
+import { errorMessage } from "../lib/util";
 
 let cv: CV | null = null;
 let config: PipelineConfig = { ...DEFAULT_PIPELINE };
@@ -88,6 +89,22 @@ function needCv(): CV {
   return cv;
 }
 
+// 精密解析の進み具合: 1 フレーム処理するたびに呼ぶと、200ms ごとに送る
+function progressPoster(id: number, total: () => number): () => void {
+  let done = 0;
+  let lastPost = 0;
+  return () => {
+    done++;
+    if (performance.now() - lastPost > 200) {
+      lastPost = performance.now();
+      post({ type: "refine-progress", id, done, total: total() });
+    }
+  };
+}
+
+// 精密解析（いまの認識の設定に、解析ごとの設定を重ねる）
+const newRefiner = (input: RefineInput) => new Refiner(needCv(), { ...input, pipeline: { ...config, ...input.pipeline } });
+
 self.onmessage = async (event: MessageEvent<ToWorker>) => {
   const msg = event.data;
   try {
@@ -128,22 +145,17 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
         // ソルブ後の精密解析（タイマー用の別の Worker で動かす。リアルタイムの追跡は止めない）
         const { recording, input, id } = msg;
         try {
-          const refiner = new Refiner(needCv(), { ...input, pipeline: { ...config, ...input.pipeline } });
+          const refiner = newRefiner(input);
           const total = recording.chunks.filter((c) => c.timestamp / 1000 >= input.from && c.timestamp / 1000 <= input.to).length;
-          let done = 0;
-          let lastPost = 0;
+          const progress = progressPoster(id, () => total);
           await decodeRecording(recording, (img, t) => {
             if (t < input.from || t > input.to) return;
             refiner.push(img, t);
-            done++;
-            if (performance.now() - lastPost > 200) {
-              lastPost = performance.now();
-              post({ type: "refine-progress", id, done, total });
-            }
+            progress();
           });
           post({ type: "refine-result", id, result: refiner.result() });
         } catch (e) {
-          post({ type: "refine-error", id, message: e instanceof Error ? e.message : String(e) });
+          post({ type: "refine-error", id, message: errorMessage(e) });
         }
         return;
       }
@@ -155,7 +167,7 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
         let s = streams.get(msg.id);
         if (!s) {
           if (!msg.input) return;
-          s = { refiner: new Refiner(needCv(), { ...msg.input, pipeline: { ...config, ...msg.input.pipeline } }), decoder: null, fedUntil: 0, lastPartial: -Infinity, still: new StillSkipper() };
+          s = { refiner: newRefiner(msg.input), decoder: null, fedUntil: 0, lastPartial: -Infinity, still: new StillSkipper() };
           streams.set(msg.id, s);
         }
         const st = s;
@@ -165,7 +177,7 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
         st.fedUntil = Math.max(st.fedUntil, rec.chunks[rec.chunks.length - 1].timestamp / 1000);
         st.decoder.push(rec.chunks).catch((e) => {
           streams.delete(msg.id);
-          post({ type: "refine-error", id: msg.id, message: e instanceof Error ? e.message : String(e) });
+          post({ type: "refine-error", id: msg.id, message: errorMessage(e) });
         });
         return;
       }
@@ -189,7 +201,7 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
           console.info(`[analysis] behind ${behind.toFixed(0)}ms rest ${(t1 - t0).toFixed(0)}ms result ${(performance.now() - t1).toFixed(0)}ms frames ${s.refiner.frames} gated ${s.refiner.gated} copied ${s.decoder?.copied ?? 0}`);
           post({ type: "refine-result", id: msg.id, result });
         } catch (e) {
-          post({ type: "refine-error", id: msg.id, message: e instanceof Error ? e.message : String(e) });
+          post({ type: "refine-error", id: msg.id, message: errorMessage(e) });
         } finally {
           s.decoder?.close();
           streams.delete(msg.id);
@@ -209,13 +221,12 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
         videoCancels.delete(id);
         try {
           const { decodeVideoFile } = await import("./videoFile");
-          const refiner = new Refiner(needCv(), { ...input, pipeline: { ...config, ...input.pipeline } });
+          const refiner = newRefiner(input);
           const still = new StillSkipper();
           // 検出を別の Worker に分ける（コアが少ない・Worker を作れないときは、この Worker だけで）
           const feeder = await parallelFeeder(refiner);
           let total = 1;
-          let done = 0;
-          let lastPost = 0;
+          const progress = progressPoster(id, () => total);
           await decodeVideoFile(
             file,
             {
@@ -231,11 +242,7 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
                 if (feeder) await feeder.feeder.push(f.img, f.t);
                 else refiner.push(f.img, f.t);
               }
-              done++;
-              if (performance.now() - lastPost > 200) {
-                lastPost = performance.now();
-                post({ type: "refine-progress", id, done, total });
-              }
+              progress();
             },
           );
           await feeder?.feeder.flush();
@@ -244,7 +251,7 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
           post({ type: "refine-progress", id, done: total, total });
           post({ type: "refine-result", id, result: refiner.result(target ? Uint8Array.from(target) : null) });
         } catch (e) {
-          post({ type: "refine-error", id, message: e instanceof Error ? e.message : String(e) });
+          post({ type: "refine-error", id, message: errorMessage(e) });
         } finally {
           videoCancels.delete(id);
         }

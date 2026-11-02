@@ -4,11 +4,12 @@
 // ID = 揃った状態での facelet 番号なので、ID÷9 がそのステッカーの色（センターの面）。色を読む代わりに確かな色が分かる。
 // 面の組み立て: マーカー 1 枚の 4 隅からその面の平面の射影変換が分かる。同じ面のマーカーはその座標で
 // 「ほぼ同じ大きさの、軸にそろった正方形」が格子の間隔で並ぶ。直交する面や回している途中の層はそうならないので外れる。
+import { median } from "../lib/util";
 import { NORMAL, ROWDIR, VIEW, applyMove, cubeFaceAt, faceletGeometry, moveAmount, moveFace, solvedState } from "../cube/model";
 import { DEFAULT_OFFLINE, decodeOffline } from "../track/offline";
 import { simplifyMoves } from "../track/merge";
 import type { DecodedMove, FaceObservation, Observation } from "../track/types";
-import { type Mat3, type Pt, applyH, fitHomography, invertH } from "../vision/homography";
+import { type Mat3, type Pt, applyH, cornerPoints, fitHomography, invert3, invertH } from "../vision/homography";
 import { type Pose, defaultFocal } from "../vision/pose";
 import { CONFUSABLE12, type Decoded, type StickerScheme, centerOffset, decode } from "./codes";
 import type { Marker } from "./detect";
@@ -62,12 +63,7 @@ const UNIT: Pt[] = [
   [-0.5, 0.5],
 ];
 
-const cornersOf = (m: Marker): Pt[] => [0, 1, 2, 3].map((i) => [m.corners[i * 2], m.corners[i * 2 + 1]]);
-const median = (xs: number[]) => {
-  const s = [...xs].sort((a, b) => a - b);
-  const k = s.length >> 1;
-  return s.length % 2 ? s[k] : (s[k - 1] + s[k]) / 2;
-};
+const cornersOf = (m: Marker): Pt[] => cornerPoints(m.corners);
 
 interface Member {
   m: Marker;
@@ -94,8 +90,17 @@ function inFrame(Hi: Mat3, n: Marker, o: FaceOptions): Member | null {
   return { m: n, rot: ((k % 4) + 4) % 4, du: (q[0][0] + q[1][0] + q[2][0] + q[3][0]) / 4, dv: (q[0][1] + q[1][1] + q[2][1] + q[3][1]) / 4 };
 }
 
+// 格子のマスに置いたマーカー（i, j は基準の座標での格子の位置）
+interface GridCell {
+  m: Marker;
+  rot: number;
+  i: number;
+  j: number;
+  res: number;
+}
+
 interface Group {
-  cells: Map<string, { m: Marker; rot: number; i: number; j: number; res: number }>;
+  cells: Map<string, GridCell>;
   G: Mat3; // 基準の座標（マーカーの辺 = 1、基準のマーカーの中心が原点）→ 画像
   pitch: number;
   accepted: { m: Marker; key: string; res: number }[]; // 格子の点に合ったマーカーすべて（同じマスに何枚あっても）
@@ -108,22 +113,10 @@ const SPLIT = { minShift: 0.15, maxBodyErr: 0.08, ratio: 3 }; // ずれ・本体
 function splitLayer(cells: Group["cells"], pitch: number): Group["layer"] | null {
   const list = [...cells.values()];
   if (list.length < 3) return null;
-  const pts = (c: (typeof list)[number]) => {
-    const img = cornersOf(c.m);
-    return [0, 1, 2, 3].map((k) => {
-      const u = UNIT[(k + c.rot) % 4];
-      return { src: [c.i * pitch + u[0], c.j * pitch + u[1]] as Pt, dst: img[k] };
-    });
-  };
-  const fit = (cs: typeof list) => {
-    const ps = cs.flatMap(pts);
-    return fitHomography(
-      ps.map((p) => p.src),
-      ps.map((p) => p.dst),
-    );
-  };
+  const pts = (c: GridCell) => cellCorners(c, pitch);
+  const fit = (cs: GridCell[]) => fitCells(cs, pitch);
   // マーカーの角のずれ（そのマーカーの辺の長さに対する割合）の平均
-  const err = (G: Mat3, c: (typeof list)[number]) => {
+  const err = (G: Mat3, c: GridCell) => {
     const ps = pts(c);
     const side = (Math.hypot(ps[1].dst[0] - ps[0].dst[0], ps[1].dst[1] - ps[0].dst[1]) + Math.hypot(ps[2].dst[0] - ps[1].dst[0], ps[2].dst[1] - ps[1].dst[1])) / 2 || 1;
     return ps.reduce((sum, p) => {
@@ -134,7 +127,7 @@ function splitLayer(cells: Group["cells"], pitch: number): Group["layer"] | null
   const mean = (xs: number[]) => xs.reduce((a, b) => a + b, 0) / Math.max(1, xs.length);
   let best: { layer: NonNullable<Group["layer"]>; score: number } | null = null;
   for (const axis of [0, 1] as const) {
-    const at = (c: (typeof list)[number]) => (axis === 0 ? c.i : c.j);
+    const at = (c: GridCell) => (axis === 0 ? c.i : c.j);
     const vs = list.map(at);
     const lo = Math.min(...vs);
     const hi = Math.max(...vs);
@@ -169,6 +162,24 @@ function splitLayer(cells: Group["cells"], pitch: number): Group["layer"] | null
   return best?.layer ?? null;
 }
 
+// マスのマーカーの角の、基準の座標（src）と画像（dst）の対応
+function cellCorners(c: GridCell, pitch: number): { src: Pt; dst: Pt }[] {
+  const img = cornersOf(c.m);
+  return [0, 1, 2, 3].map((k) => {
+    const u = UNIT[(k + c.rot) % 4];
+    return { src: [c.i * pitch + u[0], c.j * pitch + u[1]] as Pt, dst: img[k] };
+  });
+}
+
+// マスのマーカーの角すべてで、基準の座標 → 画像の射影変換を当てる
+function fitCells(cs: Iterable<GridCell>, pitch: number): Mat3 | null {
+  const ps = [...cs].flatMap((c) => cellCorners(c, pitch));
+  return fitHomography(
+    ps.map((p) => p.src),
+    ps.map((p) => p.dst),
+  );
+}
+
 // 3×3 の行列の積 a·b
 function mulH(a: Mat3, b: number[]): Mat3 {
   const out: number[] = [];
@@ -180,7 +191,7 @@ function gatherGroup(ref: Marker, pool: Marker[], o: FaceOptions): Group | null 
   let G = fitHomography(UNIT, cornersOf(ref));
   if (!G) return null;
   let pitch = 0;
-  let cells = new Map<string, { m: Marker; rot: number; i: number; j: number; res: number }>();
+  let cells = new Map<string, GridCell>();
   let accepted: Group["accepted"] = [];
   for (let pass = 0; pass < 2; pass++) {
     const Gi = invertH(G);
@@ -221,34 +232,14 @@ function gatherGroup(ref: Marker, pool: Marker[], o: FaceOptions): Group | null 
       accepted = accepted.filter((a) => cells.has(a.key));
     }
     // 見つかったマーカーの角すべてで射影変換を当て直す（遠くのマーカーの位置が正確になる）
-    const src: Pt[] = [];
-    const dst: Pt[] = [];
-    for (const c of cells.values()) {
-      const pts = cornersOf(c.m);
-      for (let k = 0; k < 4; k++) {
-        const u = UNIT[(k + c.rot) % 4];
-        src.push([c.i * pitch + u[0], c.j * pitch + u[1]]);
-        dst.push(pts[k]);
-      }
-    }
-    const refit = fitHomography(src, dst);
+    const refit = fitCells(cells.values(), pitch);
     if (refit) G = refit;
   }
   const layer = splitLayer(cells, pitch);
   if (layer) {
     // 面の格子は本体（残りの 2 列）だけで当て直す
     const body = [...cells.values()].filter((c) => (layer.axis === 0 ? c.i : c.j) !== layer.v);
-    const src: Pt[] = [];
-    const dst: Pt[] = [];
-    for (const c of body) {
-      const pts = cornersOf(c.m);
-      for (let k = 0; k < 4; k++) {
-        const u = UNIT[(k + c.rot) % 4];
-        src.push([c.i * pitch + u[0], c.j * pitch + u[1]]);
-        dst.push(pts[k]);
-      }
-    }
-    const Gb = fitHomography(src, dst);
+    const Gb = fitCells(body, pitch);
     if (Gb) return { cells, G: Gb, pitch, accepted, layer };
   }
   return { cells, G, pitch, accepted };
@@ -661,16 +652,6 @@ function cubeTilt(pairs: { a: V3; n: V3 }[], prior: number[] | null): number[] {
     R = R.map((v, k) => (v + it_[k]) / 2);
   }
   return R;
-}
-
-function invert3(m: number[]): number[] | null {
-  const [a, b, c, d, e, f, g, h, i] = m;
-  const A = e * i - f * h;
-  const B = -(d * i - f * g);
-  const C = d * h - e * g;
-  const det = a * A + b * B + c * C;
-  if (Math.abs(det) < 1e-12) return null;
-  return [A, -(b * i - c * h), b * f - c * e, B, a * i - c * g, -(a * f - c * d), C, -(a * h - b * g), a * e - b * d].map((v) => v / det);
 }
 
 const rot3 = (R: number[], v: V3): V3 => [R[0] * v[0] + R[1] * v[1] + R[2] * v[2], R[3] * v[0] + R[4] * v[1] + R[5] * v[2], R[6] * v[0] + R[7] * v[1] + R[8] * v[2]];

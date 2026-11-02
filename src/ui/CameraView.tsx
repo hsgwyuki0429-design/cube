@@ -7,6 +7,7 @@ import { type Lab, NAMED_COLORS, colorDistance, nearestNamed } from "../vision/c
 import { type Mat3, type Pt, applyH } from "../vision/homography";
 import { slotPoint } from "../vision/layout";
 import type { FrameMessage } from "../vision/protocol";
+import { polygonPath } from "./canvas";
 import { SLOT_LABEL } from "./notation";
 import { cellH, type FaceLayer } from "../aruco/cube";
 
@@ -82,9 +83,7 @@ export function CameraView() {
         ctx.strokeStyle = "rgba(255,0,255,0.7)";
         ctx.lineWidth = 1;
         for (const q of m.quads) {
-          ctx.beginPath();
-          q.map(map).forEach((p, i) => (i ? ctx.lineTo(...p) : ctx.moveTo(...p)));
-          ctx.closePath();
+          polygonPath(ctx, q.map(map));
           ctx.stroke();
         }
       }
@@ -98,9 +97,7 @@ export function CameraView() {
           const at = (x: number, y: number) => map(applyH(bl.H, x, y));
           ctx.lineWidth = anchor ? 3 : 2;
           ctx.strokeStyle = bl.layer ? "rgba(255,176,32,0.95)" : anchor ? "rgba(111,211,255,0.95)" : "rgba(111,211,255,0.6)";
-          ctx.beginPath();
-          [at(x0, y0), at(x1, y0), at(x1, y1), at(x0, y1)].forEach((p, i) => (i ? ctx.lineTo(...p) : ctx.moveTo(...p)));
-          ctx.closePath();
+          polygonPath(ctx, [at(x0, y0), at(x1, y0), at(x1, y1), at(x0, y1)]);
           ctx.stroke();
           ctx.lineWidth = 1;
           ctx.strokeStyle = bl.layer ? "rgba(255,176,32,0.5)" : "rgba(111,211,255,0.45)";
@@ -121,9 +118,7 @@ export function CameraView() {
           const y = Math.floor(cell / 3) + 0.5;
           const Hc = cellH(face, cell);
           const pts = ([[x - 0.17, y - 0.17], [x + 0.17, y - 0.17], [x + 0.17, y + 0.17], [x - 0.17, y + 0.17]] as Pt[]).map(([u, v]) => map(applyH(Hc, u, v)));
-          ctx.beginPath();
-          pts.forEach((p, i) => (i ? ctx.lineTo(...p) : ctx.moveTo(...p)));
-          ctx.closePath();
+          polygonPath(ctx, pts);
           if (face.valid[cell]) {
             ctx.fillStyle = classifyColor(face.labs[cell], refs, display);
             ctx.fill();
@@ -158,9 +153,7 @@ export function CameraView() {
             const x = (cell % 3) + 0.5;
             const y = Math.floor(cell / 3) + 0.5;
             const pts = [slotPoint(face, x - 0.42, y - 0.42), slotPoint(face, x + 0.42, y - 0.42), slotPoint(face, x + 0.42, y + 0.42), slotPoint(face, x - 0.42, y + 0.42)].map(map);
-            ctx.beginPath();
-            pts.forEach((p, i) => (i ? ctx.lineTo(...p) : ctx.moveTo(...p)));
-            ctx.closePath();
+            polygonPath(ctx, pts);
             ctx.stroke();
           }
           ctx.setLineDash([]);

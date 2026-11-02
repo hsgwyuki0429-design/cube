@@ -8,7 +8,7 @@
 // 形だけからは 90° ごとの区別がつかない（θ は -45°〜45°）。フレームをまたいで θ をつなぐと（unwrapTurn）、回した向きと量が分かる。
 // DOM もカメラも知らない
 import { NORMAL, type Vec3 } from "../cube/model";
-import { type Mat3, type Pt, fitHomography } from "../vision/homography";
+import { type Mat3, type Pt, cornerCenter, cornerPoints, fitHomography } from "../vision/homography";
 import { type Pose, defaultFocal, estimatePose, latticePoint } from "../vision/pose";
 import type { VisibleFace } from "./cube";
 import { STANDARD_DESIGN, type StickerDesign } from "./design";
@@ -80,7 +80,7 @@ function pointsOf(design: StickerDesign): Vec3[][] {
 
 // マーカーの 4 隅の射影変換を分解した、マーカーの平面の外向きの法線（カメラフレーム、x 右・y 上・z 手前）
 export function markerNormal(m: Marker, size: { width: number; height: number }, focal = defaultFocal(size.width, size.height)): Vec3 | null {
-  const pts: Pt[] = [0, 1, 2, 3].map((i) => [m.corners[i * 2], m.corners[i * 2 + 1]]);
+  const pts = cornerPoints(m.corners);
   const G = fitHomography(
     [
       [-0.5, -0.5],
@@ -107,7 +107,7 @@ export function markerNormal(m: Marker, size: { width: number; height: number },
   return n;
 }
 
-const centerOf = (m: Marker): Pt => [(m.corners[0] + m.corners[2] + m.corners[4] + m.corners[6]) / 4, (m.corners[1] + m.corners[3] + m.corners[5] + m.corners[7]) / 4];
+const centerOf = (m: Marker): Pt => cornerCenter(m.corners);
 
 export interface TurnOptions {
   design: StickerDesign; // ステッカーの中のマーカーの配置

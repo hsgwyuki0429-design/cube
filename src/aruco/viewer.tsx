@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { MOVE_NAMES } from "../cube/model";
 import { applyH } from "../vision/homography";
 import { FocalTracker, estimatePose } from "../vision/pose";
+import { polygonPath } from "../ui/canvas";
 import { smoothedPose } from "../ui/gyro";
 import { TimedCube3D } from "./timedCube";
 import type { CubeFrame, CubeResult, VisibleFace } from "./cube";
@@ -126,9 +127,7 @@ export function Viewer({ url, frames, info, timeScale, configNames, scheme, summ
         const p = face.outline.map(([x, y]) => P(x, y));
         ctx.strokeStyle = "#e040fb";
         ctx.lineWidth = 3;
-        ctx.beginPath();
-        p.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
-        ctx.closePath();
+        polygonPath(ctx, p);
         ctx.stroke();
         label(SLOT_NAMES[face.slot], p[0][0] + 16, p[0][1] - 10, "rgba(160,30,180,0.85)");
         // 回している途中の層（外側の 1 列）は別の格子（橙）
@@ -136,9 +135,7 @@ export function Viewer({ url, frames, info, timeScale, configNames, scheme, summ
           const [x0, y0, x1, y1] = face.layer.rect;
           const q = ([[x0, y0], [x1, y0], [x1, y1], [x0, y1]] as [number, number][]).map(([u, v]) => P(...applyH(face.layer!.H, u, v)));
           ctx.strokeStyle = "#ffa000";
-          ctx.beginPath();
-          q.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
-          ctx.closePath();
+          polygonPath(ctx, q);
           ctx.stroke();
         }
       }
@@ -152,9 +149,7 @@ export function Viewer({ url, frames, info, timeScale, configNames, scheme, summ
         const p = [0, 1, 2, 3].map((i) => P(m.corners[i * 2], m.corners[i * 2 + 1]));
         ctx.strokeStyle = turning.has(m.id) ? "#ff6a00" : known ? "#33c27f" : "#ffb020";
         ctx.lineWidth = 2;
-        ctx.beginPath();
-        p.forEach(([x, y], i) => (i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)));
-        ctx.closePath();
+        polygonPath(ctx, p);
         ctx.stroke();
         // 上辺（マーカーの向き）
         ctx.strokeStyle = "#4f8cff";

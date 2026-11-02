@@ -108,6 +108,14 @@ export const NUM_MOVES = 18;
 export const moveFace = (m: number) => Math.floor(m / 3);
 export const moveAmount = (m: number) => [1, 2, 3][m % 3]; // 時計回り 90° の回数
 export const inverseMove = (m: number) => moveFace(m) * 3 + [2, 1, 0][m % 3];
+// 手順を探すとき、直前の手 last（なければ -1）の後に m を足すのが無駄か: 同じ面の連続（R R）と、反対面の並べ替え（L R と R L）は
+// 同じ状態になるので片方だけ作る
+export function redundantAfter(last: number, m: number): boolean {
+  if (last < 0) return false;
+  const fa = moveFace(last);
+  const fb = moveFace(m);
+  return fb === fa || (OPPOSITE[fa] === fb && fa > fb);
+}
 
 export function moveIndex(name: string): number {
   const i = MOVE_NAMES.indexOf(name.replace("2'", "2").replace("’", "'"));

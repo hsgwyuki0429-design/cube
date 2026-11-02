@@ -121,3 +121,45 @@ export async function* readSamples(file: Blob, samples: DemuxedSample[], from = 
     i = j;
   }
 }
+
+// 動画ファイルを分解し、このブラウザで復号できるか確かめる（できなければ理由を添えて投げる）
+export async function openVideo(file: Blob): Promise<Demuxed> {
+  if (typeof VideoDecoder === "undefined") throw new Error("このブラウザは WebCodecs（VideoDecoder）に対応していません。最新の Chrome・Edge・Safari で開いてください");
+  const d = await demuxFile(file);
+  const support = await VideoDecoder.isConfigSupported(d.config).catch(() => ({ supported: false }));
+  if (!support.supported) {
+    const hevc = /^(hvc1|hev1)/.test(d.codec);
+    throw new Error(
+      `このブラウザでは ${d.codec} を復号できません。` +
+        (hevc ? "HEVC（iPhone の「高効率」）は、Safari か、ハードウェア復号のある端末の Chrome で開いてください。" : "別のブラウザで試してください。"),
+    );
+  }
+  return d;
+}
+
+// 表示の向き（回転後）の大きさと、長辺を maxSide に縮めた大きさ
+export interface DisplayGeometry {
+  dispW: number;
+  dispH: number;
+  scale: number;
+  aw: number; // 縮めた大きさ
+  ah: number;
+}
+
+export function displayGeometry(d: Demuxed, maxSide: number): DisplayGeometry {
+  const rotated = d.rotation === 90 || d.rotation === 270;
+  const dispW = rotated ? d.height : d.width;
+  const dispH = rotated ? d.width : d.height;
+  const scale = Math.min(1, maxSide / Math.max(dispW, dispH));
+  return { dispW, dispH, scale, aw: Math.round(dispW * scale), ah: Math.round(dispH * scale) };
+}
+
+// フレームを表示の向きに回してから縮めて描く
+export function drawDisplayed(ctx: OffscreenCanvasRenderingContext2D, f: VideoFrame, d: Demuxed, g: DisplayGeometry): void {
+  const { scale, aw, ah } = g;
+  if (d.rotation === 90) ctx.setTransform(0, scale, -scale, 0, aw, 0);
+  else if (d.rotation === 180) ctx.setTransform(-scale, 0, 0, -scale, aw, ah);
+  else if (d.rotation === 270) ctx.setTransform(0, -scale, scale, 0, 0, ah);
+  else ctx.setTransform(scale, 0, 0, scale, 0, 0);
+  ctx.drawImage(f, 0, 0, d.width, d.height);
+}

@@ -2,7 +2,7 @@
 // マーカーの「白」のセルをステッカーの色に置き換えているので、前処理を切り替えて比べる:
 //   gray … 普通のグレースケール。青・赤のセルは暗くなり黒との差が小さい
 //   max  … max(R,G,B)（HSV の V）。色付きのセルも明るく残る
-import { type Pt, applyH, fitHomography } from "../vision/homography";
+import { type Mat3, type Pt, applyH, cornerCenter, cornerPoints, fitSquare } from "../vision/homography";
 import { type CV, maxRgb } from "../vision/image";
 import { type StickerScheme, codesOf, makeDictionary, markerBits, markerSize } from "./codes";
 import { STANDARD_DESIGN, type StickerDesign } from "./design";
@@ -330,7 +330,7 @@ export class ArucoBench {
   }
 
   private describe(img: ImageLike, id: number, c: number[]): Marker {
-    const pts: Pt[] = [0, 1, 2, 3].map((i) => [c[i * 2], c[i * 2 + 1]]);
+    const pts = cornerPoints(c);
     let side = 0;
     for (let i = 0; i < 4; i++) {
       const a = pts[i];
@@ -344,7 +344,7 @@ export class ArucoBench {
 
   // 外側の四角（ステッカーの縁）の内側 STICKER_MARGIN にある本物のマーカーを自前で読む（3×3 の符号）
   private rescueInner(img: ImageLike, c: number[]): Marker | null {
-    const pts: Pt[] = [0, 1, 2, 3].map((i) => [c[i * 2], c[i * 2 + 1]]);
+    const pts = cornerPoints(c);
     const cx = (pts[0][0] + pts[1][0] + pts[2][0] + pts[3][0]) / 4;
     const cy = (pts[0][1] + pts[1][1] + pts[2][1] + pts[3][1]) / 4;
     const k = 1 - 2 * STICKER_MARGIN;
@@ -372,35 +372,33 @@ export class ArucoBench {
 
 const STICKER_MARGIN = 0.08; // ステッカーの辺に対する色の縁（印刷用 PDF と同じ）
 
+// マス (r, c) の中心付近の 3×3 点のうち、画像の中にある点の画素の位置（RGBA の先頭）を順に渡す
+function sampleCell(img: ImageLike, H: Mat3, r: number, c: number, visit: (i: number) => void): void {
+  for (const dy of [-0.2, 0, 0.2]) {
+    for (const dx of [-0.2, 0, 0.2]) {
+      const [x, y] = applyH(H, c + 0.5 + dx, r + 0.5 + dy);
+      const xi = Math.round(x);
+      const yi = Math.round(y);
+      if (xi < 0 || yi < 0 || xi >= img.width || yi >= img.height) continue;
+      visit((yi * img.width + xi) * 4);
+    }
+  }
+}
+
 // 四角の中の (n+2)×(n+2) のマスを読み、枠が黒く、中の n×n が辞書のどれか（回転を含む）に一致すれば ID と回転
 export function decodeQuad(img: ImageLike, pts: Pt[], codes: number[], n = 3): { id: number; rot: number } | null {
   const cells = n + 2;
-  const H = fitHomography(
-    [
-      [0, 0],
-      [cells, 0],
-      [cells, cells],
-      [0, cells],
-    ],
-    pts,
-  );
+  const H = fitSquare(cells, pts);
   if (!H) return null;
   const val: number[] = [];
   for (let r = 0; r < cells; r++) {
     for (let c = 0; c < cells; c++) {
       let sum = 0;
       let cnt = 0;
-      for (const dy of [-0.2, 0, 0.2]) {
-        for (const dx of [-0.2, 0, 0.2]) {
-          const [x, y] = applyH(H, c + 0.5 + dx, r + 0.5 + dy);
-          const xi = Math.round(x);
-          const yi = Math.round(y);
-          if (xi < 0 || yi < 0 || xi >= img.width || yi >= img.height) continue;
-          const i = (yi * img.width + xi) * 4;
-          sum += Math.max(img.data[i], img.data[i + 1], img.data[i + 2]);
-          cnt++;
-        }
-      }
+      sampleCell(img, H, r, c, (i) => {
+        sum += Math.max(img.data[i], img.data[i + 1], img.data[i + 2]);
+        cnt++;
+      });
       if (!cnt) return null;
       val.push(sum / cnt);
     }
@@ -424,9 +422,12 @@ export function decodeQuad(img: ImageLike, pts: Pt[], codes: number[], n = 3): {
 // すでに読めたマーカーと重なるものは除く。corners は (x0, y0, …) の 4 隅、戻り値の角はマーカーの向き（左上から時計回り）
 export function rescueRejected(img: ImageLike, rejected: number[][], codes: number[], found: { corners: number[]; side: number }[]): { id: number; corners: number[] }[] {
   const out: { id: number; corners: number[] }[] = [];
-  const centers = found.map((m) => ({ x: (m.corners[0] + m.corners[2] + m.corners[4] + m.corners[6]) / 4, y: (m.corners[1] + m.corners[3] + m.corners[5] + m.corners[7]) / 4, r: m.side * 0.5 }));
+  const centers = found.map((m) => {
+    const [x, y] = cornerCenter(m.corners);
+    return { x, y, r: m.side * 0.5 };
+  });
   for (const c of rejected) {
-    const pts: Pt[] = [0, 1, 2, 3].map((i) => [c[i * 2], c[i * 2 + 1]]);
+    const pts = cornerPoints(c);
     const cx = (pts[0][0] + pts[1][0] + pts[2][0] + pts[3][0]) / 4;
     const cy = (pts[0][1] + pts[1][1] + pts[2][1] + pts[3][1]) / 4;
     if (centers.some((q) => Math.hypot(q.x - cx, q.y - cy) < q.r)) continue;
@@ -455,15 +456,7 @@ export const maxChannel = maxRgb;
 // マーカーのセルの中心付近（3×3 点）を読み、明るいセルの色と、明るいセル − 黒いセルの差を出す
 // bits: 枠を含む cells×cells（1 = 明るい）
 export function measureCells(img: ImageLike, corners: Pt[], bits: Uint8Array, cells = 6): Pick<Marker, "rgb" | "contrastGray" | "contrastMax" | "fit"> {
-  const H = fitHomography(
-    [
-      [0, 0],
-      [cells, 0],
-      [cells, cells],
-      [0, cells],
-    ],
-    corners,
-  );
+  const H = fitSquare(cells, corners);
   const light = [0, 0, 0, 0, 0]; // r g b gray max の合計
   const dark = [0, 0, 0, 0, 0];
   let nl = 0;
@@ -473,27 +466,20 @@ export function measureCells(img: ImageLike, corners: Pt[], bits: Uint8Array, ce
     for (let r = 0; r < cells; r++) {
       for (let c = 0; c < cells; c++) {
         const isLight = bits[r * cells + c] > 0;
-        for (const dy of [-0.2, 0, 0.2]) {
-          for (const dx of [-0.2, 0, 0.2]) {
-            const [x, y] = applyH(H, c + 0.5 + dx, r + 0.5 + dy);
-            const xi = Math.round(x);
-            const yi = Math.round(y);
-            if (xi < 0 || yi < 0 || xi >= img.width || yi >= img.height) continue;
-            const i = (yi * img.width + xi) * 4;
-            const R = img.data[i];
-            const G = img.data[i + 1];
-            const B = img.data[i + 2];
-            const acc = isLight ? light : dark;
-            acc[0] += R;
-            acc[1] += G;
-            acc[2] += B;
-            acc[3] += 0.299 * R + 0.587 * G + 0.114 * B;
-            acc[4] += Math.max(R, G, B);
-            samples.push({ v: Math.max(R, G, B), light: isLight });
-            if (isLight) nl++;
-            else nd++;
-          }
-        }
+        sampleCell(img, H, r, c, (i) => {
+          const R = img.data[i];
+          const G = img.data[i + 1];
+          const B = img.data[i + 2];
+          const acc = isLight ? light : dark;
+          acc[0] += R;
+          acc[1] += G;
+          acc[2] += B;
+          acc[3] += 0.299 * R + 0.587 * G + 0.114 * B;
+          acc[4] += Math.max(R, G, B);
+          samples.push({ v: Math.max(R, G, B), light: isLight });
+          if (isLight) nl++;
+          else nd++;
+        });
       }
     }
   }

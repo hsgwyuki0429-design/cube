@@ -12,7 +12,8 @@
 //
 // 参考: AllefDouglasDev/rubik-cube (MIT) の app/src/tracking/decoder.ts のビームサーチを基に、
 // 姿勢（24通り）を仮説に含め、ソフトな色コスト・下限による刈り込み・見失い検出と復帰を加えたもの。
-import { MOVE_SRC, NUM_MOVES, NUM_ORIENTATIONS, OPPOSITE, VIEW, type CubeState, cubeFaceAt, moveFace, statesEqual } from "../cube/model";
+import { hashState } from "../cube/hash";
+import { MOVE_SRC, NUM_MOVES, NUM_ORIENTATIONS, VIEW, type CubeState, cubeFaceAt, moveFace, redundantAfter, statesEqual } from "../cube/model";
 import { stickerIdAt } from "../cube/stickers";
 import { type MovePrior, EMPTY_CONTEXT, movePrior, shiftContext } from "./prior";
 import type { DecodedMove, Observation, TrackStatus } from "./types";
@@ -72,16 +73,6 @@ export interface Hypothesis {
 }
 
 // 状態 + 姿勢の 53bit ハッシュ（衝突確率は無視できる）
-function hashState(s: Uint8Array): [number, number] {
-  let h1 = 0x811c9dc5;
-  let h2 = 0x1b873593;
-  for (let i = 0; i < 54; i++) {
-    h1 = Math.imul(h1 ^ s[i], 0x01000193);
-    h2 = Math.imul(h2 ^ (s[i] + i * 7), 0x5bd1e995);
-    h2 ^= h2 >>> 13;
-  }
-  return [h1 >>> 0, h2 >>> 0];
-}
 const combineKey = (h: [number, number], o: number) => (h[0] & 0x1fffff) * 0x100000000 + (((h[1] ^ Math.imul(o + 1, 0x9e3779b1)) >>> 0));
 
 // 展開する手順の木（深さごとに並べ、親の状態から1手だけ進めて子の状態を作る）。
@@ -104,11 +95,7 @@ function sequenceTree(depth: number): SeqTree {
     for (let p = from; p < to; p++) {
       const last = move[p];
       for (let m = 0; m < NUM_MOVES; m++) {
-        if (last >= 0) {
-          const fa = moveFace(last);
-          const fb = moveFace(m);
-          if (fb === fa || (OPPOSITE[fa] === fb && fa > fb)) continue;
-        }
+        if (redundantAfter(last, m)) continue;
         move.push(m);
         parent.push(p);
       }

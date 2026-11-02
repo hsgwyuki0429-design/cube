@@ -9,6 +9,7 @@ import { MOVE_NAMES, applyMoves, solvedState } from "../cube/model";
 import { randomScramble } from "../cube/solver";
 import type { RefineResult } from "../vision/refine";
 import { videoStride } from "../vision/videoFile";
+import { errorMessage } from "../lib/util";
 
 interface FileInfo {
   fps: number;
@@ -63,7 +64,7 @@ export function VideoAnalysis({ mode, onClose }: { mode: "timer" | "free"; onClo
       setInfo({ fps: d.fps, durationMs: d.durationMs, width: rotated ? d.height : d.width, height: rotated ? d.width : d.height, frames: d.samples.length });
       setCaptureFps(String(Math.round(d.fps)));
     } catch (e) {
-      setFileError(e instanceof Error ? e.message : String(e));
+      setFileError(errorMessage(e));
     }
   };
 
@@ -100,7 +101,7 @@ export function VideoAnalysis({ mode, onClose }: { mode: "timer" | "free"; onClo
       },
       (e) => {
         job.current = null;
-        setMessage(e instanceof Error ? e.message : String(e));
+        setMessage(errorMessage(e));
         setPhase("error");
       },
     );

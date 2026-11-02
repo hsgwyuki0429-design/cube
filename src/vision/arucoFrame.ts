@@ -15,7 +15,7 @@ import { STANDARD_DESIGN, type StickerDesign, designOf } from "../aruco/design";
 import { ARUCO_REFS } from "../aruco/palette";
 import { type RereadMemory, rereadFaces } from "../aruco/reread";
 import type { Lab } from "./color";
-import { type Mat3, type Pt, applyH, invertH } from "./homography";
+import { type Mat3, type Pt, applyH, cornerPoints, invertH } from "./homography";
 import type { DetectedFace, FrameResult } from "./pipeline";
 import type { CV } from "./image";
 import type { PixelSource } from "./image";
@@ -208,7 +208,7 @@ export function processAruco(
   }
   const turn = tr ? turnSnapshot(tr, t, memory) : undefined;
   const shifts = scheme === "unique54" ? r.faces.map((f) => cellShifts(f, markers, design)) : null;
-  const quads: Pt[][] = markers.map((m) => [0, 1, 2, 3].map((i) => [m.corners[i * 2], m.corners[i * 2 + 1]] as Pt));
+  const quads: Pt[][] = markers.map((m) => cornerPoints(m.corners));
   const faces: DetectedFace[] = r.faces.map((f, fi) => {
     const known = f.colors.map((c) => c >= 0);
     return {
