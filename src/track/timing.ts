@@ -103,7 +103,9 @@ function cellState(f: LoggedFace, cell: number, near: LoggedFace | undefined, op
     const b = near.shift[cell];
     if (!a && !b) return null;
     if (!a || !b) return LOST;
-    return Math.hypot(a[0] - b[0], a[1] - b[1]) < shiftLimit(gapMs, opts) && (f.spread?.[cell] ?? 0) <= opts.restSpread ? STILL : MOVED;
+    // 両方でマーカーが読めたら位置のずれだけで決める（回している途中の層の印 spread は使わない: 指が離れた直後のマーカーの位置の
+    // ずれで、回していない列を層として分けることがあり、回し始めが 1〜2 フレーム早く出ていた）
+    return Math.hypot(a[0] - b[0], a[1] - b[1]) < shiftLimit(gapMs, opts) ? STILL : MOVED;
   }
   if (!f.valid[cell]) return MOVED;
   const s = f.spread?.[cell] ?? 0;
@@ -234,7 +236,9 @@ export function moveTiming(frames: LoggedFrame[], m: DecodedMove, opts: TimingOp
           if (!r || f.masked?.[cell]) continue;
           compared++;
           const s = f.spread?.[cell] ?? 0;
-          const spreadMoved = s > Math.max(opts.restSpread, r.spread + opts.restSpread / 2) || s < r.spread - opts.restSpread / 2;
+          // マーカーの位置のずれが両方で分かるマスは、ずれで決める（cellState と同じ）
+          const byShift = !!f.shift?.[cell] && !!r.shift;
+          const spreadMoved = !byShift && (s > Math.max(opts.restSpread, r.spread + opts.restSpread / 2) || s < r.spread - opts.restSpread / 2);
           if (!f.valid[cell] || spreadMoved || shiftMoved(f.shift?.[cell], r.shift, opts, frames[k].t - base.t) || labDist(f.labs[cell], r.lab) > opts.onsetDelta) changed++;
         }
       return compared ? { changed, compared } : null;

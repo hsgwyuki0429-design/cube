@@ -63,11 +63,11 @@ const DESIGN = process.env.DESIGN ?? STICKERS.arucoDesign;
 
 // ライブの認識と追跡（Refiner と同じ形で使う）
 function liveRunner(cv: unknown) {
-  const engine = new TrackerEngine(solvedState(), ARUCO_REFS, { observer: ARUCO_OBSERVER });
+  const engine = new TrackerEngine(solvedState(), ARUCO_REFS, { observer: ARUCO_OBSERVER, decoder: { priorWeight: 0, confirmMargin: 1 } });
   const memory = {};
   return {
     push(img: Img, t: number) {
-      const r = processFrame(cv as never, img, t, { stickers: "unique54", arucoDesign: DESIGN, arucoRegion: !process.env.NOREGION, arucoShrink: !process.env.NOSHRINK, arucoTrack: !process.env.NOTRACK, arucoTurn: false }, memory); // 本体のライブと同じ（controller.liveConfig）
+      const r = processFrame(cv as never, img, t, { stickers: "unique54", arucoDesign: DESIGN, arucoRegion: !process.env.NOREGION, arucoShrink: !process.env.NOSHRINK, arucoTrack: !process.env.NOTRACK, arucoTurn: false, arucoGrid: !!process.env.GRID }, memory); // 本体のライブと同じ（controller.liveConfig）
       engine.push(frameReading(t, r));
     },
     result: (_: CubeState) => ({ moves: engine.decoder.bestMoves(), solved: false, inferred: 0, method: "live" }),

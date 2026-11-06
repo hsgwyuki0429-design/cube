@@ -128,6 +128,9 @@ export interface RefineResult {
   raw?: { move: number; t0?: number; t: number; start: number; end: number; inferred?: boolean }[]; // まとめる前の手（調査用）
 }
 
+// まとめる前の端の手の観測が、まとめた後の端の手の時刻からこれより外なら、その手の時刻をフレームから決められないときタイムの端を不確かにする
+const RAW_SLACK_MS = 100;
+
 // 反対の面の層の動きを、タイムの端として採る範囲（それより離れた動きは別の手）
 const OPPOSITE_WINDOW_MS = 250;
 
@@ -149,6 +152,12 @@ export const REFINE_ENGINE: Partial<EngineOptions> = {
   decoder: { beamWidth: 64, maxMovesPerStep: 4, recoveryDepth: 4 },
   logMs: Infinity,
 };
+
+// 精密解析の認識の設定（RefineInput.pipeline で上書きできる）。二値化の窓はライブと同じ 3 通り（5〜15）、読めなかったマスは OpenCV で
+// 読み直さずに格子で読む（src/aruco/gridRead.ts）。合成の 10 手 × 10 本（速い回し方）で、手順・タイムの端の誤差は窓 4 通り + 読み直しと
+// 同じで、1 フレーム 67 → 42ms（読み直しが 1 フレームの 3 割、4 つ目の窓が 2 割）。1 フレームの色が正しく分かるマスは 65.5 → 64.2%
+// （指で半分以上隠れたマスの読み直しの分。手順には効いていなかった）
+export const REFINE_PIPELINE: Partial<PipelineConfig> = { arucoReread: 0, arucoGrid: true, arucoFineWindows: false };
 
 // 軽い解析の設定（RefineInput.light）
 const LIGHT_DECODER = { beamWidth: 32, maxMovesPerStep: 3, recoveryDepth: 3 };
@@ -188,7 +197,7 @@ export class Refiner {
     this.forward = input.keepPatchesMs === undefined ? new OfflineForward(Uint8Array.from(input.state), this.offlineOptions()) : null;
     // ソルブ後の解析は時間をかけてよいので、二値化の窓を細かく試し、読めなかったマスは全部読み直す。
     // 直前のフレームのマーカーの周りだけで検出する（縁の近くに見つかったら全体でやり直す）
-    this.config = { ...DEFAULT_PIPELINE, ...input.pipeline, arucoThorough: true, arucoRegion: true };
+    this.config = { ...DEFAULT_PIPELINE, ...REFINE_PIPELINE, ...input.pipeline, arucoThorough: true, arucoRegion: true };
   }
 
   // 解析する範囲の終わりを決める（ソルブ中から解析していて、止めた時刻が分かったとき）
@@ -355,18 +364,25 @@ export class Refiner {
     // インスペクション中・完成した後の誤読を打ち消し合う 2 手で説明した仮説の手で、タイムが長くなっていた）
     let rawStart = false;
     let rawEnd = false;
+    // まとめる前の端の手の時刻をフレームから決められず、まとめた後の端の手より RAW_SLACK_MS より外にありそうなら、タイムの端は
+    // 不確か（F2 B2 F2 → B2 で、最後の F2 を回している間は正面が読めなかった: B2 の終わりを「確定」にすると 276ms 短かった）
+    let rawStartUnsure = false;
+    let rawEndUnsure = false;
     if (first && raw[0] && raw[0] !== moves[0] && !raw[0].inferred) {
       const r = timeOf(raw[0]);
       if (r.exact && r.moved && r.start < first.start) {
         Object.assign(first, { start: refineStart(this.patches, r, r.start, this.engine.colors.refs) ?? r.start, exact: true });
         rawStart = true;
-      }
+      } else if (!(r.exact && r.moved) && (raw[0].t0 ?? raw[0].t) < first.start - RAW_SLACK_MS) rawStartUnsure = true;
     }
     if (last && raw.length && raw[raw.length - 1] !== moves[moves.length - 1] && !raw[raw.length - 1].inferred) {
       const r = timeOf(raw[raw.length - 1]);
       if (r.exact && r.endExact && r.moved && r.end > last.end) {
         Object.assign(last, { end: refineEnd(this.patches, r, r.end, this.engine.colors.refs) ?? r.end, endExact: true });
         rawEnd = true;
+      } else if (!(r.endExact && r.moved) && raw[raw.length - 1].t > last.end + RAW_SLACK_MS) {
+        rawEndUnsure = true;
+        last.end = Math.max(last.end, raw[raw.length - 1].t);
       }
     }
     let endUncertain = !!last?.inferred;
@@ -427,8 +443,8 @@ export class Refiner {
       method: this.method,
       // 端の手の層が見えず、時刻をフレームから決められなかった（観測の時刻のまま）ときも不確か。見えない層（低く構えて U・B が
       // 写らないなど）の手は、観測の時刻が数百 ms ずれることがある
-      startUncertain: !!first?.inferred || beforeWindow || !first?.exact,
-      endUncertain: endUncertain || (!!last && !last.inferred && !last.endExact),
+      startUncertain: !!first?.inferred || beforeWindow || !first?.exact || rawStartUnsure,
+      endUncertain: endUncertain || (!!last && !last.inferred && !last.endExact) || rawEndUnsure,
       raw: timed.map((m) => ({ move: m.move, t0: m.t0, t: m.t, start: m.start, end: m.end, inferred: m.inferred })),
     };
   }

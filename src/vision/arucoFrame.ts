@@ -4,7 +4,8 @@
 // 普通のステッカーと同じ経路（FrameResult）で動く。
 import { fillByColor, frameRefs, ringGeometry, skinFraction } from "../aruco/colorFill";
 import { IdTracker } from "../aruco/idTrack";
-import { type VisibleFace, cellH, readConfidence, reconstructFaces, trustedColors, turnMarkers } from "../aruco/cube";
+import { type FacesResult, type VisibleFace, cellH, readConfidence, reconstructFaces, trustedColors, turnMarkers } from "../aruco/cube";
+import { DEFAULT_GRID, gridReadCell, gridReadFaces, stickerSide } from "../aruco/gridRead";
 import { DEFAULT_TURN, type TurnResult, type TurnTrack, layerCells, projectedFace, recognizeTurn, unwrapTurn } from "../aruco/turn";
 import type { TurnSnapshot } from "../track/types";
 import type { Pose } from "./pose";
@@ -15,7 +16,7 @@ import { STANDARD_DESIGN, type StickerDesign, designOf } from "../aruco/design";
 import { ARUCO_REFS } from "../aruco/palette";
 import { type RereadMemory, rereadFaces } from "../aruco/reread";
 import type { Lab } from "./color";
-import { type Mat3, type Pt, applyH, cornerPoints, invertH } from "./homography";
+import { type Mat3, type Pt, applyH, cornerCenter, cornerPoints, invertH } from "./homography";
 import type { DetectedFace, FrameResult } from "./pipeline";
 import type { CV } from "./image";
 import type { PixelSource } from "./image";
@@ -59,6 +60,14 @@ const tracks = new WeakMap<object, { t: number; detectT: number; detected: numbe
 const TRACK_KEEP = 0.8;
 const TRACK_REDETECT_MS = 250;
 const TRACK_GAP_MS = 150;
+// 格子で追う方式: 前のフレームから GRID_GAP_MS まで追う（マスごとに位置を合わせ、読めなければ検出に戻るので、間が開いても崩れない）。
+// キューブ全体の検出は GRID_REDETECT_MS たって、かつ前の検出から GRID_REDETECT_FRAMES 枚以上のとき（新しく見えた面のため。処理の
+// 遅い端末で 1 秒 3〜4 枚になると、ms だけで決めるとほぼ毎フレーム検出になり、さらに遅くなっていた）。切り出しは GRID_REGION_MS 前の
+// 範囲まで使う（処理の遅い端末では、前のフレームが 200ms より前のことが多く、画像全体を検出してさらに遅くなっていた）
+const GRID_GAP_MS = 1000;
+const GRID_REDETECT_MS = 500;
+const GRID_REDETECT_FRAMES = 3;
+const GRID_REGION_MS = 1000;
 const TRACK_MIN = 8;
 const TRACK_MIN_FIT = 0.85; // 追ったマーカーの明暗が符号どおりの割合（検出と同じ: src/aruco/detect.ts の MIN_FIT）
 
@@ -155,6 +164,227 @@ function detectMarkers(b: ArucoBench, img: PixelSource, t: number, memory: objec
   return markers;
 }
 
+// ライブの認識の前段（マーカーを集める）。2 つの方式:
+//   追う（arucoTrack）: 前のフレームのマーカーを 1 つずつ少しずらして探す（src/aruco/markerTrack.ts）。追えたのが検出したときの
+//     TRACK_KEEP 未満なら検出する。速く回すと回している層のマーカーが毎回外れ、ほぼ毎フレーム検出になっていた
+//   格子で追う（arucoGrid）: 最近見えていた面の格子の各マスで位置を少し合わせ、そのままマーカーのマスの明暗を読んで ID を決める
+//     （src/aruco/gridRead.ts）。マーカーではなく「マス」を追うので、回し終わった層の新しいステッカーも検出せずに読める。
+//     回している途中の層・指で隠れたマスは読めないまま。回している途中に外れた面（U を回している間の上の面）も、最後に見えた格子で
+//     読み続けるので、回し終われば検出せずに戻る。面が MISSING_MS より長く戻らなければ、その面のあった範囲だけを検出する。
+//     正面が組み立てられない（キューブが大きく動いた・持ち替え）か、GRID_REDETECT_MS たったら、キューブ全体の範囲を検出する
+const FACE_MEMORY_MS = 800; // これより前に見えていた面は、なくなっていても探さない
+const MISSING_MS = 250; // 面がこれより長く戻らなければ、その面のあった範囲を検出する（回している間は待つ）
+const CLIMB = { ...DEFAULT_GRID, climb: true };
+interface KnownFace {
+  t: number; // 最後に見えた時刻
+  face: VisibleFace;
+  side: number; // ステッカーの辺（面の座標）
+  box: Region;
+  spot: FaceSpot;
+  tried: number; // 範囲を検出した時刻
+}
+interface LiveState {
+  t: number;
+  detectT: number;
+  detected: number; // 最後にキューブ全体を検出したときのマーカーの数
+  markers: Marker[];
+  shifts: Pt[]; // マーカーごとの前のフレームからの動き（追う方式の次のフレームの予測）
+  known: Map<number, KnownFace>; // 格子で追う方式: 面（カメラフレームの面）ごとの最後に見えた格子
+  since: number; // キューブ全体を検出してから処理したフレームの数
+  offsets: Map<number, Pt>; // 格子で追う方式: マス（slot * 9 + cell）ごとの、面の格子から合わせた位置のずれ
+}
+const lives = new WeakMap<object, LiveState>();
+
+function faceBox(f: { outline: Pt[] }, img: { width: number; height: number }, pad: number): Region {
+  const xs = f.outline.map((p) => p[0]);
+  const ys = f.outline.map((p) => p[1]);
+  const x0 = Math.max(0, Math.floor(Math.min(...xs) - pad));
+  const y0 = Math.max(0, Math.floor(Math.min(...ys) - pad));
+  const x1 = Math.min(img.width, Math.ceil(Math.max(...xs) + pad));
+  const y1 = Math.min(img.height, Math.ceil(Math.max(...ys) + pad));
+  return { x: x0, y: y0, w: Math.max(0, x1 - x0), h: Math.max(0, y1 - y0) };
+}
+
+// 面の画像の上の位置: 真ん中のマスの中心と、大きさ（外枠の面積の平方根）
+interface FaceSpot {
+  c: Pt;
+  size: number;
+}
+function spotOf(f: { H: Mat3; outline: Pt[] }): FaceSpot {
+  const o = f.outline;
+  let area = 0;
+  for (let i = 0; i < o.length; i++) {
+    const a = o[i];
+    const b = o[(i + 1) % o.length];
+    area += a[0] * b[1] - b[0] * a[1];
+  }
+  return { c: applyH(f.H, 1.5, 1.5), size: Math.sqrt(Math.abs(area) / 2) };
+}
+// 同じ面か: 真ん中の距離が大きさの SAME_FACE 倍より近い（隣の面の真ん中は大きさの 0.7〜1 倍ほど離れている。外接する矩形の重なりで
+// 決めていた間は、近くから見た正面と上の面の矩形が大きく重なって同じ面とみなし、正面を読まずに飛ばしていた）
+const SAME_FACE = 0.4;
+const sameFace = (a: FaceSpot, b: FaceSpot) => Math.hypot(a.c[0] - b.c[0], a.c[1] - b.c[1]) < SAME_FACE * Math.min(a.size, b.size);
+
+// 面の割り当ての入れ替わり: 前のフレームでスロット p だった面（画像の上で重なる）がいまは別のスロット s になっていて、p はいま空き、
+// 前に s だった面がいまは見えていない。斜めから見ているとき（正面と右がどちらもカメラの軸から 45° ほど）に正面を回すと、正面が読めない間、
+// 右の面が向きの上では正面に近いので正面と割り当てられ、右の面のステッカーを正面として観測していた（追跡は持ち替えか余計な手で
+// 辻褄を合わせ、精密解析では最後の F2 を見落としてタイムが 276ms 短かった）。キューブを持ち替えたときは、前に s だった面も
+// 隣の面として見えたまま動くので入れ替わりとはみなさない
+const slotMemory = new WeakMap<object, { t: number; faces: { slot: number; spot: FaceSpot }[] }>();
+const SLOT_JUMP_MS = 300; // これより前のフレームとは比べない（回し終わって面が戻ってくるまで）
+function slotJump(memory: object, faces: VisibleFace[], t: number): boolean {
+  const prev = slotMemory.get(memory);
+  if (!prev || t <= prev.t || t - prev.t > SLOT_JUMP_MS) return false;
+  const now = faces.filter((f) => !f.partial).map((f) => ({ slot: f.slot, spot: spotOf(f) }));
+  return now.some((f) => {
+    const was = prev.faces.find((p) => p.slot !== f.slot && sameFace(p.spot, f.spot));
+    if (!was || now.some((g) => g.slot === was.slot)) return false;
+    const occupant = prev.faces.find((p) => p.slot === f.slot);
+    return !!occupant && !now.some((g) => g !== f && sameFace(g.spot, occupant.spot));
+  });
+}
+
+// マーカーを足す（同じ ID で中心が近いものは後から足した方に置き換える）
+function mergeMarkers(base: Marker[], add: Marker[]): void {
+  for (const m of add) {
+    const c = cornerCenter(m.corners);
+    let k = -1;
+    for (let i = 0; i < base.length && k < 0; i++) {
+      if (base[i].id !== m.id) continue;
+      const d = cornerCenter(base[i].corners);
+      if (Math.hypot(d[0] - c[0], d[1] - c[1]) < m.side * 0.5) k = i;
+    }
+    if (k >= 0) base[k] = m;
+    else base.push(m);
+  }
+}
+
+// 前のフレームまでの状態に、このフレームの面を覚える。tried: 範囲を検出した面
+function rememberLive(memory: object, st: LiveState | undefined, img: PixelSource, t: number, design: StickerDesign, markers: Marker[], shifts: Pt[], faces: FacesResult, detectT: number, detected: number, offsets: Map<number, Pt>, tried?: Set<number>): void {
+  const known = new Map<number, KnownFace>();
+  const now: KnownFace[] = [];
+  for (const f of faces.faces) {
+    if (f.partial) continue;
+    const side = stickerSide(f, markers, design);
+    if (side) now.push({ t, face: f, side, box: faceBox(f, img, 0), spot: spotOf(f), tried: -Infinity });
+  }
+  // 前に見えていた面: いま見えている面と重なるもの（同じ面が別のスロットになった: 斜めから見て正面と右が入れ替わった）は捨てる
+  for (const [slot, k] of st?.known ?? []) if (t - k.t <= FACE_MEMORY_MS && !now.some((n) => sameFace(n.spot, k.spot))) known.set(slot, tried?.has(slot) ? { ...k, tried: t } : k);
+  for (const k of now) known.set(k.face.slot, k);
+  lives.set(memory, { t, detectT, detected, markers, shifts, known, offsets, since: detectT === t ? 0 : (st?.since ?? 0) + 1 });
+  rememberBox(memory, t, markers);
+}
+
+// 最近見えていた面の格子で、各マスを読む（新しい方から。前に読んだ面と重なる面は読まない）
+function readKnown(st: LiveState, img: PixelSource, scheme: StickerScheme, design: StickerDesign): { markers: Marker[]; offsets: Map<number, Pt> } {
+  const markers: Marker[] = [];
+  const offsets = new Map<number, Pt>();
+  const used: FaceSpot[] = [];
+  for (const [slot, k] of [...st.known].sort((a, b) => b[1].t - a[1].t)) {
+    if (used.some((u) => sameFace(u, k.spot))) continue;
+    used.push(k.spot);
+    for (let cell = 0; cell < 9; cell++) {
+      const key = slot * 9 + cell;
+      const g = gridReadCell(img, cellH(k.face, cell), cell, scheme, design, k.side, CLIMB, st.offsets.get(key) ?? [0, 0], [1]);
+      if (!g) continue;
+      mergeMarkers(markers, g.markers);
+      offsets.set(key, g.offset);
+    }
+  }
+  return { markers, offsets };
+}
+
+// 面の割り当てが前と変わった（正面を回していて正面が読めず、上の面が正面になった）か
+function relabeled(st: LiveState, fs: FacesResult): boolean {
+  return fs.faces.some((f) => {
+    const spot = spotOf(f);
+    return [...st.known].some(([slot, k]) => slot !== f.slot && sameFace(spot, k.spot) && !fs.faces.some((g) => g !== f && g.slot === slot));
+  });
+}
+
+function liveMarkers(
+  b: ArucoBench,
+  img: PixelSource,
+  t: number,
+  memory: object,
+  shrinkSide: number,
+  grid: boolean,
+  build: (ms: Marker[]) => FacesResult,
+  scheme: StickerScheme,
+  design: StickerDesign,
+): { markers: Marker[]; faces: FacesResult } {
+  const st = lives.get(memory);
+  const remember = (markers: Marker[], shifts: Pt[], faces: FacesResult, detectT: number, detected: number, offsets: Map<number, Pt>, tried?: Set<number>) =>
+    rememberLive(memory, st, img, t, design, markers, shifts, faces, detectT, detected, offsets, tried);
+  const canTrack = !!st && t > st.t && (grid ? t - st.t < GRID_GAP_MS && (t - st.detectT < GRID_REDETECT_MS || st.since < GRID_REDETECT_FRAMES) : t - st.t < TRACK_GAP_MS && t - st.detectT < TRACK_REDETECT_MS);
+  if (canTrack && !grid && st.markers.length >= TRACK_MIN) {
+    const got = trackMarkers(img, st.markers, (id) => b.bitsOf(id), b.cellCount, (_, k) => st.shifts[k] ?? [0, 0]);
+    const markers: Marker[] = [];
+    const shifts: Pt[] = [];
+    for (const g of got) {
+      const m = b.describeMarker(img, g.id, g.corners);
+      if (m.fit < TRACK_MIN_FIT) continue;
+      markers.push(m);
+      shifts.push(g.shift);
+    }
+    if (markers.length >= st.detected * TRACK_KEEP) {
+      const faces = build(markers);
+      remember(markers, shifts, faces, st.detectT, st.detected, new Map());
+      liveStats.tracked++;
+      return { markers, faces };
+    }
+  }
+  if (canTrack && grid && st.known.size) {
+    const { markers, offsets } = readKnown(st, img, scheme, design);
+    if (markers.length >= TRACK_MIN) {
+      let faces = build(markers);
+      // 戻らない面: その面のあった範囲だけ検出する。面の割り当てが変わった（正面が読めず、残りの面が正面とみなされた）ときはすぐ、
+      // ほかは MISSING_MS より長く戻らなければ（同じ面は MISSING_MS ごとに 1 回まで）。正面がないだけ（回している・指で隠れた）なら
+      // 待つ: 回し終われば最後の格子で読めて戻る（すぐ検出していた間は、速く回すと 4 フレームに 1 回はこの検出になり重かった）
+      const urgent = relabeled(st, faces);
+      const lost = [...st.known].filter(([slot, k]) => (urgent ? t - k.tried > 0 : t - k.t > MISSING_MS && t - k.tried > MISSING_MS) && !faces.faces.some((f) => f.slot === slot && !f.partial));
+      if (lost.length) {
+        // 外れた面の範囲をまとめて 1 回だけ検出する（面ごとに検出すると、重なった範囲を何度も二値化していた）
+        const pad = Math.max(...markers.map((m) => m.side)) * 1.5;
+        const x0 = Math.max(0, Math.floor(Math.min(...lost.map(([, k]) => k.box.x)) - pad));
+        const y0 = Math.max(0, Math.floor(Math.min(...lost.map(([, k]) => k.box.y)) - pad));
+        const x1 = Math.min(img.width, Math.ceil(Math.max(...lost.map(([, k]) => k.box.x + k.box.w)) + pad));
+        const y1 = Math.min(img.height, Math.ceil(Math.max(...lost.map(([, k]) => k.box.y + k.box.h)) + pad));
+        const r = { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
+        const small = boxes.get(memory)?.small ?? 0;
+        if (r.w >= 16 && r.h >= 16) mergeMarkers(markers, b.detect(img, r, small >= shrinkSide && r.w >= 64 && r.h >= 64 ? 2 : 1)[0].markers);
+        faces = build(markers);
+        const again = faces.faces.filter((f) => lost.some(([slot]) => slot === f.slot));
+        if (again.length) markers.push(...gridReadFaces(img, again, markers, scheme, design));
+        liveStats.partial++;
+        liveStats.last = `partial:${lost.map(([slot, k]) => `${slot}@${Math.round(t - k.t)}${urgent ? "!" : ""}`).join(",")}`;
+      }
+      // 正面があるか、正面がないのが MISSING_MS までなら、このフレームはこれで済ませる（正面のないフレームは観測にしない: processAruco）
+      const front = faces.faces.some((f) => f.slot === 2 && !f.partial) || (!!st.known.get(2) && t - st.known.get(2)!.t <= MISSING_MS && faces.faces.length > 0);
+      if (front && !relabeled(st, faces)) {
+        if (!lost.length) {
+          liveStats.gridded++;
+          liveStats.last = "grid";
+        }
+        remember(markers, [], faces, st.detectT, st.detected, offsets, new Set(lost.map(([slot]) => slot)));
+        return { markers, faces };
+      }
+    }
+  }
+  const prev = boxes.get(memory);
+  const hint = prev && t - prev.t < (grid ? GRID_REGION_MS : REGION_MS) && t > prev.t ? regionOf(prev, img, shrinkSide) : null;
+  const markers = detectWithHint(b, img, hint);
+  const faces = build(markers);
+  if (grid && faces.faces.length) markers.push(...gridReadFaces(img, faces.faces, markers, scheme, design));
+  remember(markers, markers.map((): Pt => [0, 0]), faces, t, markers.length, new Map());
+  liveStats.detected++;
+  liveStats.last = hint ? "detect" : "detect-full";
+  return { markers, faces };
+}
+
+// 調査用: ライブのフレームのうち、追えた・格子で読んで済んだ・検出したフレームの数
+export const liveStats = { tracked: 0, gridded: 0, partial: 0, detected: 0, last: "" };
+
 // thorough: 精密解析（時間をかけてよい）。二値化の窓を細かく試す（THOROUGH_PARAMS）
 // opts.reread: 読めなかったマスを読み直す数（省略時はライブ 0・精密解析は全部）、opts.focus: 先に読み直すマス（slot * 9 + cell）、
 // opts.colorFill: それでも読めなかったマスを色で補う（既定 true。src/aruco/colorFill.ts）、
@@ -169,18 +399,36 @@ export function processAruco(
   memory: object,
   scheme: StickerScheme = "aruco54",
   thorough = false,
-  opts: { reread?: number; focus?: number[]; colorFill?: boolean; idTrack?: boolean; region?: boolean; design?: string; turn?: boolean; shrink?: boolean; track?: boolean } = {},
+  opts: { reread?: number; focus?: number[]; colorFill?: boolean; idTrack?: boolean; region?: boolean; design?: string; turn?: boolean; shrink?: boolean; track?: boolean; grid?: boolean; fineWindows?: boolean } = {},
   detected?: Marker[], // 別の Worker で検出したマーカー（精密解析の並列化。detectWithHint）
 ): FrameResult {
   const design = designOf(opts.design ?? STANDARD_DESIGN.key);
-  const b = detectorFor(cv, scheme, thorough, design.key);
+  const b = detectorFor(cv, scheme, opts.fineWindows ?? thorough, design.key);
   let markers: Marker[];
+  const prev = tilts.get(memory);
+  const build = (ms: Marker[]) => reconstructFaces(ms, img, prev && t - prev.t < TILT_MS ? prev.tilt : null, scheme, undefined, true, design);
+  let r: FacesResult;
+  let liveGrid = false;
+  const liveBefore = lives.get(memory);
   if (detected) {
     markers = detected;
     if (opts.region) rememberBox(memory, t, markers);
-  } else markers = detectMarkers(b, img, t, memory, !!opts.region, opts.shrink === false || thorough ? Infinity : SHRINK_SIDE, !!opts.track && !thorough);
-  const prev = tilts.get(memory);
-  const r = reconstructFaces(markers, img, prev && t - prev.t < TILT_MS ? prev.tilt : null, scheme, undefined, true, design);
+    r = build(markers);
+  } else if (opts.track && !thorough && opts.region) {
+    const lv = liveMarkers(b, img, t, memory, opts.shrink === false ? Infinity : SHRINK_SIDE, !!opts.grid, build, scheme, design);
+    markers = lv.markers;
+    r = lv.faces;
+    liveGrid = !!opts.grid;
+  } else {
+    markers = detectMarkers(b, img, t, memory, !!opts.region, opts.shrink === false || thorough ? Infinity : SHRINK_SIDE, !!opts.track && !thorough);
+    r = build(markers);
+  }
+  // 面の割り当てが、消えた面の代わりに入れ替わった（下の slotJump）フレームは使わない。ライブの格子で追う状態も前のフレームのままにする
+  if (r.faces.length && slotJump(memory, r.faces, t)) {
+    r = { faces: [], tilt: r.tilt };
+    if (liveBefore) lives.set(memory, liveBefore);
+    else lives.delete(memory);
+  } else if (r.faces.length) slotMemory.set(memory, { t, faces: r.faces.filter((f) => !f.partial).map((f) => ({ slot: f.slot, spot: spotOf(f) })) });
   if (r.faces.length) tilts.set(memory, { t, tilt: r.tilt });
   // 回転途中の形: 回している層が見えたら、その層が通る面の外側の 1 列を層の格子で置き、面から外れた層のマーカーもその列に入れる
   const tr = opts.turn === false || !r.faces.length ? null : recognizeTurnFor(markers, r.faces, img, t, memory, design);
@@ -197,6 +445,8 @@ export function processAruco(
     if (!rm) rereads.set(memory, (rm = new Map()));
     rereadFaces(rereader.b, img, r.faces, scheme, budget, new Set(opts.focus ?? []), rm);
   }
+  // 格子で読む（ライブは liveMarkers の中で読んでいる）: 読めなかったマスを、面の格子（回している途中の層は層の格子）で読む
+  if (opts.grid && !liveGrid && r.faces.length) markers = [...markers, ...gridReadFaces(img, r.faces, markers, scheme, design)];
   // 色による補完: 読めたマーカー（ID から色が分かる）の写った色を、そのフレームの色の基準にする
   if (opts.colorFill !== false && r.faces.length) fillByColor(img, r.faces, frameRefs(trustedColors(markers, scheme)), ringGeometry(design, markerSize(scheme)));
   // ID なし追跡: 色で補ったマス（色が合えば）と読めなかったマスに、直前のフレームの同じマスのステッカーを引き継ぐ
@@ -231,6 +481,7 @@ export function processAruco(
       ...(f.ids.some((id) => id >= 0) ? { ids: f.ids } : {}),
       ...(f.layer ? { layer: f.layer } : {}),
       ...(shifts ? { shift: shifts[fi] } : {}),
+      ...(f.marker ? { marker: f.marker } : {}),
     };
   });
   // 普通のステッカーと同じく正面（スロット 2）を先頭に。面があれば必ず正面がある（reconstructFaces の frontAlways）

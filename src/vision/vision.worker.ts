@@ -73,7 +73,7 @@ async function parallelFeeder(refiner: Refiner, n = poolSize()): Promise<{ pool:
   const cfg = refiner.pipelineConfig;
   let pool: DetectPool | null = null;
   try {
-    pool = new DetectPool(n, { scheme: stickerScheme(cfg.stickers), design: cfg.arucoDesign ?? "standard", thorough: !!cfg.arucoThorough });
+    pool = new DetectPool(n, { scheme: stickerScheme(cfg.stickers), design: cfg.arucoDesign ?? "standard", thorough: cfg.arucoFineWindows ?? !!cfg.arucoThorough });
     await pool.start();
     const p = pool;
     return { pool: p, feeder: new ParallelFeeder(refiner, (img, hint) => p.detect(img, hint), n * 2) };
@@ -104,6 +104,105 @@ function progressPoster(id: number, total: () => number): () => void {
 
 // 精密解析（いまの認識の設定に、解析ごとの設定を重ねる）
 const newRefiner = (input: RefineInput) => new Refiner(needCv(), { ...input, pipeline: { ...config, ...input.pipeline } });
+
+// ライブのフレームの待ち行列: 処理している間に届いたフレームのうち、動きのいちばん小さいもの（同じくらいなら新しいもの）を処理する。
+// 回している途中のフレームより、層が止まっているフレームの方が読めるマスが多く（格子で追えて検出もいらないので軽い）、追跡の観測に
+// なる。合成の 10 手 × 20 本（約 6 手/秒、1 秒 5 枚）で、手順の正しさ 18 → 19/20・1 フレームの処理 36 → 21ms（tests/debug/seqBench の @f5s）
+interface QueuedFrame {
+  id: number;
+  t: number;
+  bitmap: ImageBitmap;
+  motion?: number;
+}
+const queue: QueuedFrame[] = [];
+let scheduled = false;
+let thumbCtx: OffscreenCanvasRenderingContext2D | null = null;
+let lastThumb: Uint8ClampedArray | null = null;
+const THUMB_W = 64;
+const THUMB_H = 48;
+const MOTION_DIFF = 25; // 縮小画像の点の明るさがこれより変わったら動いた点
+const STILLER = 0.7; // 新しいフレームより動きがこれ倍未満のときだけ、古いフレームを選ぶ
+
+function scheduleFrames(): void {
+  if (scheduled) return;
+  scheduled = true;
+  // 処理している間に届いたメッセージ（フレーム）を先に受け取ってから選ぶ
+  setTimeout(runFrames, 0);
+}
+
+function runFrames(): void {
+  scheduled = false;
+  const f = pickFrame();
+  if (f) {
+    try {
+      processLiveFrame(f);
+    } catch (e) {
+      post({ type: "error", message: e instanceof Error ? `${e.message}\n${e.stack}` : String(e) });
+    }
+  }
+  if (queue.length) scheduleFrames();
+}
+
+// 前に届いたフレームからの動き（縮小画像で変わった点の数）
+function motionOf(bitmap: ImageBitmap): number {
+  if (!thumbCtx) thumbCtx = new OffscreenCanvas(THUMB_W, THUMB_H).getContext("2d", { willReadFrequently: true });
+  if (!thumbCtx) return 0;
+  thumbCtx.drawImage(bitmap, 0, 0, THUMB_W, THUMB_H);
+  const d = thumbCtx.getImageData(0, 0, THUMB_W, THUMB_H).data;
+  const prev = lastThumb;
+  lastThumb = d;
+  if (!prev) return Infinity;
+  let n = 0;
+  for (let i = 0; i < d.length; i += 4) {
+    const a = Math.max(d[i], d[i + 1], d[i + 2]);
+    const b = Math.max(prev[i], prev[i + 1], prev[i + 2]);
+    if (Math.abs(a - b) > MOTION_DIFF) n++;
+  }
+  return n;
+}
+
+function pickFrame(): QueuedFrame | null {
+  if (!queue.length) return null;
+  if (queue.length > 1) for (const f of queue) f.motion ??= motionOf(f.bitmap);
+  let best = queue[queue.length - 1];
+  for (const f of queue) if (f.motion !== undefined && best.motion !== undefined && f.motion < best.motion * STILLER) best = f;
+  for (const f of queue.splice(0)) {
+    if (f === best) continue;
+    f.bitmap.close();
+    post({ type: "frame-skipped", id: f.id });
+  }
+  return best;
+}
+
+function processLiveFrame(msg: QueuedFrame): void {
+  const t0 = performance.now();
+  const { bitmap } = msg;
+  const w = bitmap.width;
+  const h = bitmap.height;
+  if (!ctx || ctx.canvas.width !== w || ctx.canvas.height !== h) ctx = new OffscreenCanvas(w, h).getContext("2d", { willReadFrequently: true });
+  ctx!.drawImage(bitmap, 0, 0);
+  bitmap.close();
+  const img = ctx!.getImageData(0, 0, w, h);
+  const result = cv ? processFrame(cv, img, msg.t, focus?.length ? { ...config, focus } : config, memory) : { faces: [], quads: [] };
+  const reading = frameReading(msg.t, result);
+  const track = engine?.push(reading) ?? undefined;
+  if (track) focus = focusCells(track.cells, track.orient);
+  let looksSolved: boolean | undefined;
+  let pose: FrameMessage["pose"];
+  if (engine && reading.faces.length) {
+    const labels = engine.labelsOf(reading);
+    looksSolved = engine.looksSolved(reading, labels);
+    const p = focal.estimate(result.faces, w, h);
+    if (p && p.err < Math.max(4, w / 100)) {
+      // 直前の 3D の向き（キューブ固定 → カメラ）に近い姿勢を優先する（見え方で区別できないときに跳ねない）
+      const prev = lastPose && msg.t - lastPose.t < 1500 ? lastPose.M : null;
+      const orient = engine.frameOrient(reading, labels, prev ? (o) => (0.9 * rotationAngle([...mul(p.R as Mat3, ORIENTATIONS[o])], [...prev])) / Math.PI : undefined);
+      lastPose = { t: msg.t, M: mul(p.R as Mat3, ORIENTATIONS[orient]) };
+      pose = { R: p.R, err: p.err, orient };
+    }
+  }
+  post({ type: "frame", id: msg.id, t: msg.t, width: w, height: h, faces: result.faces, quads: result.quads, procMs: performance.now() - t0, track, looksSolved, pose });
+}
 
 self.onmessage = async (event: MessageEvent<ToWorker>) => {
   const msg = event.data;
@@ -273,33 +372,8 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
         return;
       }
       case "frame": {
-        const t0 = performance.now();
-        const { bitmap } = msg;
-        const w = bitmap.width;
-        const h = bitmap.height;
-        if (!ctx || ctx.canvas.width !== w || ctx.canvas.height !== h) ctx = new OffscreenCanvas(w, h).getContext("2d", { willReadFrequently: true });
-        ctx!.drawImage(bitmap, 0, 0);
-        bitmap.close();
-        const img = ctx!.getImageData(0, 0, w, h);
-        const result = cv ? processFrame(cv, img, msg.t, focus?.length ? { ...config, focus } : config, memory) : { faces: [], quads: [] };
-        const reading = frameReading(msg.t, result);
-        const track = engine?.push(reading) ?? undefined;
-        if (track) focus = focusCells(track.cells, track.orient);
-        let looksSolved: boolean | undefined;
-        let pose: FrameMessage["pose"];
-        if (engine && reading.faces.length) {
-          const labels = engine.labelsOf(reading);
-          looksSolved = engine.looksSolved(reading, labels);
-          const p = focal.estimate(result.faces, w, h);
-          if (p && p.err < Math.max(4, w / 100)) {
-            // 直前の 3D の向き（キューブ固定 → カメラ）に近い姿勢を優先する（見え方で区別できないときに跳ねない）
-            const prev = lastPose && msg.t - lastPose.t < 1500 ? lastPose.M : null;
-            const orient = engine.frameOrient(reading, labels, prev ? (o) => (0.9 * rotationAngle([...mul(p.R as Mat3, ORIENTATIONS[o])], [...prev])) / Math.PI : undefined);
-            lastPose = { t: msg.t, M: mul(p.R as Mat3, ORIENTATIONS[orient]) };
-            pose = { R: p.R, err: p.err, orient };
-          }
-        }
-        post({ type: "frame", id: msg.id, t: msg.t, width: w, height: h, faces: result.faces, quads: result.quads, procMs: performance.now() - t0, track, looksSolved, pose });
+        queue.push({ id: msg.id, t: msg.t, bitmap: msg.bitmap });
+        scheduleFrames();
         return;
       }
     }

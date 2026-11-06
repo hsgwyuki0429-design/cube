@@ -14,7 +14,9 @@ export interface PipelineConfig {
   // ステッカーの符号の種類（src/aruco/codes.ts）。unique54: 3×3 の 54 種類（マスごとに違う）、aruco12: 3×3 の 12 種類、
   // aruco: 最初に印刷した 4×4 の 54 種類
   stickers: "unique54" | "aruco12" | "aruco";
-  arucoThorough?: boolean; // 二値化の窓を細かく試す（精密解析。src/aruco/detect.ts の THOROUGH_PARAMS）
+  arucoThorough?: boolean; // 精密解析（縮めない・マーカーを追わない・既定では二値化の窓を細かく試し、読めなかったマスを読み直す）
+  // 二値化の窓を細かく試す（src/aruco/detect.ts の THOROUGH_PARAMS。省略時は arucoThorough と同じ）
+  arucoFineWindows?: boolean;
   // 組み立てた面の読めなかったマスを、切り出して拡大して読み直す数（再認識。src/aruco/reread.ts）。
   // 省略時はライブ 0（読み直さない）・精密解析（arucoThorough）は全部
   arucoReread?: number;
@@ -34,6 +36,9 @@ export interface PipelineConfig {
   arucoShrink?: boolean;
   // ライブ: 検出せずに前のフレームのマーカーを追う（src/aruco/markerTrack.ts。精密解析では使わない）
   arucoTrack?: boolean;
+  // 組み立てた面の読めなかったマスを、マーカーのマスの明暗を直接読んで埋める（src/aruco/gridRead.ts。ライブは追えなかったマーカーの
+  // 代わりにも使い、検出を省く）
+  arucoGrid?: boolean;
 }
 
 export const DEFAULT_PIPELINE: PipelineConfig = { stickers: "unique54" };
@@ -57,6 +62,7 @@ export interface DetectedFace {
   ids?: number[]; // 読んだステッカーの ID（揃った状態での facelet 番号。-1 = 不明。54 種類の符号のとき）
   layer?: FaceLayer; // 回している途中の層（外側の 1 列）の格子。H は残りの 2 列（本体）の格子
   shift?: ([number, number] | null)[]; // 読んだマーカーの本体の格子からのずれ（マスの間隔 = 1。手の時刻の判定: src/track/timing.ts）
+  marker?: number; // 仮想のマーカー（今の配置の 1 個）の辺（マスの間隔 = 1）。ステッカーの辺 = これ / 0.84
 }
 
 export interface FrameResult {
@@ -78,5 +84,7 @@ export function processFrame(cv: CV, img: PixelSource, t: number, config: Pipeli
     turn: config.arucoTurn,
     shrink: config.arucoShrink,
     track: config.arucoTrack,
+    grid: config.arucoGrid,
+    fineWindows: config.arucoFineWindows,
   }, detected);
 }

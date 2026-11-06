@@ -178,6 +178,8 @@ try {
         observations: t?.observations,
         recoveries: t?.recoveries,
         stats: app.store.get().stats,
+        processed: app.vision?.processed,
+        skipped: app.vision?.skipped,
       };
     });
     const a = canonical(r.decoded);
@@ -186,7 +188,7 @@ try {
     const finalOk = r.synthState.join() === r.trackState.join();
     const orientOk = r.trackOrient === r.synthOrient;
     results.push({ seed, acc, finalOk, scanSec });
-    console.log(`seed ${seed}: scan ${scanSec.toFixed(1)}s  accuracy ${(acc * 100).toFixed(1)}%  final ${finalOk ? "OK" : "NG"}  orient ${orientOk ? "OK" : `NG(${r.trackOrient}/${r.synthOrient})`}  status ${r.status}  obs ${r.observations}  recov ${r.recoveries}  inferred ${r.inferred}  camFps ${r.stats.camFps} procFps ${r.stats.procFps} procMs ${r.stats.procMs.toFixed(1)}`);
+    console.log(`seed ${seed}: scan ${scanSec.toFixed(1)}s  accuracy ${(acc * 100).toFixed(1)}%  final ${finalOk ? "OK" : "NG"}  orient ${orientOk ? "OK" : `NG(${r.trackOrient}/${r.synthOrient})`}  status ${r.status}  obs ${r.observations}  recov ${r.recoveries}  inferred ${r.inferred}  camFps ${r.stats.camFps} procFps ${r.stats.procFps} procMs ${r.stats.procMs.toFixed(1)}  処理 ${r.processed} 枚（選ばず ${r.skipped} 枚）`);
     console.log(`  truth  : ${r.truth.map(name).join(" ")}`);
     console.log(`  decoded: ${r.decoded.map(name).join(" ")}`);
     if (!finalOk || !orientOk || acc < 0.9) {

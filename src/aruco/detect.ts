@@ -253,9 +253,8 @@ export class ArucoBench {
   // （OpenCV のメモリは途中で伸びることがあり、そのときは OpenCV の入れ物の上の配列が使えなくなる）
   private detectIn(w: number, h: number, fill: (dst: Uint8Array | Uint8ClampedArray) => void, whole?: ImageLike): DetectResult[] {
     const cv = this.cv;
-    if (!this.rgba || this.rgba.cols !== w || this.rgba.rows !== h) {
+    if (!this.max || this.max.cols !== w || this.max.rows !== h) {
       this.freeMats();
-      this.rgba = new cv.Mat(h, w, cv.CV_8UC4);
       this.gray = new cv.Mat(h, w, cv.CV_8UC1);
       this.max = new cv.Mat(h, w, cv.CV_8UC1);
     }
@@ -268,7 +267,9 @@ export class ArucoBench {
       fill(data);
       img = { data, width: w, height: h };
     }
-    this.rgba.data.set(img.data);
+    // RGBA の入れ物はグレースケールの前処理でだけ作って使う（max(R,G,B) は JS の画素から直接作る。ライブ・精密解析は max だけなので、
+    // 画像の大きさの入れ物を OpenCV のメモリに持たず、写しもしない）
+    let rgbaSet = false;
     // 前処理の時間。同じ前処理を使い回した方式にも、その時間を含める
     const prepMs: Partial<Record<Preprocess, number>> = {};
     const out: DetectResult[] = [];
@@ -276,7 +277,15 @@ export class ArucoBench {
       const pre = this.configs[i].preprocess;
       if (prepMs[pre] === undefined) {
         const p0 = now();
-        if (pre === "gray") cv.cvtColor(this.rgba, this.gray, cv.COLOR_RGBA2GRAY);
+        if (pre === "gray") {
+          if (!this.rgba || this.rgba.cols !== w || this.rgba.rows !== h) {
+            this.rgba?.delete();
+            this.rgba = new cv.Mat(h, w, cv.CV_8UC4);
+          }
+          if (!rgbaSet) this.rgba.data.set(img.data);
+          rgbaSet = true;
+          cv.cvtColor(this.rgba, this.gray, cv.COLOR_RGBA2GRAY);
+        }
         else maxChannel(img.data, this.max.data);
         prepMs[pre] = now() - p0;
       }

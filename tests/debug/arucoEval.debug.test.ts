@@ -49,7 +49,7 @@ it("ArUco の総合評価", async () => {
         };
         for (const [si, sc] of scenes.entries()) {
           const img = renderArucoCube(cv, { width: W, height: H, stickers: sc.st, orient: sc.orient, eye: sc.eye, noise: 2.5, seed: si + 1, scheme: "unique54", design, fingers: sc.fingers, shake: sc.shake || undefined });
-          const r = processFrame(cv, img, 0, { ...DEFAULT_PIPELINE, arucoDesign: key, arucoThorough: thorough }, {});
+          const r = processFrame(cv, img, 0, { ...DEFAULT_PIPELINE, arucoDesign: key, arucoThorough: thorough, ...JSON.parse((thorough ? process.env.EXTRA_REFINE : process.env.EXTRA_LIVE) ?? "{}") }, {});
           // 読んだマス → そのマスの中心が入る本当のマス
           const read = new Map<number, number>();
           for (const f of r.faces)
