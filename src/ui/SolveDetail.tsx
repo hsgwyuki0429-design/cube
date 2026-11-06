@@ -8,10 +8,12 @@ import { useStore } from "../app/store";
 import { timerStore } from "../app/timer";
 import { crossFaceOf } from "../cube/analysis";
 import { holdWithDown } from "../cube/hold";
-import { MOVE_NAMES, applyMoves, moveIndex, parseMoves, relativeMove, solvedState } from "../cube/model";
+import { MOVE_NAMES, applyMoves, moveIndex, parseMoves, relativeMove, rotateOrientation, solvedState } from "../cube/model";
+import type { SolveMove } from "../app/storage";
 import { optimalXCross } from "../cube/solver";
 import type { XCrossResult } from "../cube/xcross";
 import { Cube3D } from "./Cube3D";
+import { type ReplayMove, ReplayCube } from "./ReplayCube";
 import { BackIcon } from "./icons";
 import { AnalysisBadge, PenaltyRow } from "./solveUi";
 
@@ -24,6 +26,22 @@ const safeMoves = (names: string[]): number[] | null => {
     return null;
   }
 };
+
+// 手ごとの、カメラから見えていたキューブの向き。以前の記録（o がない）は、持ち方基準の表記 r とキューブ固定の表記 m から、
+// 合う向きのうち前の手の向きにいちばん近いもの（同じなら同じ）を選ぶ（表記は自分から見た向きか、カメラから見た向き）
+function replayMoves(moves: SolveMove[], ms: number[]): ReplayMove[] {
+  let prev: number | null = null;
+  return moves.map((m, i) => {
+    let o: number | null = m.o ?? null;
+    if (o === null) {
+      const cands: number[] = [];
+      for (let k = 0; k < 24; k++) for (const v of [k, rotateOrientation(k, "y", 2)]) if (MOVE_NAMES[relativeMove(ms[i], v)] === m.r && !cands.includes(k)) cands.push(k);
+      o = prev !== null && cands.includes(prev) ? prev : (cands[0] ?? prev);
+    }
+    prev = o;
+    return { move: ms[i], s: m.s ?? m.t, orient: o };
+  });
+}
 
 export function SolveDetail() {
   const id = useStore(controller.store, (s) => s.solveId);
@@ -139,7 +157,11 @@ export function SolveDetail() {
             <span class="muted small">{view.mode === "xcross" ? "X クロスの最短" : "自分の解き方"}</span>
           </div>
           {solve.scramble ? (
-            <Cube3D key={solve.id} epoch={0} setupMoves={[]} moves={[]} orient={null} controls setupAlg={setupAlg} alg={alg} />
+            view.mode === "mine" && mine ? (
+              <ReplayCube key={solve.id} setupAlg={solve.scramble} moves={replayMoves(solve.moves, mine)} from={view.at} />
+            ) : (
+              <Cube3D key={`${solve.id}-x`} epoch={0} setupMoves={[]} moves={[]} orient={null} controls setupAlg={setupAlg} alg={alg} />
+            )
           ) : (
             <p class="muted small">スクランブルがない記録です。</p>
           )}

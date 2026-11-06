@@ -1627,3 +1627,15 @@ button.mv,
     padding-bottom: max(10px, env(safe-area-inset-bottom));
   }
 }
+
+/* 記録の詳しい画面の 3D の再生（src/ui/ReplayCube.tsx） */
+.replay-cube .cube3d {
+  touch-action: none;
+}
+.replay-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  flex-wrap: wrap;
+}

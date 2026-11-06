@@ -6,6 +6,7 @@ export interface SolveMove {
   r: string; // 持ち方基準の表記
   t: number; // 計測開始から、この手を回し終わるまでの ms
   s?: number; // 計測開始から、この手を回し始めるまでの ms
+  o?: number; // この手を回したときにカメラから見えていたキューブの向き（キューブ固定 → カメラ。ORIENTATIONS の番号）
   inferred?: boolean;
 }
 

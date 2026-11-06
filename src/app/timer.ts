@@ -225,6 +225,7 @@ function solveMoves(moves: TimedMove[], startT: number): Solve["moves"] {
     r: MOVE_NAMES[relativeMove(m.move, viewOrient(m.orient))],
     t: Math.round(m.end - startT),
     s: Math.round(m.start - startT),
+    o: m.orient,
     ...(m.inferred ? { inferred: true } : {}),
   }));
 }
