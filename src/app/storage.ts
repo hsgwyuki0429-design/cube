@@ -19,6 +19,8 @@ export interface Solve {
   moves: SolveMove[];
   tps: number;
   splits?: { name: string; t: number; moves: number }[];
+  // カメラから見えたキューブの連続的な向き（計測開始からの ms と四元数 x y z w。1 秒 10 回ほど）。記録の詳しい画面の 3D で使う
+  poses?: number[][];
   tracked: boolean; // カメラ追跡で計測したか（手動停止なら false）
   // 録画の精密解析: pending = 解析中（表示は速報値）/ done = 全フレームから確定 / failed = 解析できず速報値のまま
   analysis?: "pending" | "done" | "failed";

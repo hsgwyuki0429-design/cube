@@ -158,7 +158,7 @@ export function SolveDetail() {
           </div>
           {solve.scramble ? (
             view.mode === "mine" && mine ? (
-              <ReplayCube key={solve.id} setupAlg={solve.scramble} moves={replayMoves(solve.moves, mine)} from={view.at} />
+              <ReplayCube key={solve.id} setupAlg={solve.scramble} moves={replayMoves(solve.moves, mine)} from={view.at} poses={solve.poses} onTurn={() => controller.turnSound()} />
             ) : (
               <Cube3D key={`${solve.id}-x`} epoch={0} setupMoves={[]} moves={[]} orient={null} controls setupAlg={setupAlg} alg={alg} />
             )

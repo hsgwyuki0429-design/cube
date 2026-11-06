@@ -1,4 +1,6 @@
 // アプリの中枢: カメラ → 認識 Worker → スキャン／追跡 の流れをまとめる。UI はこのストアを購読するだけ。
+import { Matrix4, Quaternion } from "three";
+import { type Mat3, ORIENTATIONS, mul } from "../cube/model";
 import { F, isSolved, solvedState } from "../cube/model";
 import { setupMovesFor } from "../cube/solver";
 import { FaceCapture, type ScanResult, type ScanStep, type ScannedFace, assembleScan, scanSteps } from "../scan/scan";
@@ -544,8 +546,16 @@ class Controller {
     this.store.set({ baseMoves: this.store.get().track?.moves.length ?? 0 });
   }
 
+  // 直近のキューブの連続的な向き（キューブ固定 → カメラの四元数）。記録の詳しい画面の 3D で、カメラから見えた傾きのまま再生する
+  readonly poseLog: { t: number; q: number[] }[] = [];
   private onFrame(m: FrameMessage): void {
     this.latestFrame = m;
+    if (m.pose) {
+      const r = mul(m.pose.R as Mat3, ORIENTATIONS[m.pose.orient]);
+      const q = new Quaternion().setFromRotationMatrix(new Matrix4().set(r[0], r[1], r[2], 0, r[3], r[4], r[5], 0, r[6], r[7], r[8], 0, 0, 0, 0, 1));
+      this.poseLog.push({ t: m.t, q: [q.x, q.y, q.z, q.w] });
+      while (this.poseLog.length && m.t - this.poseLog[0].t > 180000) this.poseLog.shift();
+    }
     for (const l of this.frameListeners) l(m);
     if (this.store.get().scan) this.onScanFrame(m);
     if (m.track) {
@@ -555,6 +565,31 @@ class Controller {
   }
 
   // ---- 効果音 ----
+  // 層を回した音（記録の再生）: 短いノイズを帯域で絞って、カチッという音にする
+  turnSound(): void {
+    if (!settingsStore.get().sound) return;
+    try {
+      this.audio ??= new AudioContext();
+      const a = this.audio;
+      const len = Math.floor(a.sampleRate * 0.06);
+      const buf = a.createBuffer(1, len, a.sampleRate);
+      const d = buf.getChannelData(0);
+      for (let i = 0; i < len; i++) d[i] = (Math.random() * 2 - 1) * (1 - i / len) ** 3;
+      const src = a.createBufferSource();
+      src.buffer = buf;
+      const bp = a.createBiquadFilter();
+      bp.type = "bandpass";
+      bp.frequency.value = 1800 + Math.random() * 600;
+      bp.Q.value = 1.2;
+      const gain = a.createGain();
+      gain.gain.value = 0.5;
+      src.connect(bp).connect(gain).connect(a.destination);
+      src.start();
+    } catch {
+      // 音が出せない環境
+    }
+  }
+
   private audio: AudioContext | null = null;
   beep(freq = 880, duration = 0.1): void {
     if (!settingsStore.get().sound) return;

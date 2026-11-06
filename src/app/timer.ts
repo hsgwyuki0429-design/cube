@@ -230,6 +230,18 @@ function solveMoves(moves: TimedMove[], startT: number): Solve["moves"] {
   }));
 }
 
+// 計測中の向き（controller.poseLog）を 100ms ごとに 1 つ、計測開始からの時刻で
+function posesOf(startT: number, endT: number): number[][] {
+  const out: number[][] = [];
+  let last = -Infinity;
+  for (const p of controller.poseLog) {
+    if (p.t < startT - 500 || p.t > endT + 500 || p.t - last < 100) continue;
+    last = p.t;
+    out.push([Math.round(p.t - startT), ...p.q.map((v) => Math.round(v * 1000) / 1000)]);
+  }
+  return out;
+}
+
 function updateSolve(id: string, patch: Partial<Solve>): void {
   const solves = timerStore.get().solves.map((x) => (x.id === id ? { ...x, ...patch } : x));
   saveSolves(solves);
@@ -261,6 +273,7 @@ function finish(u: TrackUpdate | null, how: StopReason, lookT?: number): void {
     // ソルブ中に見えている色に合わせて作り変えた（手順がつながらない）ときは、分割タイムは精密解析で決める
     splits: how === "tracked" && !(u?.base && u.base.at > s.startIndex) ? splitsOf(startState, moves, s.startT) : undefined,
     tracked: how !== "manual",
+    poses: posesOf(s.startT, endT),
     ...(analyze ? { analysis: "pending" as const, provisionalMs: timeMs } : {}),
   };
   const solves = [solve, ...s.solves];
