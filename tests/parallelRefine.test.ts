@@ -24,12 +24,15 @@ describe("精密解析の並列化", () => {
     const make = () => new Refiner(cv, { state: Array.from(solvedState()), refs: ARUCO_REFS, from: 0, to: Infinity, startHint: 300, pipeline: { stickers: "unique54", arucoDesign: "quad-half" } });
     const seq = make();
     const par = make();
-    // 別の Worker の代わり: 検出の Worker と同じ設定（精密解析）で検出し、ばらばらの遅れで返す
+    // 別の Worker の代わり: 検出の Worker と同じ設定（精密解析の二値化の窓: src/vision/vision.worker.ts の parallelFeeder と同じ）で検出し、
+    // ばらばらの遅れで返す
     let n = 0;
+    const cfg = par.pipelineConfig;
+    const fine = cfg.arucoFineWindows ?? !!cfg.arucoThorough;
     const detect = (img: PixelSource, hint: DetectHint | null) => {
       const copy = { data: new Uint8ClampedArray(img.data), width: img.width, height: img.height };
       const delay = [5, 0, 12, 3][n++ % 4];
-      return new Promise<ReturnType<typeof detectWithHint>>((resolve) => setTimeout(() => resolve(detectWithHint(detectorFor(cv, "unique54", true, "quad-half"), copy, hint)), delay));
+      return new Promise<ReturnType<typeof detectWithHint>>((resolve) => setTimeout(() => resolve(detectWithHint(detectorFor(cv, "unique54", fine, "quad-half"), copy, hint)), delay));
     };
     const feeder = new ParallelFeeder(par, detect, 4);
     const eye: Vec3 = [2.4, 2.4, 5.5];

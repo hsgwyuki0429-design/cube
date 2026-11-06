@@ -8,9 +8,15 @@ import type { Recording } from "./recorder";
 import type { RefineInput, RefineResult } from "./refine";
 import type { VideoFileInfo } from "./videoFile";
 
+// Worker に送って結果がまだ来ていないフレームの上限。Worker は待っているフレームのうち動きのいちばん小さいものを処理する
+// （src/vision/vision.worker.ts の pickFrame）。処理が速ければ待つフレームはほとんどない
+const MAX_INFLIGHT = 3;
+
 export class VisionClient {
   private worker: Worker;
-  private busy = false;
+  // Worker に送って結果がまだ来ていないフレームの数。MAX_INFLIGHT まで送る（処理している間に次のフレームを Worker に待たせておく）:
+  // 1 枚ずつだと、結果が返ってから次のカメラのフレームが来て画像にして送るまで（平均で半フレーム + 数 ms）Worker が空いていた
+  private inflight = 0;
   private nextId = 1;
   private listeners = new Set<(m: FrameMessage) => void>();
   private procTimes: number[] = [];
@@ -21,6 +27,8 @@ export class VisionClient {
   opencv = false;
   workWidth = 1280;
   procFps = 0;
+  processed = 0; // 処理したフレームの数（調査用）
+  skipped = 0; // 待っている間に、より動きの小さいフレームを選んで処理しなかった数
   lastProcMs = 0;
   lastError: string | null = null;
 
@@ -37,9 +45,13 @@ export class VisionClient {
           this.lastError = m.message;
           console.error("vision worker:", m.message);
           if (!this.isReady) reject(new Error(m.message));
-          this.busy = false;
+          this.inflight = 0;
+        } else if (m.type === "frame-skipped") {
+          this.inflight = Math.max(0, this.inflight - 1);
+          this.skipped++;
         } else if (m.type === "frame") {
-          this.busy = false;
+          this.inflight = Math.max(0, this.inflight - 1);
+          this.processed++;
           this.lastProcMs = m.procMs;
           const now = performance.now();
           this.procTimes.push(now);
@@ -55,7 +67,7 @@ export class VisionClient {
         this.lastError = e.message;
         console.error("vision worker:", e.message);
         if (!this.isReady) reject(new Error(e.message));
-        this.busy = false; // 処理中のフレームの結果は来ないので、次のフレームを送れるようにする
+        this.inflight = 0; // 処理中のフレームの結果は来ないので、次のフレームを送れるようにする
       };
     });
     this.post({ type: "init" });
@@ -71,8 +83,8 @@ export class VisionClient {
   }
 
   async submit(video: HTMLVideoElement, t: number): Promise<boolean> {
-    if (!this.isReady || this.busy || !video.videoWidth) return false;
-    this.busy = true;
+    if (!this.isReady || this.inflight >= MAX_INFLIGHT || !video.videoWidth) return false;
+    this.inflight++;
     try {
       // 長辺を workWidth に（縦向きの映像で幅を基準にすると画素が 3 倍になり、認識が追いつかない）
       const s = Math.min(1, this.workWidth / Math.max(video.videoWidth, video.videoHeight));
@@ -93,7 +105,7 @@ export class VisionClient {
       this.post({ type: "frame", id: this.nextId++, t, bitmap }, [bitmap]);
       return true;
     } catch (e) {
-      this.busy = false;
+      this.inflight = Math.max(0, this.inflight - 1);
       this.lastError = String(e);
       return false;
     }

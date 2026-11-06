@@ -552,8 +552,11 @@ export function reconstructFaces(
   // frontAlways（ライブ）: 正面に割り当たる面がない（角を向けて上・横だけが見えている）ときは、いちばんカメラを向いた面を正面にし、
   // 他の面はそれに対して割り当て直す。普通のステッカーの認識と同じく正面のあるフレームにそろえると、キューブ全体を回している間も
   // 観測と 3D の向きが途切れない（実物の動画で、正面のないフレームを捨てて 3D の動きが止まっては飛んでいた）
-  if (frontAlways && !taken.has(2)) {
-    const front = faces.reduce((b, f, fi) => (f.normal[2] > faces[b].normal[2] ? fi : b), 0);
+  // ただし、いちばんカメラを向いた面でもカメラの軸から FRONT_MAX_DEG より傾いている（正面を回していて正面が読めず、上の面だけが
+  // 斜めに見えている）ときは正面にしない（上の面のステッカーを正面として観測し、追跡が R' L D のような手で辻褄を合わせていた）
+  const frontCand = faces.reduce((b, f, fi) => (f.normal[2] > faces[b].normal[2] ? fi : b), 0);
+  if (frontAlways && !taken.has(2) && faces[frontCand].normal[2] > FRONT_MIN_Z) {
+    const front = frontCand;
     const E0 = cubeTilt([{ a: SLOT_NORMALS[2], n: faces[front].normal }], null);
     taken.clear();
     taken.set(2, front);
@@ -602,6 +605,9 @@ export function reconstructFaces(
   }
   return { faces: out, tilt: E };
 }
+
+// frontAlways で正面にする面の、法線とカメラの軸の角度の上限（cos）。角を向けて 3 面が見えるとき（各 55°）は正面にする
+const FRONT_MIN_Z = Math.cos((62 * Math.PI) / 180);
 
 type V3 = [number, number, number];
 const dot3 = (a: V3, b: V3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];

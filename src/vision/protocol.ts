@@ -68,7 +68,9 @@ export type FromWorker =
   | { type: "refine-error"; id: number; message: string }
   | { type: "stream-partial"; id: number; partial: StreamPartial }
   | { type: "video-info"; id: number; info: VideoFileInfo; analyzedFrames: number }
-  | { type: "detected"; id: number; markers: Marker[] };
+  | { type: "detected"; id: number; markers: Marker[] }
+  // 待っている間に、より動きの小さいフレームを選んだので処理しなかったフレーム（送った枚数を数え直すため）
+  | { type: "frame-skipped"; id: number };
 
 // ソルブ中の精密解析の途中結果（前向きに t まで解いたもの）
 export interface StreamPartial {
