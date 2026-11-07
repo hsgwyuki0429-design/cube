@@ -70,6 +70,15 @@ export interface Hypothesis {
   cost: number;
   obsCost: number; // 直近の観測での矛盾コスト
   tail: MoveNode | null;
+  // ライブの作り変えで足した仮説（とその子孫）: 何回目か・そのときの手の数・作り変えた状態。手順は作り変えの前後でつながらない
+  origin?: HypothesisOrigin | null;
+}
+
+export interface HypothesisOrigin {
+  n: number;
+  at: number;
+  state: number[];
+  t: number;
 }
 
 // 状態 + 姿勢の 53bit ハッシュ（衝突確率は無視できる）
@@ -484,7 +493,7 @@ export class MoveDecoder {
         const b = t0 + ((t1 - t0) * (k + 1)) / seq.length;
         tail = { move: m, t0: a, t: b, orient: c.orient, inferred, prev: tail, len: (tail?.len ?? 0) + 1 };
       });
-      return { state: seq.length ? state : h.state, orient: c.orient, cost: c.cost - base, obsCost: c.obsCost, tail };
+      return { state: seq.length ? state : h.state, orient: c.orient, cost: c.cost - base, obsCost: c.obsCost, tail, origin: h.origin };
     });
   }
 
@@ -594,6 +603,20 @@ export class MoveDecoder {
     const os = orients ?? Array.from({ length: NUM_ORIENTATIONS }, (_, i) => i);
     this.beam = os.map((orient) => ({ state: new Uint8Array(state), orient, cost: 0, obsCost: 0, tail: null }));
     this.lastGoodBeam = this.beam;
+    this.uncertainStreak = 0;
+    this.status = "tracking";
+  }
+
+  // ライブの作り変え: 見えている色に合わせて作った状態を、今の最良の仮説と同じ手順の続きとして仮説に足す（今の仮説たちは残す）。
+  // コストは最良の仮説のこの観測の前までのコスト + 作った状態の観測のコスト + extra。誤読が続かなければ、次の観測で元の仮説が
+  // 勝ち直す（追跡ごと置き換えていた間は、一瞬の誤読で見えていない面まで作った状態になり、手順は正しいのに最後の状態が違った）
+  inject(state: CubeState, orient: number, obsCost: number, origin: HypothesisOrigin, extra: number): void {
+    const b = this.beam[0];
+    const h: Hypothesis = { state: new Uint8Array(state), orient, cost: b.cost - b.obsCost + obsCost + extra, obsCost, tail: b.tail, origin };
+    const lost = this.status === "lost";
+    this.beam = (lost ? [h] : [h, ...this.beam]).sort((x, y) => x.cost - y.cost).slice(0, this.options.beamWidth);
+    this.lastGoodBeam = this.beam;
+    this.lastObservationCost = this.beam[0].obsCost;
     this.uncertainStreak = 0;
     this.status = "tracking";
   }

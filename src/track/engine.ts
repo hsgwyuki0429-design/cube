@@ -1,10 +1,10 @@
 // 追跡エンジン: フレームの読み取り → 安定観測 → デコーダ → 結果。カメラも DOM も知らない。
 // Worker の中でもテストの中でも同じコードが動く。
-import { type CubeState, NORMAL, applyMove, faceletGeometry, inverseMove, isSolved, moveFace, VIEW } from "../cube/model";
+import { type CubeState, NORMAL, VIEW, applyMove, faceletGeometry, inverseMove, isSolved, moveFace, solvedState } from "../cube/model";
 import { stickerIdAt } from "../cube/stickers";
 import type { Lab } from "../vision/color";
 import { ColorModel, type ColorModelOptions } from "./colorModel";
-import { type DecoderOptions, MoveDecoder } from "./decoder";
+import { type DecoderOptions, MoveDecoder, observationCost } from "./decoder";
 import { movePrior } from "./prior";
 import { snapToObservation } from "./snap";
 import { FaceObserver, type FrameReading, type ObserverOptions } from "./observer";
@@ -32,12 +32,15 @@ export interface EngineOptions {
 const REPEAT_COST = 0.8;
 // 作り変え（ライブは見えているキューブにどんどん合わせる）: 最良の仮説の観測の矛盾がこれ以上（1 マスの色の矛盾 1.5）の観測が
 // 2 回続いたら、SNAP_NOW 以上なら（2 マス以上）すぐ、見えている色に合う状態を 3D に出す。作り変えた状態が観測をこれだけ以上よく
-// 説明するときだけ。矛盾が 2 観測続いたら（OVERWRITE_STREAK）、追跡もその状態で上書きしてそこから追う（以前は見失ったときだけ
-// 追跡を上書きし、それまでは 3D だけ作り変えていた: 追跡は合わない仮説のまま次の手を探し、3D とずれたままのことがあった）
+// 説明するときだけ。矛盾が 2 観測続いたら（OVERWRITE_STREAK）、その状態を追跡の仮説に足し、一番にしてそこから追う（元の仮説も
+// 残すので、誤読が続かなければ元の仮説に戻る。追跡ごと置き換えていた間は、実物の T-perm 2 回で手順は合っているのに最後の状態が
+// 揃っていなかった。以前は見失ったときだけ上書きし、それまでは 3D だけ作り変えていて、3D とずれたままのことがあった）
 const SNAP_COST = 1.4;
 const SNAP_NOW = 2.9;
 const SNAP_GAIN = 1.0;
 const OVERWRITE_STREAK = 2;
+const SOLVED_FACE_CELLS = 6; // 揃った状態の仮説を足すのに要る、1 面の読めたマスの数（2 面以上）
+const INJECT_COST = 0.5; // 作り変えた仮説を足すときの上乗せ（観測をよく説明する分 SNAP_GAIN より小さいので、足した時点では一番になる）
 const MAX_REPEATS = 2; // 同じ読みで出し直す回数の上限（指で隠れたままの誤読を重ねすぎない）
 
 export interface TrackUpdate {
@@ -163,7 +166,11 @@ export class TrackerEngine {
   private repeatMs: number;
   private snapToView: boolean;
   private snapStreak = 0;
-  base: TrackUpdate["base"] = null;
+  private snaps = 0; // 作り変えた仮説を足した回数
+  // 一番合う仮説が作り変えで足した仮説（の続き）なら、その作り変え
+  get base(): TrackUpdate["base"] {
+    return this.decoder.best()?.origin ?? null;
+  }
   view: TrackUpdate["view"] = null;
   private lastObsT = -Infinity;
   private repeats = 0;
@@ -185,7 +192,6 @@ export class TrackerEngine {
 
   reset(state: CubeState, orients?: number[]): void {
     this.decoder.reset(state, orients);
-    this.base = null;
     this.view = null;
     this.snapStreak = 0;
     this.observer.reset();
@@ -249,7 +255,10 @@ export class TrackerEngine {
 
   observe(obs: Observation, frame?: FrameReading): TrackUpdate {
     this.decoder.observe(obs);
-    if (this.snapToView) this.snap(obs);
+    if (this.snapToView) {
+      this.snap(obs);
+      this.preferSolved(obs);
+    }
     const best = this.decoder.best();
     this.markSeen(obs);
     // デコーダが確信していて、観測とよく合っているときだけ代表色を寄せる
@@ -266,9 +275,7 @@ export class TrackerEngine {
 
   // 作り変え（snapToView）: 一番合う仮説でもはっきり合わない見え方が続いたら、見えている色に合う状態を作る。
   //   - 3D の表示は、その場でその状態にする（view。追跡はそのまま探し続ける）
-  //   - 追跡が見失った（lost: 探し直しても戻れなかった）ときだけ、追跡もその状態からやり直す（base）
-  // 見えていない面は分からないので、作り変えた状態で追跡を置き換えるのは見失ったときだけにする（置き換えるたびにスクランブルの
-  // 案内の道筋から外れ、誤読で置き換わるとインスペクション中に動いたと見てタイマーが始まった）
+  //   - 矛盾が続いた・見失ったら、その状態を追跡の仮説に足す（base: 一番合う仮説がその子孫のとき。見失ったときは置き換える）
   private snap(obs: Observation): void {
     const best = this.decoder.best();
     this.snapStreak = best.obsCost >= SNAP_COST ? this.snapStreak + 1 : 0;
@@ -279,9 +286,9 @@ export class TrackerEngine {
     const r = snapToObservation(best.state, best.orient, obs);
     if (!r || r.cost > best.obsCost - SNAP_GAIN) return;
     if (this.decoder.status === "lost" || this.snapStreak >= OVERWRITE_STREAK) {
-      const moves = this.decoder.bestMoves();
-      this.decoder.rebase(r.state, r.orient, moves);
-      this.base = { n: (this.base?.n ?? 0) + 1, at: moves.length, state: Array.from(r.state), t: obs.t };
+      const at = this.decoder.bestMoves().length;
+      this.snaps++;
+      this.decoder.inject(r.state, r.orient, r.cost, { n: this.snaps, at, state: Array.from(r.state), t: obs.t }, INJECT_COST);
       this.view = null;
       this.snapStreak = 0;
       return;
@@ -289,6 +296,28 @@ export class TrackerEngine {
     // 表示だけ: 前と同じ状態なら作り直さない（3D がそのたびにソルバーで作り直さないように）
     const same = this.view && this.view.state.every((c, i) => c === r.state[i]) && this.view.orient === r.orient;
     if (!same) this.view = { n: (this.view?.n ?? 0) + 1, state: Array.from(r.state), orient: r.orient, t: obs.t };
+  }
+
+  // 作り変えた仮説（見えていない面は推測）が一番のまま、見えている 2 面以上がどれも揃っていて揃った状態でも説明できるなら、
+  // 揃った状態の仮説も足す（速く回して見失った後に揃えると、見えている面は揃っているのに見えていない面が推測のままで、3D が
+  // 揃わなかった: 実物の T-perm 2 回の速いもの）
+  private preferSolved(obs: Observation): void {
+    const best = this.decoder.best();
+    if (!best.origin || isSolved(best.state)) return;
+    if (obs.faces.filter((f) => f.labels.filter((l) => l >= 0).length >= SOLVED_FACE_CELLS).length < 2) return;
+    const solved = solvedState();
+    let o = -1;
+    let cost = Infinity;
+    for (let k = 0; k < 24; k++) {
+      const c = observationCost(solved, k, obs);
+      if (c < cost) {
+        cost = c;
+        o = k;
+      }
+    }
+    if (cost > best.obsCost + 0.05 || cost > 0.5) return;
+    this.snaps++;
+    this.decoder.inject(solved, o, cost, { n: this.snaps, at: this.decoder.bestMoves().length, state: Array.from(solved), t: obs.t }, -0.1);
   }
 
   // 見えている面がすべて1色か（完成の見た目）。高速回転で追跡を見失っていても、タイマーを止められるように。

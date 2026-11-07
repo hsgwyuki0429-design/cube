@@ -198,8 +198,10 @@ class Controller {
   // ライブの認識: 面の格子で追う（arucoGrid。src/vision/arucoFrame.ts の liveMarkers）。回転途中の形（arucoTurn）は使わない。
   // ライブは 1 秒 10 枚前後しか処理できず、回している途中を 3 枚以上続けて捉えることがほとんどないので手がかりにならず、
   // 1 フレームの 3 割ほど（合成の 30fps で 50 → 32ms）を使っていた（精密解析では使う）
+  // 色で補う（arucoColorFill）も使わない: 実物の動画（T-perm 2 回）で、色で補ったマスの読み違い（白を赤など）が続いて作り変えが
+  // 起き、手順は正しいのに 3D の状態が揃わなかった。合成の 10 手でも手順の正しさは同じで、1 フレーム 17 → 11ms
   liveConfig(): Partial<PipelineConfig> {
-    return { ...this.pipelineConfig(), arucoTurn: false, arucoGrid: true };
+    return { ...this.pipelineConfig(), arucoTurn: false, arucoGrid: true, arucoColorFill: false };
   }
 
   // ライブの追跡: 見えているキューブに従う。手順の知識（PLL など・自分のソルブ）は使わない（精密解析では使う）。
