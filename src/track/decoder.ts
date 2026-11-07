@@ -534,7 +534,7 @@ export class MoveDecoder {
     const base = this.beam[0]?.cost ?? 0;
     for (const h of this.beam) {
       if (h.cost > base + margin) continue;
-      const states = Array.from({ length: tree.move.length }, () => new Uint8Array(54));
+      const states = stateBuffers(tree); // 木ごとの入れ物を使い回す（深さ 4 で 4.8 万節点）
       for (let node = 0; node < tree.move.length; node++) {
         if (node === 0) states[0].set(h.state);
         else {

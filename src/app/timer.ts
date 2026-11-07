@@ -352,27 +352,22 @@ async function analyzeRecordingInner(live: LiveSpan, endT: number): Promise<void
   }
   markPhase("saving");
   debug.result = result;
-  // 手動で止めたときは、最後に足した（見えていない）手で完成にしたものは採らない
-  const ok = result.solved && result.start !== null && result.end !== null && result.moves.length > 0 && (how !== "manual" || result.forced === 0);
-  if (!ok) {
+  // 完成までつながらなかった（足しても届かなかった）ときだけ、リアルタイムの結果のまま
+  if (!result.solved || !result.moves.length || result.start === null || result.end === null) {
     updateSolve(id, { analysis: "failed" });
     return;
   }
-  // 端の手が直接見えていなければ、その端はリアルタイムの追跡の時刻を使う。ただし、リアルタイムが最初の数手を
-  // 取りこぼしていた（解析で見つかった最初の手より後に始まっていた）なら、どちらの開始も信用できないので確定しない
-  if (result.startUncertain && live.startT > result.moves[0].end) {
-    updateSolve(id, { analysis: "failed" });
-    return;
-  }
-  const begin = result.startUncertain ? live.startT : result.start!;
-  const finish = result.endUncertain ? (how === "manual" ? null : live.endT) : result.end!;
-  if (finish === null) {
-    updateSolve(id, { analysis: "failed" });
-    return;
-  }
+  // 時間がかかっても結果は出す: 手順は解析のものにする。タイムの端は、フレームから決められた端は解析の時刻、決められなかった端
+  // （最初・最後の手が写っていない・手動で止めて最後に見えない手を足した）はリアルタイムの時刻を使い、「確定（一部推定）」にする。
+  // リアルタイムが最初の数手を取りこぼしていた（解析の最初の手より後に始まっていた）ら、解析の最初の手の回し始めを使う
+  const forcedEnd = how === "manual" && result.forced > 0;
+  const startSure = !result.startUncertain;
+  const endSure = !result.endUncertain && !forcedEnd;
+  const begin = startSure ? result.start : Math.min(live.startT, result.moves[0].start);
+  const finish = endSure ? result.end : Math.max(live.endT, begin);
   const timeMs = Math.max(0, finish - begin);
   updateSolve(id, {
-    analysis: "done",
+    analysis: startSure && endSure ? "done" : "partial",
     timeMs,
     ...solveFields(start, result.moves, begin, timeMs),
     tracked: true,
