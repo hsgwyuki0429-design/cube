@@ -23,7 +23,8 @@ export interface Solve {
   poses?: number[][];
   tracked: boolean; // カメラ追跡で計測したか（手動停止なら false）
   // 録画の精密解析: pending = 解析中（表示は速報値）/ done = 全フレームから確定 / failed = 解析できず速報値のまま
-  analysis?: "pending" | "done" | "failed";
+  // partial = 解析で手順は確定したが、タイムの端の一部はリアルタイムの値（端の手が写っていない・手動で止めた）
+  analysis?: "pending" | "done" | "partial" | "failed";
   provisionalMs?: number; // 解析前の速報値
   video?: boolean; // 動画ファイル（スロー撮影など）を読み込んで解析した記録
 }

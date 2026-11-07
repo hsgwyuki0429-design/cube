@@ -117,3 +117,17 @@ describe("offline reconstruction (forward + backward meet)", () => {
     expect(off.moves.length).toBeGreaterThan(0);
   }, 60000);
 });
+
+describe("最後に見えなかった手を足して完成までつなぐ（finishDeep）", () => {
+  it("2 手では届かなくても 3 手・4 手まで足してつなぐ", async () => {
+    const { MoveDecoder } = await import("../src/track/decoder");
+    const { finishDeep } = await import("../src/track/offline");
+    const { applyMoves, parseMoves, solvedState, statesEqual } = await import("../src/cube/model");
+    const dec = new MoveDecoder(solvedState(), {}, [0]);
+    const end = applyMoves(solvedState(), parseMoves("R U F' L"));
+    const moves = finishDeep(dec, end, 1000);
+    expect(moves).not.toBeNull();
+    expect(moves!.every((m) => m.inferred)).toBe(true);
+    expect(statesEqual(applyMoves(solvedState(), moves!.map((m) => m.move)), end)).toBe(true);
+  }, 120000);
+});

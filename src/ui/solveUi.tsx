@@ -38,6 +38,12 @@ export function AnalysisBadge({ solve, progress }: { solve: Solve; progress?: nu
         確定
       </span>
     );
+  if (solve.analysis === "partial")
+    return (
+      <span class="chip analysis done" title="録画の解析で手順を確定しました。タイムの端の一部（最初か最後の手が写っていなかった・手動で止めた）はリアルタイムの値です">
+        確定（一部推定）
+      </span>
+    );
   if (solve.analysis === "failed")
     return (
       <span class="chip analysis failed" title="録画から完成までをたどれなかったため、リアルタイムの結果のままです">

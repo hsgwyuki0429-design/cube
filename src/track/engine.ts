@@ -30,11 +30,14 @@ export interface EngineOptions {
 }
 
 const REPEAT_COST = 0.8;
-// 作り変え: 最良の仮説の観測の矛盾がこれ以上の観測が 2 回続いたら（1 マスの矛盾 1.5。2 マス以上はっきり合わない）、
-// SNAP_NOW 以上なら（3 マス以上）すぐ。作り変えた状態が観測をこれだけ以上よく説明するときだけ
-const SNAP_COST = 2.5;
-const SNAP_NOW = 4.5;
-const SNAP_GAIN = 1.5;
+// 作り変え（ライブは見えているキューブにどんどん合わせる）: 最良の仮説の観測の矛盾がこれ以上（1 マスの色の矛盾 1.5）の観測が
+// 2 回続いたら、SNAP_NOW 以上なら（2 マス以上）すぐ、見えている色に合う状態を 3D に出す。作り変えた状態が観測をこれだけ以上よく
+// 説明するときだけ。矛盾が 2 観測続いたら（OVERWRITE_STREAK）、追跡もその状態で上書きしてそこから追う（以前は見失ったときだけ
+// 追跡を上書きし、それまでは 3D だけ作り変えていた: 追跡は合わない仮説のまま次の手を探し、3D とずれたままのことがあった）
+const SNAP_COST = 1.4;
+const SNAP_NOW = 2.9;
+const SNAP_GAIN = 1.0;
+const OVERWRITE_STREAK = 2;
 const MAX_REPEATS = 2; // 同じ読みで出し直す回数の上限（指で隠れたままの誤読を重ねすぎない）
 
 export interface TrackUpdate {
@@ -275,7 +278,7 @@ export class TrackerEngine {
     }
     const r = snapToObservation(best.state, best.orient, obs);
     if (!r || r.cost > best.obsCost - SNAP_GAIN) return;
-    if (this.decoder.status === "lost") {
+    if (this.decoder.status === "lost" || this.snapStreak >= OVERWRITE_STREAK) {
       const moves = this.decoder.bestMoves();
       this.decoder.rebase(r.state, r.orient, moves);
       this.base = { n: (this.base?.n ?? 0) + 1, at: moves.length, state: Array.from(r.state), t: obs.t };

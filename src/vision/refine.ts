@@ -4,7 +4,7 @@
 import { type CubeState, OPPOSITE, isSolved, moveFace, solvedState, statesEqual } from "../cube/model";
 import { type EngineOptions, TrackerEngine } from "../track/engine";
 import { mergeQuickRepeats, separateMotions, simplifyMoves } from "../track/merge";
-import { DEFAULT_OFFLINE, OfflineForward, type OfflineOptions, decodeOffline } from "../track/offline";
+import { DEFAULT_OFFLINE, OfflineForward, type OfflineOptions, decodeOffline, finishDeep } from "../track/offline";
 import type { DecodedMove, TrackStatus } from "../track/types";
 import type { Lab } from "./color";
 import { type PatchFrame, facePatch, refineEnd, refineStart } from "./fineTiming";
@@ -331,7 +331,7 @@ export class Refiner {
       solved = isSolved(dec.best().state);
       forced = 0;
       if (target && !statesEqual(dec.best().state, target)) {
-        const fixed = dec.finish(target, this.lastT, 2);
+        const fixed = finishDeep(dec, target, this.lastT);
         if (fixed) {
           forced = fixed.filter((m) => m.inferred && m.t === this.lastT).length;
           moves = fixed;

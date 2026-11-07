@@ -145,9 +145,19 @@ export function decodeOffline(obs: Observation[], start: CubeState, end: CubeSta
   const bridged = options.bridge === false ? null : bridge(F, B, valid);
   if (bridged) return bridged;
   // それでもつながらない: 前向きの結果を、終わりの状態にたどり着くよう補う
-  const fixed = fwd.finish(end, lastT, 2);
+  const fixed = finishDeep(fwd, end, lastT);
   if (fixed) return { moves: fixed, method: "forward-finish", meetAt: -1, cost: fwd.costOffset, reachedEnd: true };
   return forwardBest();
+}
+
+// 前向きの有力な仮説から、終わりの状態に届く手を足す（2 手で届かなければ 3 手・4 手まで。足した手は inferred）。
+// 時間がかかってもよいので、つながらないまま結果を出さないより、見えなかった手を足して完成までつなぐ
+export function finishDeep(dec: MoveDecoder, end: CubeState, t: number): DecodedMove[] | null {
+  for (const depth of [2, 3, 4]) {
+    const r = dec.finish(end, t, depth, depth > 2 ? 4 : 6);
+    if (r) return r;
+  }
+  return null;
 }
 
 // ---- 隠れた区間の橋渡し ----
@@ -246,7 +256,7 @@ function tableOf(snap: Snapshot, top: number, reachOf: (s: Uint8Array) => Reach)
 // （以前は全観測の表を持ち続け、観測が数百あると数 GB になって iPhone でタブごと落ちた）。届く状態は状態ごとに覚えておく（直近の分だけ）。
 // 探すのは、まず前向きが観測と合わなくなった所と後ろ向きが合わなくなった所の間（隠れていた区間の前後）。見つからなければ残りを、
 // 時間の上限（BRIDGE_MS）まで
-const BRIDGE_MS = 4000;
+const BRIDGE_MS = 30000; // 時間がかかってもよい（結果を出すことを優先。表は直近の分だけなのでメモリは増えない）
 const LOST_COST = 3; // 観測の矛盾がこれ以上の観測が 3 つ続いたら見失っている
 
 function bridge(F: Snapshot[], B: Snapshot[], obs: Observation[]): OfflineResult | null {

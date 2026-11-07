@@ -496,8 +496,16 @@ class Controller {
     this.store.set({ analysis: null });
     await this.recorder.finish(to);
     this.feedAnalysis(session, to);
+    // 解析が途中で失敗した（Worker が落ちた・例外）ときのために、録画全体を取っておく（圧縮した映像のかたまりを指すだけ）
+    const backup = this.recorder.extract(session.from, to);
     this.recorder.clear(); // 渡し終えた録画は使わない（解析の Worker が自分の分を持っている）
-    const result = this.refiner.endStream(session.id, to, target, progress);
+    // 時間がかかっても結果は出す: 失敗したら、Worker を作り直して軽い設定で録画全体を最初から解析し直す
+    const result = this.refiner.endStream(session.id, to, target, progress).catch(async (e) => {
+      if (!backup) throw e;
+      console.warn("解析をやり直します", e);
+      this.refiner.close();
+      return this.refiner.run(backup, { ...session.input, to, light: true }, progress);
+    });
     this.liveResting = true;
     const rest = window.setTimeout(() => (this.liveResting = false), LIVE_REST_MAX_MS);
     // 終わったら解析の Worker を閉じてメモリを返す（次のインスペクションで作り直す）
