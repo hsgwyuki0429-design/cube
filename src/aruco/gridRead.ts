@@ -56,7 +56,11 @@ function codeTable(scheme: StickerScheme): Map<number, { id: number; rot: number
 // ステッカーの中の点（u, v: 0〜1、面の軸にそろえた向き）の、マスの中の面の座標
 const MODULES = 5; // 3×3 の符号 + 枠
 const SCALES = [0.92, 1, 1.08]; // 位置を合わせるときに試す大きさ（ステッカーの辺の倍率）
-const CLEAR = 0.2; // 符号のマスの明るさの thr からの差（明るい点と枠の差 = 1）がこれ以上ならはっきりしている
+const CLEAR = 0.2; // 符号のマスの明るさの thr からの差（明るい点と枠の差 = 1）がこれ以上ならはっきりしている（食い違いの判定）
+// 読めたマーカーの平均の明るさの thr からの差の下限。実物の動画（iPhone・1080p を 1280 に縮めた）で、0.12 → 0.08 と内側の点（0.22 → 0.15）で
+// 読めたマスが 77 → 108（検出で読めたマス 153 のうち）・違う ID 0。合成でも読めないマス 1660 → 709・違う ID 0
+const JOINT_CLEAR = 0.08;
+const SUB = 0.15; // 符号のマスの中で読む 2×2 点の、真ん中からのずれ（マス = 1。ぶれた縁の色を拾わないように内側）
 
 interface Layout {
   // 面の座標での点（マスの真ん中を原点、ステッカーの辺 = 1 にする前）: 各マーカーの 5×5 マスの中心、マーカーの間（ステッカーの色）
@@ -77,7 +81,7 @@ function layoutOf(design: StickerDesign): Layout {
         const u = ax - 0.5 + (j - 2) * m;
         const v = ay - 0.5 + (i - 2) * m;
         if (i === 0 || j === 0 || i === MODULES - 1 || j === MODULES - 1) border.push([u, v]);
-        else for (const dy of [-0.22, 0.22]) for (const dx of [-0.22, 0.22]) inner.push([u + dx * m, v + dy * m]);
+        else for (const dy of [-SUB, SUB]) for (const dx of [-SUB, SUB]) inner.push([u + dx * m, v + dy * m]);
       }
     const h = design.side / 2;
     squares.push([
@@ -236,17 +240,19 @@ export function gridReadCell(img: ImageLike, H: Mat3, cell: number, scheme: Stic
     bits.push(b);
   }
   if (!valid.some(Boolean)) return null;
-  // 符号のマスがはっきり明るい・暗いマーカー（どのマスも thr から CLEAR 以上離れている）だけで読む。マスの縁にかかった点
-  // （位置が半マスずれた・ぶれた）は thr の近くになり、2 ビットの読み違いで別の ID になっていた（距離 2 の符号がある）
-  let code = -1;
-  for (let k = 0; k < markers; k++) {
-    if (!valid[k] || !bits[k].every((v) => Math.abs(v) >= CLEAR)) continue;
-    let ck = 0;
-    for (let i = 0; i < 9; i++) if (bits[k][i] > 0) ck |= 1 << i;
-    if (code >= 0 && ck !== code) return null;
-    code = ck;
+  // 符号のマスごとに、読めたマーカーの明るさ（thr からの差）を平均して決める。どのマスも平均が JOINT_CLEAR 以上離れていること
+  // （マスの縁にかかった点・ぶれは thr の近くになり、2 ビットの読み違いで別の ID になる: 距離 2 の符号がある）。以前は 1 個の
+  // マーカーのどのマスも CLEAR 以上離れていることを求めていて、実物の動画（ぶれ・照明）では読めたはずのマスの 6 割を捨てていた
+  let code = 0;
+  let nValid = 0;
+  for (let k = 0; k < markers; k++) if (valid[k]) nValid++;
+  for (let i = 0; i < 9; i++) {
+    let sum = 0;
+    for (let k = 0; k < markers; k++) if (valid[k]) sum += bits[k][i];
+    const mean = sum / nValid;
+    if (Math.abs(mean) < JOINT_CLEAR) return null;
+    if (mean > 0) code |= 1 << i;
   }
-  if (code < 0) return null;
   // ほかの（はっきりしないマスのある）マーカーも、はっきりしたマスは食い違わないこと
   for (let k = 0; k < markers; k++) if (valid[k] && bits[k].some((v, i) => Math.abs(v) >= CLEAR && v > 0 !== ((code >> i) & 1) > 0)) return null;
   const hit = codeTable(scheme).get(code);
@@ -310,6 +316,36 @@ export function gridReadCell(img: ImageLike, H: Mat3, cell: number, scheme: Stic
   return { cell, id: hit.id, face: dec.face, sticker: dec.sticker, fit, markers: out, offset: [best.dx, best.dy] };
 }
 
+// 色の確かめ（同じフレームの色の仲間と比べる。src/aruco/cube.ts の frameColorFilter と同じ考え）: 写った色味（最大のチャンネルで
+// 割った RGB）が、読んだ ID の色の仲間よりほかの色の仲間にずっと近ければ読み違い（実物の動画で、白の面のマスを緑のステッカーと
+// 読んだことがあった）。照明で色がずれても同じ色のステッカーは同じようにずれるので、色そのものではなく仲間と比べる
+export type ColorRefs = Map<number, number[]>; // 面（色）→ 色味の中央値
+const chroma = (rgb: readonly number[]) => {
+  const m = Math.max(rgb[0], rgb[1], rgb[2], 1);
+  return [rgb[0] / m, rgb[1] / m, rgb[2] / m];
+};
+export function colorRefsOf(markers: Marker[], scheme: StickerScheme): ColorRefs {
+  const groups = new Map<number, number[][]>();
+  for (const m of markers) {
+    const d = decode(scheme, m.id);
+    if (!d) continue;
+    groups.set(d.face, [...(groups.get(d.face) ?? []), chroma(m.rgb)]);
+  }
+  const out: ColorRefs = new Map();
+  for (const [face, xs] of groups) if (xs.length >= 2) out.set(face, [0, 1, 2].map((k) => median(xs.map((x) => x[k]))));
+  return out;
+}
+export function colorFits(refs: ColorRefs | null, face: number, rgb: readonly number[]): boolean {
+  if (!refs?.size) return true;
+  const x = chroma(rgb);
+  const dist = (a: number[]) => Math.hypot(x[0] - a[0], x[1] - a[1], x[2] - a[2]);
+  const own = refs.get(face);
+  let other = Infinity;
+  for (const [f, r] of refs) if (f !== face) other = Math.min(other, dist(r));
+  if (!own) return other > 0.1;
+  return !(other < 0.15 && other < dist(own) * 0.5);
+}
+
 // 格子で読んだマスの読みの確からしさ（OpenCV で四角として見つけたマーカーより少し弱く）
 const GRID_CONF = 0.9;
 
@@ -335,6 +371,7 @@ export function stickerSide(f: VisibleFace, markers: Marker[], design: StickerDe
 // （次のフレームで追う・手の時刻のマーカーのずれに使う）。cells: 読むマス（slot * 9 + cell。省略時は読めなかったマス全部）
 export function gridReadFaces(img: ImageLike, faces: VisibleFace[], markers: Marker[], scheme: StickerScheme, design: StickerDesign, cells?: Set<number>): Marker[] {
   const out: Marker[] = [];
+  const refs = colorRefsOf(markers, scheme);
   for (const f of faces) {
     if (f.partial) continue;
     let S: number | null | undefined;
@@ -343,7 +380,7 @@ export function gridReadFaces(img: ImageLike, faces: VisibleFace[], markers: Mar
       if (S === undefined) S = stickerSide(f, markers, design);
       if (!S) break;
       const g = gridReadCell(img, cellH(f, cell), cell, scheme, design, S, DEFAULT_GRID, [0, 0], MEASURED);
-      if (!g) continue;
+      if (!g || !colorFits(refs, g.face, g.markers[0].rgb)) continue;
       f.colors[cell] = g.face;
       f.ids[cell] = g.sticker;
       f.conf[cell] = readConfidence(g.fit) * GRID_CONF;

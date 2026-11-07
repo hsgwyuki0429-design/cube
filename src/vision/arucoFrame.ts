@@ -5,7 +5,7 @@
 import { fillByColor, frameRefs, ringGeometry, skinFraction } from "../aruco/colorFill";
 import { IdTracker } from "../aruco/idTrack";
 import { type FacesResult, type VisibleFace, cellH, readConfidence, reconstructFaces, trustedColors, turnMarkers } from "../aruco/cube";
-import { DEFAULT_GRID, gridReadCell, gridReadFaces, stickerSide } from "../aruco/gridRead";
+import { DEFAULT_GRID, colorFits, colorRefsOf, gridReadCell, gridReadFaces, stickerSide } from "../aruco/gridRead";
 import { DEFAULT_TURN, type TurnResult, type TurnTrack, layerCells, projectedFace, recognizeTurn, unwrapTurn } from "../aruco/turn";
 import type { TurnSnapshot } from "../track/types";
 import type { Pose } from "./pose";
@@ -280,13 +280,15 @@ function readKnown(st: LiveState, img: PixelSource, scheme: StickerScheme, desig
   const markers: Marker[] = [];
   const offsets = new Map<number, Pt>();
   const used: FaceSpot[] = [];
+  // 色の仲間は前のフレームのマーカーから（このフレームはこれから読む）
+  const refs = colorRefsOf(st.markers, scheme);
   for (const [slot, k] of [...st.known].sort((a, b) => b[1].t - a[1].t)) {
     if (used.some((u) => sameFace(u, k.spot))) continue;
     used.push(k.spot);
     for (let cell = 0; cell < 9; cell++) {
       const key = slot * 9 + cell;
       const g = gridReadCell(img, cellH(k.face, cell), cell, scheme, design, k.side, CLIMB, st.offsets.get(key) ?? [0, 0], [1]);
-      if (!g) continue;
+      if (!g || !colorFits(refs, g.face, g.markers[0].rgb)) continue;
       mergeMarkers(markers, g.markers);
       offsets.set(key, g.offset);
     }

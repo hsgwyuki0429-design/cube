@@ -33,6 +33,7 @@ const LIVE: Record<string, Partial<PipelineConfig> & { decoder?: Partial<Decoder
   m05: { decoder: { priorWeight: 0, confirmMargin: 0.5 } },
   // 格子で読む（src/aruco/gridRead.ts）
   g: { arucoGrid: true, decoder: { priorWeight: 0, confirmMargin: 1 } },
+  gnf: { arucoGrid: true, arucoColorFill: false, decoder: { priorWeight: 0, confirmMargin: 1 } }, // 色で補わない
   notrack: { arucoTrack: false },
   noshrink: { arucoShrink: false },
   noregion: { arucoRegion: false },
