@@ -27,6 +27,7 @@ export interface GridOptions {
   climb?: boolean; // 予測した位置から山登りで合わせる（前のフレームの格子から追うとき。既定は範囲全体を 0.04 刻みで探す）
   minContrast: number; // 明るい点と黒い枠の差（max(R,G,B)）の下限
   minFit: number;
+  step?: number; // 範囲全体を探すときの刻み（既定 0.04）
 }
 
 export const DEFAULT_GRID: GridOptions = { reach: 0.12, minContrast: 35, minFit: 0.92 };
@@ -182,7 +183,7 @@ export function gridReadCell(img: ImageLike, H: Mat3, cell: number, scheme: Stic
       if (best === b0) break;
     }
   } else {
-    const step0 = 0.04;
+    const step0 = o.step ?? 0.04;
     for (const k of scales)
       for (let dy = -o.reach; dy <= o.reach + 1e-9; dy += step0)
         for (let dx = -o.reach; dx <= o.reach + 1e-9; dx += step0) {

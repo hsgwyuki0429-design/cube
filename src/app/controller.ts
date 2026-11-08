@@ -210,7 +210,7 @@ class Controller {
   // 残りは写らない面の手で、写らない手は回さない）
   liveEngineOptions(s: Settings = settingsStore.get()): Partial<EngineOptions> {
     return {
-      decoder: { ...searchOptions(s), priorWeight: 0, confirmMargin: 1 },
+      decoder: { ...searchOptions(s), priorWeight: 0, confirmMargin: 1, deepHyps: 4 },
       observer: observerOptions(s),
       // 見え方とはっきり合わなければ、見えている色に合う状態にその場で作り変え、そこから追跡をやり直す（src/track/snap.ts）。
       // スクランブル中は使わない（setLiveSnap。手順を追って案内するので、見えていない面の分からない作り変えは道筋を乱す）
