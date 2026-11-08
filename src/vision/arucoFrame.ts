@@ -244,6 +244,41 @@ function slotJump(memory: object, faces: VisibleFace[], t: number): boolean {
   });
 }
 
+// 同じステッカー（54 種類はマスごとに違う）が 1 フレームの 2 か所に読めることはない。2 つの面が同じステッカーを持っていたら、同じ面を
+// 2 つのスロットに割り当てている（実物のソルブで、上の段がずれた正面を正面と下の面の 2 つに組み立て、追跡が見失っていた）ので、
+// 読めたステッカーの少ない方（同じなら正面でない方）の面を捨てる。1 つの面の中で重なったら、そのマスはどちらも読めないことにする
+export function dedupeStickers(faces: VisibleFace[]): VisibleFace[] {
+  const count = (f: VisibleFace) => f.ids.filter((id) => id >= 0).length;
+  let out = faces;
+  for (;;) {
+    let drop: VisibleFace | null = null;
+    for (let i = 0; i < out.length && !drop; i++)
+      for (let j = i + 1; j < out.length && !drop; j++) {
+        const a = out[i];
+        const b = out[j];
+        if (!a.ids.some((id) => id >= 0 && b.ids.includes(id))) continue;
+        const ca = count(a);
+        const cb = count(b);
+        drop = ca !== cb ? (ca < cb ? a : b) : a.slot === 2 ? b : b.slot === 2 ? a : a.partial ? a : b;
+      }
+    if (!drop) break;
+    out = out.filter((f) => f !== drop);
+  }
+  for (const f of out)
+    for (let c = 0; c < 9; c++) {
+      const id = f.ids[c];
+      if (id < 0 || f.ids.indexOf(id) === f.ids.lastIndexOf(id)) continue;
+      for (let k = 0; k < 9; k++)
+        if (f.ids[k] === id && k !== c) {
+          f.ids[k] = -1;
+          f.colors[k] = -1;
+        }
+      f.ids[c] = -1;
+      f.colors[c] = -1;
+    }
+  return out;
+}
+
 // マーカーを足す（同じ ID で中心が近いものは後から足した方に置き換える）
 function mergeMarkers(base: Marker[], add: Marker[]): void {
   for (const m of add) {
@@ -458,6 +493,7 @@ export function processAruco(
     const bySlot = new Map(r.faces.map((f) => [f.slot, f]));
     tracker.update(t, r.faces, null, (slot, cell) => skinFraction(img, cellH(bySlot.get(slot)!, cell), cell) > 0.15);
   }
+  if (scheme === "unique54" && r.faces.length > 1) r = { ...r, faces: dedupeStickers(r.faces) };
   const turn = tr ? turnSnapshot(tr, t, memory) : undefined;
   const shifts = scheme === "unique54" ? r.faces.map((f) => cellShifts(f, markers, design)) : null;
   const quads: Pt[][] = markers.map((m) => cornerPoints(m.corners));

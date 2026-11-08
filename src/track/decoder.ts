@@ -14,7 +14,7 @@
 // 姿勢（24通り）を仮説に含め、ソフトな色コスト・下限による刈り込み・見失い検出と復帰を加えたもの。
 import { hashState } from "../cube/hash";
 import { MOVE_SRC, NUM_MOVES, NUM_ORIENTATIONS, VIEW, type CubeState, cubeFaceAt, moveFace, redundantAfter, statesEqual } from "../cube/model";
-import { stickerIdAt } from "../cube/stickers";
+import { stickerIdAt, stickerIds } from "../cube/stickers";
 import { type MovePrior, EMPTY_CONTEXT, movePrior, shiftContext } from "./prior";
 import type { DecodedMove, Observation, TrackStatus } from "./types";
 
@@ -195,6 +195,17 @@ interface CompiledObs {
   idCost: (Float32Array | undefined)[];
 }
 
+// 姿勢 o のときカメラの面 slot のマス cell に見える facelet の逆引き: (slot * 9 + cell) * 54 + facelet → o（センターのマスは使わない: -1）
+const ORIENT_AT = (() => {
+  const t = new Int8Array(54 * 54).fill(-1);
+  for (let o = 0; o < NUM_ORIENTATIONS; o++)
+    for (let slot = 0; slot < 6; slot++)
+      for (let cell = 0; cell < 9; cell++) if (cell !== 4) t[(slot * 9 + cell) * 54 + VIEW[(o * 6 + slot) * 9 + cell]] = o;
+  return t;
+})();
+const ID_ORIENT_HYPS = 4; // ID から姿勢を求める仮説の数（上位から）
+const ID_ORIENT_VOTES = 1.6; // 姿勢を候補に足すのに要る、その姿勢を示す読みの重みの和（読みの確からしさ 1 のステッカー 2 枚相当）
+
 // ずらした格子の読みを使うときの上乗せ（見つかった格子の位置を少しだけ優先する。1 手のコスト 1.0 より小さく）
 const ALT_PENALTY = 0.4;
 
@@ -323,10 +334,41 @@ export class MoveDecoder {
     // （中心以外のステッカーで持ち替えを判断できる余地は残しつつ、指で中心が隠れたときに探索が膨らまないように）
     let max = -Infinity;
     for (let o = 0; o < NUM_ORIENTATIONS; o++) max = Math.max(max, centerCost[o]);
-    if (max - min < 0.5) return [...new Set(this.beam.map((h) => h.orient))];
+    if (max - min < 0.5) return [...new Set([...this.beam.map((h) => h.orient), ...this.idOrientations(obs)])];
     const orients: number[] = [];
     for (let o = 0; o < NUM_ORIENTATIONS; o++) if (centerCost[o] <= min + 0.75) orients.push(o);
     return orients;
+  }
+
+  // 読んだステッカーの ID から、有力な仮説の状態で決まる姿勢（中心が見えないときの持ち替え）。センター以外のステッカーは、仮説の
+  // 状態での位置と、見えたカメラの面・マスから姿勢が 1 つに決まる。2 枚以上が同じ姿勢を示すものだけ（回した層のステッカーは外れる）。
+  // 実物のソルブで、正面 1 面だけが見えて真ん中が指で隠れたまま持ち替えると、いまの姿勢のまま手で説明して 12 秒見失っていた
+  private idOrientations(obs: Observation): number[] {
+    if (!obs.faces.some((f) => f.ids)) return [];
+    const votes = new Float32Array(NUM_ORIENTATIONS);
+    const seen = new Set<string>();
+    for (const h of this.beam.slice(0, ID_ORIENT_HYPS)) {
+      const key = String.fromCharCode(...h.state);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const ids = stickerIds(h.state);
+      const pos = new Int8Array(54);
+      for (let f = 0; f < 54; f++) pos[ids[f]] = f;
+      const v = new Float32Array(NUM_ORIENTATIONS);
+      for (const face of obs.faces) {
+        if (!face.ids) continue;
+        for (let cell = 0; cell < 9; cell++) {
+          const id: number = face.ids[cell];
+          if (cell === 4 || id < 0) continue;
+          const o = ORIENT_AT[(face.slot * 9 + cell) * 54 + pos[id]];
+          if (o >= 0) v[o] += face.idCost?.[cell] ?? 1;
+        }
+      }
+      for (let o = 0; o < NUM_ORIENTATIONS; o++) votes[o] = Math.max(votes[o], v[o]);
+    }
+    const out: number[] = [];
+    for (let o = 0; o < NUM_ORIENTATIONS; o++) if (votes[o] >= ID_ORIENT_VOTES) out.push(o);
+    return out;
   }
 
   private expand(beam: Hypothesis[], obs: Observation, depth: number, inferred: boolean): Hypothesis[] {
