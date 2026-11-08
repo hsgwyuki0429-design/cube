@@ -34,6 +34,7 @@ const LIVE: Record<string, Partial<PipelineConfig> & { decoder?: Partial<Decoder
   // 格子で読む（src/aruco/gridRead.ts）
   g: { arucoGrid: true, decoder: { priorWeight: 0, confirmMargin: 1 } },
   gnf: { arucoGrid: true, arucoColorFill: false, decoder: { priorWeight: 0, confirmMargin: 1 } }, // 色で補わない
+  gnfh: { arucoGrid: true, arucoColorFill: false, decoder: { priorWeight: 0, confirmMargin: 1, deepHyps: 4 } }, // 本体のライブ（3 手以上は上位 4 仮説だけ）
   notrack: { arucoTrack: false },
   noshrink: { arucoShrink: false },
   noregion: { arucoRegion: false },

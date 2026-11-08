@@ -37,6 +37,9 @@ export interface DecoderOptions {
   // 回転途中の形で見えた層の回転（Observation.turns）と合わない手の並びのコスト: 回した量が合わない / その軸の手がない
   turnCost: number;
   turnAxisCost: number;
+  // 3 手以上を探す仮説の数（コストの安い方から）。ライブは 4（controller.liveEngineOptions。処理の遅い端末で間が開くと観測の 3 割ほどで
+  // 3 手まで探し、32 仮説すべてを深くして 1 観測 20 万候補・デコーダが 1 フレームの半分を使っていた。実物の動画で一致は同じ・1 観測の評価 6.8 → 2.4 万）
+  deepHyps: number;
 }
 
 export const DEFAULT_DECODER: DecoderOptions = {
@@ -52,6 +55,7 @@ export const DEFAULT_DECODER: DecoderOptions = {
   priorWeight: 1,
   turnCost: 0.6,
   turnAxisCost: 0.4,
+  deepHyps: Infinity,
 };
 
 interface MoveNode {
@@ -490,7 +494,7 @@ export class MoveDecoder {
     let bestShallowObs = Infinity;
     for (const c of best.values()) if (c.obsCost < bestShallowObs) bestShallowObs = c.obsCost;
     const deepen = depth > shallow && bestShallowObs > this.options.deepenAbove;
-    for (const { h, i } of deepen ? order : []) {
+    for (const { h, i } of deepen ? order.slice(0, this.options.deepHyps) : []) {
       if (depth <= shallow || h.cost + (shallow + 1) * minMove >= top.threshold) continue;
       for (let d = 0; d <= shallow; d++) {
         fillLevel(h, d);

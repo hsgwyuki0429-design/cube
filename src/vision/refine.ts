@@ -9,7 +9,7 @@ import type { DecodedMove, TrackStatus } from "../track/types";
 import type { Lab } from "./color";
 import { type PatchFrame, facePatch, refineEnd, refineStart } from "./fineTiming";
 import type { CV, PixelSource } from "./image";
-import { DEFAULT_PIPELINE, type PipelineConfig, frameReading, processFrame } from "./pipeline";
+import { DEFAULT_PIPELINE, type FrameResult, type PipelineConfig, frameReading, processFrame } from "./pipeline";
 import { type FaceLayer, cellH } from "../aruco/cube";
 import type { Marker } from "../aruco/detect";
 import { type DetectHint, detectHint } from "./arucoFrame";
@@ -267,6 +267,9 @@ export class Refiner {
     return this.config;
   }
 
+  // 精密に処理したフレームの結果（調査用: tests/debug/realVideo.debug.test.ts）
+  onFrame?: (t: number, r: FrameResult) => void;
+
   // 次に検出するフレームの切り出し（別の Worker で検出するとき。最後に処理し終えたフレームのマーカーの範囲から）
   detectHint(img: PixelSource, t: number): DetectHint | null {
     return this.config.arucoRegion ? detectHint(this.memory, img, t) : null;
@@ -275,6 +278,7 @@ export class Refiner {
   // 精密に処理する。detected: 別の Worker で検出しておいたマーカー
   full(img: PixelSource, t: number, detected?: Marker[]): void {
     const r = processFrame(this.cv, img, t, this.config, this.memory, detected);
+    this.onFrame?.(t, r);
     // 基準: この格子で、処理に回したいちばん新しいフレームの色（1 か所で処理するときは、このフレーム）
     const latest = this.picked && this.picked.t > t ? this.picked.img : img;
     this.ref = signatureOf(latest, r.faces);

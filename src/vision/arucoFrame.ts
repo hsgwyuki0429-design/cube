@@ -5,7 +5,7 @@
 import { fillByColor, frameRefs, ringGeometry, skinFraction } from "../aruco/colorFill";
 import { IdTracker } from "../aruco/idTrack";
 import { type FacesResult, type VisibleFace, cellH, readConfidence, reconstructFaces, trustedColors, turnMarkers } from "../aruco/cube";
-import { DEFAULT_GRID, colorFits, colorRefsOf, gridReadCell, gridReadFaces, stickerSide } from "../aruco/gridRead";
+import { DEFAULT_GRID, type GridRead, colorFits, colorRefsOf, gridReadCell, gridReadFaces, stickerSide } from "../aruco/gridRead";
 import { DEFAULT_TURN, type TurnResult, type TurnTrack, layerCells, projectedFace, recognizeTurn, unwrapTurn } from "../aruco/turn";
 import type { TurnSnapshot } from "../track/types";
 import type { Pose } from "./pose";
@@ -311,7 +311,12 @@ function rememberLive(memory: object, st: LiveState | undefined, img: PixelSourc
 }
 
 // 最近見えていた面の格子で、各マスを読む（新しい方から。前に読んだ面と重なる面は読まない）
-function readKnown(st: LiveState, img: PixelSource, scheme: StickerScheme, design: StickerDesign): { markers: Marker[]; offsets: Map<number, Pt> } {
+// 前のフレームから間が開いた（処理の遅い端末でフレームを捨てた）ときは、キューブが格子の山登りの範囲（0.12 マス）より大きく動いている。
+// 面ごとに、まず 1 マスを広く粗く（±0.6 マスを 0.1 刻み）探して面全体のずれを決め、ほかのマスはそのずれから山登りする。実物のソルブで
+// 実機のようにフレームを捨てると（1 秒 6 枚ほど）格子で追えたフレームが 1/159 になり、毎回キューブ全体を検出して 1 フレーム 54ms かかっていた
+const WIDE_GAP_MS = 60;
+const WIDE = { ...DEFAULT_GRID, reach: 0.6, step: 0.1 };
+function readKnown(st: LiveState, img: PixelSource, t: number, scheme: StickerScheme, design: StickerDesign): { markers: Marker[]; offsets: Map<number, Pt> } {
   const markers: Marker[] = [];
   const offsets = new Map<number, Pt>();
   const used: FaceSpot[] = [];
@@ -320,9 +325,24 @@ function readKnown(st: LiveState, img: PixelSource, scheme: StickerScheme, desig
   for (const [slot, k] of [...st.known].sort((a, b) => b[1].t - a[1].t)) {
     if (used.some((u) => sameFace(u, k.spot))) continue;
     used.push(k.spot);
+    // 面全体のずれ（間が開いたときだけ）: 前のフレームで読めたマスから順に、広く探して読めた最初のマスのずれ
+    let shift: Pt = [0, 0];
+    const first = new Map<number, GridRead>();
+    if (t - st.t > WIDE_GAP_MS) {
+      const order = [...Array(9).keys()].sort((a, b) => (st.offsets.has(slot * 9 + b) ? 1 : 0) - (st.offsets.has(slot * 9 + a) ? 1 : 0));
+      for (const cell of order.slice(0, 3)) {
+        const prior = st.offsets.get(slot * 9 + cell) ?? [0, 0];
+        const g = gridReadCell(img, cellH(k.face, cell), cell, scheme, design, k.side, WIDE, prior, [1]);
+        if (!g) continue;
+        shift = [g.offset[0] - prior[0], g.offset[1] - prior[1]];
+        first.set(cell, g);
+        break;
+      }
+    }
     for (let cell = 0; cell < 9; cell++) {
       const key = slot * 9 + cell;
-      const g = gridReadCell(img, cellH(k.face, cell), cell, scheme, design, k.side, CLIMB, st.offsets.get(key) ?? [0, 0], [1]);
+      const p = st.offsets.get(key) ?? [0, 0];
+      const g = first.get(cell) ?? gridReadCell(img, cellH(k.face, cell), cell, scheme, design, k.side, CLIMB, [p[0] + shift[0], p[1] + shift[1]], [1]);
       if (!g || !colorFits(refs, g.face, g.markers[0].rgb)) continue;
       mergeMarkers(markers, g.markers);
       offsets.set(key, g.offset);
@@ -372,7 +392,7 @@ function liveMarkers(
     }
   }
   if (canTrack && grid && st.known.size) {
-    const { markers, offsets } = readKnown(st, img, scheme, design);
+    const { markers, offsets } = readKnown(st, img, t, scheme, design);
     if (markers.length >= TRACK_MIN) {
       let faces = build(markers);
       // 戻らない面: その面のあった範囲だけ検出する。面の割り当てが変わった（正面が読めず、残りの面が正面とみなされた）ときはすぐ、

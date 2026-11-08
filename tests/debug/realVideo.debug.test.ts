@@ -6,10 +6,13 @@
 //   REAL_TRUTH="正解の手順"（あれば照合）・REAL_FROM/REAL_TO（秒）・REAL_END=solved（最後は揃った状態。T-perm 2 回など）・
 //   REAL_K=4（実機のライブのように、処理している間（Node の処理時間 × K）に来たフレームは捨て、空いたら待っている 3 枚のうち動きのいちばん
 //     小さいものを処理する: vision.worker.ts の pickFrame。省略時は全フレーム）・
+//   REAL_FPS=6（1 秒 6 枚に固定して処理する。処理時間によらないので、設定を比べるときにぶれない）・REAL_LIVE_DEC='{"beamWidth":16}'（ライブのデコーダ）・
+//   REAL_PROFILE=1（ライブが処理したフレームで関数ごとの時間）・
 //   REAL_DUMP=1（フレームごとの読み・合わない観測・作り変え）・REAL_REFINE=0（精密解析を省く）・REAL_SAVE=フォルダ（REAL_SAVE_AT 秒の
 //   フレームを PNG で）・REAL_REFINE_CFG='{"arucoColorFill":false}' など（精密解析の認識の設定を上書き）・REAL_LIVE='{"arucoColorFill":true}' など（ライブの認識の設定を上書き）・
 //   REAL_REFINE_GATE=0（精密解析の軽い検査で飛ばさない）・REAL_REFINE_ENGINE='{"decoder":{"priorWeight":0}}' など（精密解析の追跡の設定）
 //   REAL_REF=ファイル（精密解析の結果を書き出す。REAL_REFINE=0 なら読み込んで、ライブの一致だけ測る: ライブを直して何度も測るとき）
+// 精密解析の追跡の設定は本体と同じ（controller.engineOptions: ARUCO_OBSERVER・候補 32・3 手）。
 // 精密解析が完成までつながったら、その手順と時刻を本当の動きとみなして、ライブが 3D に出した状態が本当の状態と同じだった時間の割合を出す
 // （手を回している間とその後 300ms は数えない）
 import { spawn, spawnSync } from "node:child_process";
@@ -20,7 +23,7 @@ import { ARUCO_REFS } from "../../src/aruco/palette";
 import { MOVE_NAMES, VIEW, applyMove, applyMoves, inverseMove, isSolved, parseMoves, solvedState, statesEqual } from "../../src/cube/model";
 import { mostLikelyState } from "../../src/cube/pattern";
 import { PARTNERS, stickerIds } from "../../src/cube/stickers";
-import { MoveDecoder } from "../../src/track/decoder";
+import { MoveDecoder, observationCost } from "../../src/track/decoder";
 import { TrackerEngine } from "../../src/track/engine";
 import { simplifyMoves } from "../../src/track/merge";
 import { ARUCO_OBSERVER } from "../../src/track/observer";
@@ -30,6 +33,7 @@ import { type FrameResult, frameReading, processFrame } from "../../src/vision/p
 import { type RefineResult, Refiner } from "../../src/vision/refine";
 import { loadTestOpenCv } from "../cv";
 import { writePng } from "./png";
+import { profile, summarize } from "./prof";
 
 const LONG = 1280;
 const SETTLE_MS = 300; // 手を回し終えてから、ライブが追いつくのを待つ時間（一致の割合で数えない）
@@ -170,12 +174,26 @@ it("実際のプレイ動画", async () => {
     }
     return { st, k };
   };
-  const live = new TrackerEngine(start, ARUCO_REFS, { observer: ARUCO_OBSERVER, decoder: { priorWeight: 0, confirmMargin: 1 }, snapToView: true });
+  // REAL_LIVE_DEC='{"beamWidth":16}' など: ライブの追跡のデコーダの設定を上書き
+  const liveDec = { priorWeight: 0, confirmMargin: 1, deepHyps: 4, ...JSON.parse(process.env.REAL_LIVE_DEC ?? "{}") };
+  const live = new TrackerEngine(start, ARUCO_REFS, { observer: ARUCO_OBSERVER, decoder: liveDec, snapToView: true });
   const liveMemory = {};
-  const refiner = process.env.REAL_REFINE === "0" ? null : new Refiner(cv as never, { state: Array.from(start), refs: ARUCO_REFS, from: from * 1000, to: to * 1000, ...(process.env.REAL_REFINE_GATE === "0" ? { gate: false } : {}), ...(process.env.REAL_REFINE_ENGINE ? { engine: JSON.parse(process.env.REAL_REFINE_ENGINE) } : {}), pipeline: { ...STICKERS, ...JSON.parse(process.env.REAL_REFINE_CFG ?? "{}") } });
+  const refiner = process.env.REAL_REFINE === "0" ? null : new Refiner(cv as never, { state: Array.from(start), refs: ARUCO_REFS, from: from * 1000, to: to * 1000, ...(process.env.REAL_REFINE_GATE === "0" ? { gate: false } : {}), engine: { observer: ARUCO_OBSERVER, ...JSON.parse(process.env.REAL_REFINE_ENGINE ?? "{}"), decoder: { beamWidth: 32, maxMovesPerStep: 3, rotationCost: 1.5, ...JSON.parse(process.env.REAL_REFINE_ENGINE ?? "{}").decoder } }, pipeline: { ...STICKERS, ...JSON.parse(process.env.REAL_REFINE_CFG ?? "{}") } });
+  // REAL_RFRAMES=22.1-23.0: 精密解析が精密に処理したフレームの面
+  if (refiner && process.env.REAL_RFRAMES) {
+    const [f0, f1] = process.env.REAL_RFRAMES.split("-").map((x) => Number(x) * 1000);
+    refiner.onFrame = (t, r: FrameResult) => {
+      if (t >= f0 && t <= f1) process.stdout.write(`F ${(t / 1000).toFixed(3)} ${r.faces.map((f) => `${f.slot}:${f.valid.map((v, c) => (!v ? "." : (f.ids?.[c] ?? -1) >= 0 ? f.ids![c] : `*${"URFDLB"[ARUCO_REFS.findIndex((x) => x.every((y, k) => Math.abs(y - f.labs[c][k]) < 1e-6))]}`)).join(",")}`).join(" ")}\n`);
+    };
+  }
   Object.assign(liveStats, { tracked: 0, gridded: 0, partial: 0, detected: 0, last: "" });
   const K = Number(process.env.REAL_K ?? 0);
+  // REAL_FPS=6: 1 秒 N 枚に固定して処理する（処理時間によらないので、設定を比べるときに結果がぶれない）。待っている 3 枚のうち動きのいちばん小さいもの
+  const FIX = Number(process.env.REAL_FPS ?? 0);
   let liveMs = 0;
+  let trackMs = 0;
+  let evals = 0;
+  let obsN = 0;
   let refineMs = 0;
   let frames = 0;
   let processed = 0;
@@ -188,14 +206,23 @@ it("実際のプレイ動画", async () => {
   let lastBase = 0;
   const saveAt = Number(process.env.REAL_SAVE_AT ?? -1);
   const dump = !!process.env.REAL_DUMP;
+  const picked: { img: Img; t: number }[] = [];
   const liveFrame = (img: Img, t: number) => {
+    if (process.env.REAL_PROFILE && picked.length < 120) picked.push({ img, t });
     const a = performance.now();
     const r = processFrame(cv as never, img, t, liveCfg, liveMemory);
+    const a2 = performance.now();
     const u = live.push(frameReading(t, r));
+    trackMs += performance.now() - a2;
+    if (u) {
+      evals += live.decoder.lastExpanded;
+      obsN++;
+    }
     const spent = performance.now() - a;
     liveMs += spent;
     processed++;
-    if (K) busyUntil = t + spent * K;
+    if (FIX) busyUntil = t + 1000 / FIX - 1;
+    else if (K) busyUntil = t + spent * K;
     faces.push(r.faces.length);
     cells.push(r.faces.reduce((n, f) => n + f.valid.filter(Boolean).length, 0));
     const best = live.decoder.best();
@@ -222,7 +249,7 @@ it("実際のプレイ動画", async () => {
   await readFrames((img, t) => {
     if (process.env.REAL_SAVE && Math.abs(t / 1000 - saveAt) < 0.009) writePng(`${process.env.REAL_SAVE}/frame-${saveAt}.png`, img);
     frames++;
-    if (!K) liveFrame(img, t);
+    if (!K && !FIX) liveFrame(img, t);
     else {
       // 実機のように: 結果の来ていないフレームは 3 枚まで（visionClient の MAX_INFLIGHT）。空いたら動きのいちばん小さいもの
       const th = thumb(img);
@@ -246,12 +273,37 @@ it("実際のプレイ動画", async () => {
       }
     }
   });
+  // REAL_PROFILE=1: ライブが処理したフレーム（120 枚まで）を、もう一度ライブの認識に通して関数ごとの時間を出す
+  if (process.env.REAL_PROFILE && picked.length) {
+    const mem = {};
+    const eng = new TrackerEngine(start, ARUCO_REFS, { observer: ARUCO_OBSERVER, decoder: liveDec, snapToView: true });
+    const { nodes, interval } = await profile(() => {
+      for (const p of picked) eng.push(frameReading(p.t, processFrame(cv as never, p.img, p.t, liveCfg, mem)));
+    });
+    console.log(summarize(nodes, interval, picked.length, 30));
+  }
   const liveMoves = simplifyMoves(live.decoder.bestMoves()).map((m) => MOVE_NAMES[m.move]).join(" ");
   const shown = live.view?.state ?? live.decoder.best().state;
   out.push(`動画 ${file}: ${sw}×${sh} → ${W}×${H}・${frames} フレーム（ライブが処理したのは ${processed}・1 秒 ${((processed / (frames || 1)) * 60).toFixed(1)} 枚相当）`);
   out.push(`面が組み立てられたフレーム ${faces.filter((n) => n > 0).length}/${processed}・平均 ${(faces.reduce((a, b) => a + b, 0) / processed).toFixed(2)} 面・読めたマス 平均 ${(cells.reduce((a, b) => a + b, 0) / processed).toFixed(1)}`);
-  out.push(`ライブ ${(liveMs / processed).toFixed(1)}ms/フレーム（格子 ${liveStats.gridded}・範囲の検出 ${liveStats.partial}・検出 ${liveStats.detected}）・${live.decoder.status}`);
+  out.push(`ライブ ${(liveMs / processed).toFixed(1)}ms/フレーム（追跡 ${(trackMs / processed).toFixed(1)}ms・観測 ${obsN}・1 観測の評価 ${(evals / Math.max(1, obsN)).toFixed(0)}・格子 ${liveStats.gridded}・範囲の検出 ${liveStats.partial}・検出 ${liveStats.detected}）・${live.decoder.status}`);
   out.push(`ライブの手順 ${liveMoves || "（なし）"}・最後に 3D に出した状態 ${isSolved(Uint8Array.from(shown)) ? "揃っている" : "揃っていない"}（作り変えた仮説 ${live.base ? `${live.base.n} 回目から` : "なし"}）`);
+  // REAL_OBSCHECK=22.0-23.2: 精密解析の観測を、ライブの手順（時刻つき）の状態と照らす（どの観測がライブの手順と合わないか）
+  if (refiner && process.env.REAL_OBSCHECK) {
+    const [c0, c1] = process.env.REAL_OBSCHECK.split("-").map((x) => Number(x) * 1000);
+    const lm = live.decoder.bestMoves();
+    for (const o of refiner.engine.observationLog) {
+      if (o.t < c0 || o.t > c1) continue;
+      let st: Uint8Array = Uint8Array.from(start);
+      for (const m of lm) if (m.t <= o.t) st = applyMove(st, m.move);
+      let best = { c: Infinity, o: -1 };
+      for (let k = 0; k < 24; k++) {
+        const c = observationCost(st, k, o);
+        if (c < best.c) best = { c, o: k };
+      }
+      process.stdout.write(`O ${(o.t / 1000).toFixed(3)} ライブの状態で ${best.c.toFixed(1)}（姿勢 ${best.o}） ${o.faces.map((f) => `${f.slot}:${Array.from(f.ids ?? f.labels).map((x) => (x < 0 ? "." : x)).join(",")}`).join(" ")}\n`);
+    }
+  }
   if (refiner || cached) {
     const r0 = performance.now();
     const end = process.env.REAL_END === "solved" ? solvedState() : process.env.REAL_END === "none" ? null : isSolved(Uint8Array.from(shown)) ? solvedState() : null;
