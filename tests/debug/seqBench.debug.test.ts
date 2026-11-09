@@ -12,7 +12,7 @@ import { MOVE_NAMES, type Vec3, applyMoves, parseMoves, solvedState, statesEqual
 import { TrackerEngine } from "../../src/track/engine";
 import type { DecoderOptions } from "../../src/track/decoder";
 import { simplifyMoves } from "../../src/track/merge";
-import { ARUCO_OBSERVER } from "../../src/track/observer";
+import { ARUCO_OBSERVER, LIVE_OBSERVER, type ObserverOptions } from "../../src/track/observer";
 import { cellInLayer, layerAtRest } from "../../src/track/timing";
 import { StillSkipper } from "../../src/vision/motion";
 import { liveStats } from "../../src/vision/arucoFrame";
@@ -25,8 +25,10 @@ import type { Finger } from "../render";
 const LIVE_BASE: PipelineConfig = { ...STICKERS, arucoRegion: true, arucoTrack: true }; // src/app/controller.ts の pipelineConfig と同じ（精密解析にも使う）
 const LIVE_ONLY: Partial<PipelineConfig> = { arucoTurn: false }; // ライブだけ（controller.liveConfig）
 // decoder: 追跡のデコーダの設定（認識の設定ではない）
-const LIVE: Record<string, Partial<PipelineConfig> & { decoder?: Partial<DecoderOptions> }> = {
+const LIVE: Record<string, Partial<PipelineConfig> & { decoder?: Partial<DecoderOptions>; observer?: Partial<ObserverOptions> }> = {
   base: {},
+  // 本体のライブ（controller.liveConfig・liveEngineOptions: 読めた ID を強く信じる・1 フレームでも観測・5 手まで深く探す）
+  live: { arucoGrid: true, arucoColorFill: false, decoder: { priorWeight: 0, confirmMargin: 1, deepHyps: 4, bridgeDepth: 5 }, observer: LIVE_OBSERVER },
   noprior: { decoder: { priorWeight: 0 } }, // 手順の知識を使わない（本体のライブ: controller.liveEngineOptions）
   m15: { decoder: { priorWeight: 0, confirmMargin: 1.5 } }, // 確定を緩める（有力な仮説とみなすコスト差）
   m1: { decoder: { priorWeight: 0, confirmMargin: 1 } },
@@ -34,7 +36,7 @@ const LIVE: Record<string, Partial<PipelineConfig> & { decoder?: Partial<Decoder
   // 格子で読む（src/aruco/gridRead.ts）
   g: { arucoGrid: true, decoder: { priorWeight: 0, confirmMargin: 1 } },
   gnf: { arucoGrid: true, arucoColorFill: false, decoder: { priorWeight: 0, confirmMargin: 1 } }, // 色で補わない
-  gnfh: { arucoGrid: true, arucoColorFill: false, decoder: { priorWeight: 0, confirmMargin: 1, deepHyps: 4 } }, // 本体のライブ（3 手以上は上位 4 仮説だけ）
+  gnfh: { arucoGrid: true, arucoColorFill: false, decoder: { priorWeight: 0, confirmMargin: 1, deepHyps: 4 } }, // 以前のライブ（3 手以上は上位 4 仮説だけ）
   notrack: { arucoTrack: false },
   noshrink: { arucoShrink: false },
   noregion: { arucoRegion: false },
@@ -158,9 +160,9 @@ it("手順の総合評価", async () => {
       select: !!name.split("@")[1]?.endsWith("s"),
       pending: [] as { img: { data: Uint8ClampedArray; width: number; height: number }; t: number; motion: number }[],
       every: name.split("@")[1]?.startsWith("f") ? 1000 / Number(name.split("@")[1].slice(1).replace(/s$/, "")) : 0,
-      cfg: { ...LIVE_BASE, ...LIVE_ONLY, ...LIVE[name.split("@")[0]] },
+      cfg: { ...LIVE_BASE, ...LIVE_ONLY, ...LIVE[name.split("@")[0]], decoder: undefined, observer: undefined } as PipelineConfig,
       memory: {},
-      engine: new TrackerEngine(solvedState(), ARUCO_REFS, { observer: ARUCO_OBSERVER, decoder: LIVE[name.split("@")[0]].decoder ?? {}, snapToView: !!process.env.SNAP }),
+      engine: new TrackerEngine(solvedState(), ARUCO_REFS, { observer: { ...ARUCO_OBSERVER, ...LIVE[name.split("@")[0]].observer }, decoder: LIVE[name.split("@")[0]].decoder ?? {}, snapToView: !!process.env.SNAP }),
       ms: 0,
       busyUntil: -Infinity,
       processed: 0,

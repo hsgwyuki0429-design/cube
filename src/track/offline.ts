@@ -35,6 +35,10 @@ interface Snapshot {
   hyps: Hypothesis[];
   offset: number;
 }
+const NO_SNAPSHOT: Snapshot = { hyps: [], offset: Infinity }; // 後ろ向きを打ち切った先の観測
+// 後ろ向きの打ち切り: 前向き・後ろ向きの一番安い仮説のコストの和が、見つかっているつなぎ方のコストをこれだけ超えたら
+// （観測 10 個分ほどの見失い。1 マスの矛盾 1.5・見失った観測は 3 以上）
+const STOP_MARGIN = 30;
 
 function listOf(h: Hypothesis): DecodedMove[] {
   const out: DecodedMove[] = [];
@@ -110,15 +114,14 @@ export function decodeOffline(obs: Observation[], start: CubeState, end: CubeSta
   const bwd = new MoveDecoder(end, options.decoder);
   bwd.prior = fwd.prior;
   const rev = reversedObservations(valid, lastT);
-  const B: Snapshot[] = new Array(valid.length);
-  rev.forEach((o, j) => {
-    bwd.observe(o);
-    B[valid.length - 1 - j] = { hyps: [...bwd.hypotheses()], offset: bwd.costOffset };
-  });
-
-  // つなぐ: 観測 k の時点で同じ状態・姿勢の仮説（観測 k のコストは両方に入っているので 1 回引く）
+  const B: Snapshot[] = new Array(valid.length).fill(NO_SNAPSHOT);
+  // 後ろ向きに 1 観測ずつ進めながらつなぐ: 観測 k の時点で同じ状態・姿勢の仮説（観測 k のコストは両方に入っているので 1 回引く）。
+  // 合計のコストが最小の所（同じなら早い観測）
   let best: { cost: number; k: number; f: Hypothesis; b: Hypothesis } | null = null;
-  for (let k = 0; k < valid.length; k++) {
+  for (let j = 0; j < rev.length; j++) {
+    const k = valid.length - 1 - j;
+    bwd.observe(rev[j]);
+    B[k] = { hyps: [...bwd.hypotheses()], offset: bwd.costOffset };
     const fm = new Map<string, Hypothesis>();
     for (const h of F[k].hyps) {
       const kk = key(h);
@@ -129,8 +132,12 @@ export function decodeOffline(obs: Observation[], start: CubeState, end: CubeSta
       const f = fm.get(key(b));
       if (!f) continue;
       const cost = f.cost + F[k].offset + b.cost + B[k].offset - f.obsCost;
-      if (!best || cost < best.cost) best = { cost, k, f, b };
+      if (!best || cost < best.cost || (cost === best.cost && k < best.k)) best = { cost, k, f, b };
     }
+    // つながる所が見つかっていて、ここでつないでもそれよりずっと高くつく（後ろ向きが見失っている）なら、後ろ向きを打ち切る。
+    // 見失った後ろ向きは観測ごとに矛盾を払い続け、候補も深く探すので遅い: 実物のソルブ（観測 309）で、後ろ向きは終わりの 60 観測の
+    // 後ずっと見失ったまま残りの 250 観測を探していた（解き直しの時間のほとんど）
+    if (best && F[k].offset + B[k].offset > best.cost + STOP_MARGIN) break;
   }
   if (best) {
     const head = listOf(best.f);

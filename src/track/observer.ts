@@ -33,10 +33,20 @@ export interface ObserverOptions {
   mergeSlots?: boolean;
   singleFrameWeight: number; // 1フレームだけの観測の重み（1枚の誤読が1手分のコストを超えないように）
   idMismatchCost?: number; // 色は合うのに読んだステッカーと違うときのコスト（既定 1.0。1 手のコストと同じ）
+  idBoost?: number; // ステッカーの ID が読めたマスの矛盾のコストの倍率（既定 1）
 }
 
 // ArUco ステッカー: 読めたマスの色は ID から確定するので、少ないマスでも観測に入れる（ライブと精密解析で同じ）
 export const ARUCO_OBSERVER: Partial<ObserverOptions> = { minKnown: 2, minSideKnown: 1, mergeSlots: true };
+
+// ライブの観測（controller.liveEngineOptions）: 読めたステッカーの ID を強く信じ、1 フレームでも観測にする。
+//   idBoost: ID の読みはほとんど間違えない（実物・合成とも違う ID に読んだマスは 0）のに、色を読んでいた頃のまま「1 マスの矛盾 1.5・
+//     1 フレームだけなら 0.6 倍」だと、矛盾 1 マス（0.9）が 1 手（1.0）より安く、手を足す代わりに誤読として片付けていた。実物のソルブで
+//     面の割り当てが 1 フレームだけ入れ替わった（上の面を正面と読んだ）とき、真ん中のステッカーの食い違いを誤読として残りを違う手で
+//     説明し、そのまま外れていった。2 倍にすると、実物の動画 3 本 × 1 秒 6〜20 枚で 3D が本当の状態と同じだった時間が 65 → 76%
+//   stableFrames: 60fps をすべて処理できるときも 2 枚続くのを待たない（速い手順では層が止まって読めるのは 1 枚。実物の速い T-perm を
+//     全フレームで 30 → 90%）
+export const LIVE_OBSERVER: Partial<ObserverOptions> = { idBoost: 2, stableFrames: 1 };
 
 export const DEFAULT_OBSERVER: ObserverOptions = {
   stableMs: 33,
@@ -171,6 +181,11 @@ export class FaceObserver {
             if (id >= 0 && Math.floor(id / 9) === labels[cell]) ids[cell] = id;
           }
           if (ids[cell] >= 0) idCost[cell] = (this.options.idMismatchCost ?? 1) * Math.min(1, wmean);
+          const boost = this.options.idBoost ?? 1;
+          if (ids[cell] >= 0 && boost !== 1) {
+            for (let c = 0; c < 6; c++) cost[cell * 6 + c] *= boost;
+            idCost[cell] *= boost;
+          }
         }
       }
       if (known >= (this.options.minSideKnown ?? 3) || f.slot === 2) {

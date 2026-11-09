@@ -40,6 +40,11 @@ export interface DecoderOptions {
   // 3 手以上を探す仮説の数（コストの安い方から）。ライブは 4（controller.liveEngineOptions。処理の遅い端末で間が開くと観測の 3 割ほどで
   // 3 手まで探し、32 仮説すべてを深くして 1 観測 20 万候補・デコーダが 1 フレームの半分を使っていた。実物の動画で一致は同じ・1 観測の評価 6.8 → 2.4 万）
   deepHyps: number;
+  // 読んだステッカーの ID から出る下限で、手順の木の節点を評価せずに捨てる（下の「読んだステッカーの ID による枝刈り」。結果は同じで
+  // 速い。false は確かめ用: tests/decoder.test.ts）
+  idPrune: boolean;
+  // 読んだステッカーを手がかりに、maxMovesPerStep より深くこの手数まで探す（0 で探さない。下の「深く探す」）
+  bridgeDepth: number;
 }
 
 export const DEFAULT_DECODER: DecoderOptions = {
@@ -56,6 +61,8 @@ export const DEFAULT_DECODER: DecoderOptions = {
   turnCost: 0.6,
   turnAxisCost: 0.4,
   deepHyps: Infinity,
+  idPrune: true,
+  bridgeDepth: 0,
 };
 
 interface MoveNode {
@@ -94,6 +101,7 @@ interface SeqTree {
   move: Int8Array; // 最後の手
   parent: Int32Array; // 1手短い親の番号（深さ0は -1）
   levelStart: number[]; // levelStart[d] .. levelStart[d+1]-1 が深さ d
+  firstChild: Int32Array; // 子を持つ節点 p の子は firstChild[p] .. firstChild[p+1]-1（親の順に続けて並んでいる）
 }
 const treeCache = new Map<number, SeqTree>();
 function sequenceTree(depth: number): SeqTree {
@@ -102,11 +110,13 @@ function sequenceTree(depth: number): SeqTree {
   const move: number[] = [-1];
   const parent: number[] = [-1];
   const levelStart = [0, 1];
+  const firstChild: number[] = [];
   for (let d = 1; d <= depth; d++) {
     const from = levelStart[d - 1];
     const to = levelStart[d];
     for (let p = from; p < to; p++) {
       const last = move[p];
+      firstChild.push(move.length);
       for (let m = 0; m < NUM_MOVES; m++) {
         if (redundantAfter(last, m)) continue;
         move.push(m);
@@ -115,7 +125,8 @@ function sequenceTree(depth: number): SeqTree {
     }
     levelStart.push(move.length);
   }
-  t = { move: Int8Array.from(move), parent: Int32Array.from(parent), levelStart };
+  firstChild.push(move.length);
+  t = { move: Int8Array.from(move), parent: Int32Array.from(parent), levelStart, firstChild: Int32Array.from(firstChild) };
   treeCache.set(depth, t);
   return t;
 }
@@ -131,6 +142,7 @@ function stateBuffers(tree: SeqTree): Uint8Array[] {
     const all = new Uint8Array(n * 54);
     b = new Array(n);
     for (let i = 0; i < n; i++) b[i] = all.subarray(i * 54, i * 54 + 54);
+    stampCache.set(b, new Uint32Array(n));
     // 深さ 4（4.8 万節点・入れ物 3MB ほど）までは覚えておく。それより大きい木は使うときだけ（覚えると居座る）
     if (n <= 60000) bufferCache.set(tree, b);
   }
@@ -174,6 +186,107 @@ function treeTurns(tree: SeqTree): TreeTurns {
 export function turnConsistent(seen: number, net: number): boolean {
   if (seen === 1 || seen === 3) return net === seen || net === 2;
   return net === seen;
+}
+
+// ---- 読んだステッカーの ID による枝刈り ----
+// マスごとに違うステッカー（ArUco unique54）が読めた観測では、「このマスにはこのステッカーがある」と分かっている。手順の木の節点 p の
+// 子（p にもう 1 手 m）それぞれについて、その手で合うようになる・合ったままの読みを数えれば、子の状態を作らずに観測のコストの下限が出る
+// （合わない読みは、色の矛盾かステッカーの矛盾のどちらかを必ず払う）。下限がしきい値を超える子は評価しない。捨てるのはどのみち
+// しきい値を超える候補だけなので、結果は変わらない。手順の木の最後の段（節点の 9 割）のほとんどが状態を作らずに済む
+// MOVE_DST[m][a]: facelet a にあるステッカーが手 m で移る先
+const MOVE_DST: Uint8Array[] = MOVE_SRC.map((src) => {
+  const d = new Uint8Array(54);
+  for (let i = 0; i < 54; i++) d[src[i]] = i;
+  return d;
+});
+// REACH1[a * 54 + b]: a にあるステッカーを 1 手で b に置く手のビット（a === b なら、そのステッカーを動かさない手）
+const REACH1 = (() => {
+  const t = new Int32Array(54 * 54);
+  for (let a = 0; a < 54; a++) for (let m = 0; m < NUM_MOVES; m++) t[a * 54 + MOVE_DST[m][a]] |= 1 << m;
+  return t;
+})();
+// 深く探すとき用: NOT_FIRST[j - 1][a * 54 + b] = a にあるステッカーを j 手以内で b に置く手順の「最初の手」になれない手のビット
+// （j = 1〜4。どのステッカーも同じ種類の場所へ 3 手以内で届くので、5 手以上は 4 手と同じ）。ステッカー 1 枚ずつで見た条件なので、
+// 「読んだステッカーをすべて合わせる手順」の最初の手はこれより少ない（下限として使う）
+const NOT_FIRST: Int32Array[] = (() => {
+  const all = (1 << NUM_MOVES) - 1;
+  let reach = new Uint8Array(54 * 54); // j - 1 手以内で届くか
+  for (let a = 0; a < 54; a++) reach[a * 54 + a] = 1;
+  const out: Int32Array[] = [];
+  for (let j = 1; j <= 4; j++) {
+    const first = new Int32Array(54 * 54);
+    const next = new Uint8Array(54 * 54);
+    for (let a = 0; a < 54; a++)
+      for (let b = 0; b < 54; b++) {
+        let mask = 0;
+        for (let m = 0; m < NUM_MOVES; m++) if (reach[MOVE_DST[m][a] * 54 + b]) mask |= 1 << m;
+        first[a * 54 + b] = all & ~mask;
+        next[a * 54 + b] = mask ? 1 : 0;
+      }
+    out.push(first);
+    reach = next;
+  }
+  return out;
+})();
+const BRIDGE_MIN_IDS = 8; // 深く探すのに要る、読めたステッカーの数（少ないと、たまたま合う手順がいくつもある）
+const BRIDGE_MAX_OBS = 1; // 深く探して見つけた手順に許す、読んだステッカーの矛盾（1 枚の矛盾より小さい = 読めたステッカーは全部合うこと）
+// DISTURB[f * 3 + k]: facelet f のステッカーを動かす面（3 つまで。なければ -1）。センターはどの手でも動かない
+const DISTURB = (() => {
+  const t = new Int8Array(54 * 3).fill(-1);
+  for (let f = 0; f < 54; f++) {
+    let k = 0;
+    for (let face = 0; face < 6; face++) if (MOVE_DST[face * 3][f] !== f) t[f * 3 + k++] = face;
+  }
+  return t;
+})();
+// 手順の木の節点（最後の段を除く）ごとの、始まりの facelet g にあったステッカーのいまの位置: perms[node * 54 + g]。仮説によらない
+const permCache = new WeakMap<SeqTree, Uint8Array>();
+function treePerms(tree: SeqTree): Uint8Array {
+  let t = permCache.get(tree);
+  if (t) return t;
+  const n = tree.levelStart[tree.levelStart.length - 2]; // 最後の段の始まり = 子を持つ節点の数
+  t = new Uint8Array(n * 54);
+  for (let g = 0; g < 54; g++) t[g] = g;
+  for (let node = 1; node < n; node++) {
+    const d = MOVE_DST[tree.move[node]];
+    const p = tree.parent[node] * 54;
+    for (let g = 0; g < 54; g++) t[node * 54 + g] = d[t[p + g]];
+  }
+  permCache.set(tree, t);
+  return t;
+}
+// 節点の状態をいつ作ったか（仮説ごとに番号を変える。作っていない節点は親からたどって作る）
+const stampCache = new WeakMap<Uint8Array[], Uint32Array>();
+let stampEpoch = 0;
+
+// 観測の読んだステッカー（姿勢 o で見たとき）: あるはずの facelet・ステッカー・合わないときに必ず払うコスト
+interface IdConstraints {
+  n: number;
+  f: Uint8Array;
+  id: Int16Array;
+  lb: Float64Array;
+  total: number;
+}
+const NO_CONSTRAINTS: IdConstraints = { n: 0, f: new Uint8Array(0), id: new Int16Array(0), lb: new Float64Array(0), total: 0 };
+function idConstraints(obs: Observation, o: number): IdConstraints {
+  const f: number[] = [];
+  const id: number[] = [];
+  const lb: number[] = [];
+  for (const face of obs.faces) {
+    if (!face.ids || !face.idCost || face.alts?.length) continue;
+    for (let cell = 0; cell < 9; cell++) {
+      const x = face.ids[cell];
+      const label = face.labels[cell];
+      if (x < 0 || label < 0) continue;
+      let min: number = face.idCost[cell];
+      for (let c = 0; c < 6; c++) if (c !== label && face.cost[cell * 6 + c] < min) min = face.cost[cell * 6 + c];
+      if (!(min > 0)) continue;
+      f.push(VIEW[(o * 6 + face.slot) * 9 + cell]);
+      id.push(x);
+      lb.push(min);
+    }
+  }
+  return { n: f.length, f: Uint8Array.from(f), id: Int16Array.from(id), lb: Float64Array.from(lb), total: lb.reduce((a, b) => a + b, 0) };
 }
 
 function seqOf(tree: SeqTree, node: number): number[] {
@@ -263,11 +376,13 @@ function evalCost(state: Uint8Array, c: CompiledObs, limit = Infinity): number {
 // 大きさ k の「小さい方から k 個」のコストを保つ（k 番目 = 刈り込みのしきい値）
 class TopK {
   private heap: number[] = []; // 最大ヒープ
+  threshold = Infinity; // k 個たまるまでは無限大、その後は k 番目に小さいコスト
   constructor(private readonly k: number) {}
-  get threshold(): number {
-    return this.heap.length < this.k ? Infinity : this.heap[0];
-  }
   push(v: number): void {
+    this.insert(v);
+    if (this.heap.length >= this.k) this.threshold = this.heap[0];
+  }
+  private insert(v: number): void {
     const h = this.heap;
     if (h.length < this.k) {
       h.push(v);
@@ -443,45 +558,157 @@ export class MoveDecoder {
       node: number;
       orient: number;
       moves: number;
+      seq?: number[]; // 深く探して見つけた手順（手順の木の外）
     }
     const best = new Map<number, Cand>();
     let evaluated = 0;
     const order = beam.map((h, i) => ({ h, i })).sort((a, b) => a.h.cost - b.h.cost);
 
-    // 深さ d の節点を、仮説 h について評価する（親の深さ d-1 の状態は states に入っている前提）
-    // leaf: この段の状態は後で使わない（子の段を評価しない）。手のコストだけでしきい値を超える節点は状態も作らない
-    const evalLevel = (h: Hypothesis, hi: number, d: number, leaf = false) => {
+    // 読んだステッカーによる下限（上の「読んだステッカーの ID による枝刈り」）: 姿勢ごとの読み
+    const consByOrient = new Map<number, IdConstraints>();
+    const consOf = (o: number) => {
+      let c = consByOrient.get(o);
+      if (!c) consByOrient.set(o, (c = idConstraints(obs, o)));
+      return c;
+    };
+    const perms = treePerms(tree);
+    const stamps = stampCache.get(states)!;
+    const pos = new Int8Array(54); // 仮説の状態で、ステッカー id がある facelet（なければ -1）
+    // 姿勢ごとの、親の節点から手 m で進んだ子が必ず払うコスト: childLb[oi * NUM_MOVES + m]
+    let childLb = new Float64Array(NUM_MOVES);
+    let pass = new Uint8Array(1);
+    const fix = new Float64Array(NUM_MOVES);
+    const disturb = new Float64Array(6);
+
+    // 仮説 h の、手順の木の深さ from〜to の節点を評価する。節点の状態は評価する節点とその親だけ作り、最後の段の手のコストは
+    // 読みの下限を通った親の子だけ求める
+    const evalLevels = (h: Hypothesis, hi: number, from: number, to: number) => {
       const os = orients.includes(h.orient) ? orients : [...orients, h.orient];
       const prevLen = h.tail?.len ?? 0;
       const penalty = turnPenalty(h.orient);
-      fillLevel(h, d);
-      const from = tree.levelStart[d];
-      const to = tree.levelStart[d + 1];
-      for (let node = from; node < to; node++) {
-        const turnExtra = penalty ? penalty(node) : 0;
-        if (leaf && h.cost + pathCost[node] + turnExtra >= top.threshold) continue;
+      const epoch = ++stampEpoch;
+      const ensure = (node: number): Uint8Array => {
         const dst = states[node];
-        if (d === 0) dst.set(h.state);
+        if (stamps[node] === epoch) return dst;
+        if (node === 0) dst.set(h.state);
         else {
+          const src = ensure(tree.parent[node]);
           const p = MOVE_SRC[tree.move[node]];
-          const src = states[tree.parent[node]];
           for (let i = 0; i < 54; i++) dst[i] = src[p[i]];
         }
-        let hash: [number, number] | null = null;
-        for (const o of os) {
-          const base = h.cost + pathCost[node] + turnExtra + (o === h.orient ? 0 : rotationCost);
-          if (base >= top.threshold) continue;
-          const obsCost = evalCost(dst, getCompiled(o), top.threshold - base);
-          evaluated++;
-          const cost = base + obsCost;
-          if (cost >= top.threshold) continue;
-          hash ??= hashState(dst);
-          const key = combineKey(hash, o);
-          const prev = best.get(key);
-          const moves = prevLen + d;
-          if (!prev || cost < prev.cost - 1e-9 || (Math.abs(cost - prev.cost) <= 1e-9 && moves < prev.moves)) {
-            if (!prev) top.push(cost);
-            best.set(key, { cost, obsCost, hyp: hi, node, orient: o, moves });
+        stamps[node] = epoch;
+        return dst;
+      };
+      // 姿勢ごとの読み: あるはずのステッカーが、仮説の状態でいまある facelet
+      const cons = os.map(this.options.idPrune ? consOf : () => NO_CONSTRAINTS);
+      let where: Int8Array[] = [];
+      if (cons.some((c) => c.n > 0)) {
+        pos.fill(-1);
+        for (let f = 0; f < 54; f++) {
+          const id = stickerIdAt(h.state, f);
+          if (id >= 0) pos[id] = f;
+        }
+        where = cons.map((c) => Int8Array.from(c.id, (id) => pos[id]));
+      }
+      if (childLb.length < os.length * NUM_MOVES) {
+        childLb = new Float64Array(os.length * NUM_MOVES);
+        pass = new Uint8Array(os.length);
+      }
+      const rot = os.map((o) => (o === h.orient ? 0 : rotationCost));
+      // 節点 node（深さ d）を姿勢 os[oi] で評価する。base: 仮説のコスト + 手のコスト + 持ち替え
+      const evalNode = (node: number, d: number, oi: number, base: number) => {
+        const o = os[oi];
+        const dst = ensure(node);
+        const obsCost = evalCost(dst, getCompiled(o), top.threshold - base);
+        evaluated++;
+        const cost = base + obsCost;
+        if (cost >= top.threshold) return;
+        const key = combineKey(hashState(dst), o);
+        const prev = best.get(key);
+        const moves = prevLen + d;
+        if (!prev || cost < prev.cost - 1e-9 || (Math.abs(cost - prev.cost) <= 1e-9 && moves < prev.moves)) {
+          if (!prev) top.push(cost);
+          best.set(key, { cost, obsCost, hyp: hi, node, orient: o, moves });
+        }
+      };
+      // 深さ from より浅い段の手のコスト（親として要る）
+      for (let d = 0; d < Math.max(1, from); d++) fillLevel(h, d);
+      if (from === 0) {
+        const pc = h.cost + (penalty ? penalty(0) : 0);
+        for (let oi = 0; oi < os.length; oi++) if (pc + rot[oi] < top.threshold) evalNode(0, 0, oi, pc + rot[oi]);
+      }
+      for (let d = Math.max(1, from); d <= to; d++) {
+        // この深さの手のコストだけでしきい値を超えるなら、それより深い節点も超える
+        if (h.cost + d * minMove >= top.threshold) break;
+        const last = d === to;
+        for (let p = tree.levelStart[d - 1]; p < tree.levelStart[d]; p++) {
+          const c0 = tree.firstChild[p];
+          const c1 = tree.firstChild[p + 1];
+          // 子の手のコストの下限（手順の知識の上乗せ・回転途中の形との矛盾は 0 以上）
+          const floor = h.cost + pathCost[p] + minMove;
+          if (floor >= top.threshold) {
+            if (!last) for (let node = c0; node < c1; node++) pathCost[node] = Infinity;
+            continue;
+          }
+          // 読んだステッカーによる下限: いま合っている読みはそのステッカーを動かす面の手で外れ、合っていない読みは合わせる手
+          // （あっても 1〜2 通り）でしか合わない
+          let any = false;
+          for (let oi = 0; oi < os.length; oi++) {
+            const c = cons[oi];
+            if (floor + rot[oi] >= top.threshold) {
+              pass[oi] = 0;
+              continue;
+            }
+            if (!c.n) {
+              pass[oi] = 1;
+              any = true;
+              continue;
+            }
+            let violated = 0;
+            fix.fill(0);
+            disturb.fill(0);
+            const g = where[oi];
+            const at = p * 54;
+            for (let k = 0; k < c.n; k++) {
+              const f = c.f[k];
+              const a = g[k] < 0 ? -1 : perms[at + g[k]];
+              if (a === f) {
+                for (let j = f * 3; j < f * 3 + 3 && DISTURB[j] >= 0; j++) disturb[DISTURB[j]] += c.lb[k];
+                continue;
+              }
+              violated += c.lb[k];
+              let mask = a < 0 ? 0 : REACH1[a * 54 + f];
+              while (mask) {
+                const bit = 31 - Math.clz32(mask);
+                fix[bit] += c.lb[k];
+                mask ^= 1 << bit;
+              }
+            }
+            const off = oi * NUM_MOVES;
+            let min = Infinity;
+            for (let m = 0; m < NUM_MOVES; m++) {
+              const lb = violated - fix[m] + disturb[(m / 3) | 0];
+              childLb[off + m] = lb;
+              if (lb < min) min = lb;
+            }
+            pass[oi] = floor + rot[oi] + min - 1e-6 < top.threshold ? 1 : 0;
+            if (pass[oi]) any = true;
+          }
+          if (!any && last) continue;
+          for (let node = c0; node < c1; node++) {
+            const m = tree.move[node];
+            pathCost[node] = pathCost[p] + moveCost + (prior ? pw * prior.penalty(context[p], m) : 0);
+            context[node] = shiftContext(context[p], m);
+            if (!any) continue;
+            const pc = h.cost + pathCost[node] + (penalty ? penalty(node) : 0);
+            if (pc >= top.threshold) continue;
+            for (let oi = 0; oi < os.length; oi++) {
+              if (!pass[oi]) continue;
+              const base = pc + rot[oi];
+              if (base >= top.threshold) continue;
+              if (cons[oi].n && base + childLb[oi * NUM_MOVES + m] - 1e-6 >= top.threshold) continue;
+              evalNode(node, d, oi, base);
+            }
           }
         }
       }
@@ -489,31 +716,125 @@ export class MoveDecoder {
 
     // 1) 全仮説を浅く（深さ 2 まで）
     const shallow = Math.min(depth, 2);
-    for (const { h, i } of order) for (let d = 0; d <= shallow; d++) evalLevel(h, i, d, d === shallow);
+    for (const { h, i } of order) evalLevels(h, i, 0, shallow);
     // 2) 下限がしきい値より安い仮説だけ深く（2 手までで観測が説明できていれば省く）
     let bestShallowObs = Infinity;
     for (const c of best.values()) if (c.obsCost < bestShallowObs) bestShallowObs = c.obsCost;
     const deepen = depth > shallow && bestShallowObs > this.options.deepenAbove;
     for (const { h, i } of deepen ? order.slice(0, this.options.deepHyps) : []) {
-      if (depth <= shallow || h.cost + (shallow + 1) * minMove >= top.threshold) continue;
-      for (let d = 0; d <= shallow; d++) {
-        fillLevel(h, d);
-        // 深さ 2 までの状態を作り直す（評価は済んでいるので状態だけ）
-        const from = tree.levelStart[d];
-        const to = tree.levelStart[d + 1];
-        for (let node = from; node < to; node++) {
-          if (d === 0) states[node].set(h.state);
-          else {
-            const p = MOVE_SRC[tree.move[node]];
-            const src = states[tree.parent[node]];
-            const dst = states[node];
-            for (let k = 0; k < 54; k++) dst[k] = src[p[k]];
+      if (h.cost + (shallow + 1) * minMove >= top.threshold) continue;
+      evalLevels(h, i, shallow + 1, depth);
+    }
+    // 3) 深く探す: それでも説明できないとき、有力な仮説から bridgeDepth 手まで、読んだステッカーがすべて合う手順だけを探す。
+    // ライブはフレームを落とすので、速い手順では 1 つの観測に 4〜6 手入る（実物のソルブを 1 秒 10 枚で処理すると 4 手が 4 回）。
+    // 全部の手順を評価すると 5 手で 60 万通りだが、読んだステッカー 1 枚ごとに「あと j 手で置けるか・最初の手は何か」が決まるので、
+    // 合わせられない枝は入らずに済む（深さ優先。状態は見つけた手順だけ作る）
+    const bridgeDepth = this.options.bridgeDepth;
+    if (deepen && bridgeDepth > depth && !turns) {
+      let bestObs = Infinity;
+      for (const c of best.values()) if (c.obsCost < bestObs) bestObs = c.obsCost;
+      if (bestObs > this.options.deepenAbove) {
+        const violAll = new Float64Array(bridgeDepth * 3 * NUM_MOVES); // 深さごと（下の viol）
+        const scratch = new Uint8Array(54);
+        const scratch2 = new Uint8Array(54);
+        for (const { h, i } of order.slice(0, this.options.deepHyps)) {
+          const os = orients.includes(h.orient) ? orients : [...orients, h.orient];
+          let filled = false;
+          for (const o of os) {
+            const c = consOf(o);
+            if (c.n < BRIDGE_MIN_IDS) continue;
+            if (!filled) {
+              pos.fill(-1);
+              for (let f = 0; f < 54; f++) {
+                const id = stickerIdAt(h.state, f);
+                if (id >= 0) pos[id] = f;
+              }
+              filled = true;
+            }
+            const n = c.n;
+            const at = new Int8Array((bridgeDepth + 1) * n);
+            let missing = false;
+            for (let k = 0; k < n; k++) {
+              at[k] = pos[c.id[k]];
+              if (at[k] < 0) missing = true;
+            }
+            if (missing) continue;
+            const rotC = o === h.orient ? 0 : rotationCost;
+            const prevLen = h.tail?.len ?? 0;
+            const path: number[] = [];
+            const ctx: number[] = [0];
+            const cost: number[] = [0];
+            {
+              let c0 = EMPTY_CONTEXT;
+              const recent: number[] = [];
+              for (let nd = h.tail; nd && recent.length < 3; nd = nd.prev) recent.push(nd.move);
+              for (let k = recent.length - 1; k >= 0; k--) c0 = shiftContext(c0, recent[k]);
+              ctx[0] = c0;
+            }
+            const dfs = (d: number) => {
+              const R = bridgeDepth - d; // あと何手まで足せるか（1 以上）
+              const base = d * n;
+              const last = d ? path[d - 1] : -1;
+              // j 手（1〜min(R, 3)）で合わせるとき、最初の手 m では合わせられない読みのコストの和: viol[(j - 1) * NUM_MOVES + m]
+              const J = Math.min(R, 3);
+              const viol = violAll.subarray(d * 3 * NUM_MOVES, (d + 1) * 3 * NUM_MOVES);
+              viol.fill(0);
+              for (let j = 1; j <= J; j++) {
+                // 子そのものを評価するのは、手順の木で評価していない深さだけ。4 手以上残っていれば下の段へは必ず進む
+                if (j === 1 ? d + 1 <= depth : R >= 4) continue;
+                const table = NOT_FIRST[j - 1];
+                const off = (j - 1) * NUM_MOVES;
+                for (let k = 0; k < n; k++) {
+                  let mask = table[at[base + k] * 54 + c.f[k]];
+                  while (mask) {
+                    const bit = 31 - Math.clz32(mask);
+                    viol[off + bit] += c.lb[k];
+                    mask ^= 1 << bit;
+                  }
+                }
+              }
+              for (let m = 0; m < NUM_MOVES; m++) {
+                if (redundantAfter(last, m)) continue;
+                const pc = h.cost + rotC + cost[d] + moveCost + (prior ? pw * prior.penalty(ctx[d], m) : 0);
+                if (pc >= top.threshold) continue;
+                const evalChild = d + 1 > depth && viol[m] <= BRIDGE_MAX_OBS && pc + viol[m] < top.threshold;
+                // さらに深く: あと 2 手以上で合わせられるか（4 手以上残っていれば、どのステッカーも届く）
+                let go = R >= 4;
+                for (let j = 2; j <= J && !go; j++) go = viol[(j - 1) * NUM_MOVES + m] <= BRIDGE_MAX_OBS && pc + (j - 1) * moveCost + viol[(j - 1) * NUM_MOVES + m] < top.threshold;
+                if (!evalChild && !go) continue;
+                const dstTable = MOVE_DST[m];
+                for (let k = 0; k < n; k++) at[base + n + k] = dstTable[at[base + k]];
+                path[d] = m;
+                cost[d + 1] = cost[d] + moveCost + (prior ? pw * prior.penalty(ctx[d], m) : 0);
+                ctx[d + 1] = shiftContext(ctx[d], m);
+                if (evalChild) {
+                  // 状態を作って評価する
+                  let src: Uint8Array = h.state;
+                  for (let k = 0; k <= d; k++) {
+                    const dst = k % 2 ? scratch2 : scratch;
+                    const p = MOVE_SRC[path[k]];
+                    for (let q = 0; q < 54; q++) dst[q] = src[p[q]];
+                    src = dst;
+                  }
+                  const obsCost = evalCost(src, getCompiled(o), top.threshold - pc);
+                  evaluated++;
+                  const total = pc + obsCost;
+                  if (total < top.threshold) {
+                    const key = combineKey(hashState(src), o);
+                    const prev = best.get(key);
+                    const moves = prevLen + d + 1;
+                    if (!prev || total < prev.cost - 1e-9 || (Math.abs(total - prev.cost) <= 1e-9 && moves < prev.moves)) {
+                      if (!prev) top.push(total);
+                      best.set(key, { cost: total, obsCost, hyp: i, node: 0, orient: o, moves, seq: path.slice(0, d + 1) });
+                    }
+                  }
+                }
+                if (go && R > 1) dfs(d + 1);
+              }
+            };
+            dfs(0);
           }
         }
-      }
-      for (let d = shallow + 1; d <= depth; d++) {
-        if (h.cost + d * minMove >= top.threshold) break;
-        evalLevel(h, i, d, d === depth);
       }
     }
     this.lastExpanded = evaluated;
@@ -526,7 +847,7 @@ export class MoveDecoder {
     this.lastBase = base;
     return kept.map((c) => {
       const h = beam[c.hyp];
-      const seq = seqOf(tree, c.node);
+      const seq = c.seq ?? seqOf(tree, c.node);
       let state = h.state;
       let tail = h.tail;
       seq.forEach((m, k) => {

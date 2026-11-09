@@ -11,6 +11,8 @@
 //   REAL_DUMP=1（フレームごとの読み・合わない観測・作り変え）・REAL_REFINE=0（精密解析を省く）・REAL_SAVE=フォルダ（REAL_SAVE_AT 秒の
 //   フレームを PNG で）・REAL_REFINE_CFG='{"arucoColorFill":false}' など（精密解析の認識の設定を上書き）・REAL_LIVE='{"arucoColorFill":true}' など（ライブの認識の設定を上書き）・
 //   REAL_REFINE_GATE=0（精密解析の軽い検査で飛ばさない）・REAL_REFINE_ENGINE='{"decoder":{"priorWeight":0}}' など（精密解析の追跡の設定）
+//   REAL_READINGS=ファイル（ライブが処理したフレームの読みを書き出す: liveReplay.debug.test.ts で追跡だけを測る）
+//   REAL_OBS=ファイル（精密解析の観測を書き出す: obsReplay.debug.test.ts で解き直しだけを測る）
 //   REAL_REF=ファイル（精密解析の結果を書き出す。REAL_REFINE=0 なら読み込んで、ライブの一致だけ測る: ライブを直して何度も測るとき）
 // 精密解析の追跡の設定は本体と同じ（controller.engineOptions: ARUCO_OBSERVER・候補 32・3 手）。
 // 精密解析が完成までつながったら、その手順と時刻を本当の動きとみなして、ライブが 3D に出した状態が本当の状態と同じだった時間の割合を出す
@@ -26,7 +28,7 @@ import { PARTNERS, stickerIds } from "../../src/cube/stickers";
 import { MoveDecoder, observationCost } from "../../src/track/decoder";
 import { TrackerEngine } from "../../src/track/engine";
 import { simplifyMoves } from "../../src/track/merge";
-import { ARUCO_OBSERVER } from "../../src/track/observer";
+import { ARUCO_OBSERVER, type FrameReading, LIVE_OBSERVER } from "../../src/track/observer";
 import { DEFAULT_OFFLINE, reversedObservations } from "../../src/track/offline";
 import { liveStats } from "../../src/vision/arucoFrame";
 import { type FrameResult, frameReading, processFrame } from "../../src/vision/pipeline";
@@ -36,6 +38,7 @@ import { writePng } from "./png";
 import { profile, summarize } from "./prof";
 
 const LONG = 1280;
+const LAGS = [150, 300, 600]; // 遅れを許した一致で許す遅れ（ms）
 const SETTLE_MS = 300; // 手を回し終えてから、ライブが追いつくのを待つ時間（一致の割合で数えない）
 type Img = { data: Uint8ClampedArray; width: number; height: number };
 
@@ -175,8 +178,10 @@ it("実際のプレイ動画", async () => {
     return { st, k };
   };
   // REAL_LIVE_DEC='{"beamWidth":16}' など: ライブの追跡のデコーダの設定を上書き
-  const liveDec = { priorWeight: 0, confirmMargin: 1, deepHyps: 4, ...JSON.parse(process.env.REAL_LIVE_DEC ?? "{}") };
-  const live = new TrackerEngine(start, ARUCO_REFS, { observer: ARUCO_OBSERVER, decoder: liveDec, snapToView: true });
+  const liveDec = { priorWeight: 0, confirmMargin: 1, deepHyps: 4, bridgeDepth: 5, ...JSON.parse(process.env.REAL_LIVE_DEC ?? "{}") };
+  // REAL_LIVE_OBS='{"idBoost":1}' など: ライブの観測器の設定を上書き
+  const liveObs = { ...ARUCO_OBSERVER, ...LIVE_OBSERVER, ...JSON.parse(process.env.REAL_LIVE_OBS ?? "{}") };
+  const live = new TrackerEngine(start, ARUCO_REFS, { observer: liveObs, decoder: liveDec, snapToView: true });
   const liveMemory = {};
   const refiner = process.env.REAL_REFINE === "0" ? null : new Refiner(cv as never, { state: Array.from(start), refs: ARUCO_REFS, from: from * 1000, to: to * 1000, ...(process.env.REAL_REFINE_GATE === "0" ? { gate: false } : {}), engine: { observer: ARUCO_OBSERVER, ...JSON.parse(process.env.REAL_REFINE_ENGINE ?? "{}"), decoder: { beamWidth: 32, maxMovesPerStep: 3, rotationCost: 1.5, ...JSON.parse(process.env.REAL_REFINE_ENGINE ?? "{}").decoder } }, pipeline: { ...STICKERS, ...JSON.parse(process.env.REAL_REFINE_CFG ?? "{}") } });
   // REAL_RFRAMES=22.1-23.0: 精密解析が精密に処理したフレームの面
@@ -207,12 +212,15 @@ it("実際のプレイ動画", async () => {
   const saveAt = Number(process.env.REAL_SAVE_AT ?? -1);
   const dump = !!process.env.REAL_DUMP;
   const picked: { img: Img; t: number }[] = [];
+  const readings: FrameReading[] = []; // REAL_READINGS=ファイル: ライブが処理したフレームの読みを書き出す（liveReplay.debug.test.ts で追跡だけを繰り返し測る）
   const liveFrame = (img: Img, t: number) => {
     if (process.env.REAL_PROFILE && picked.length < 120) picked.push({ img, t });
     const a = performance.now();
     const r = processFrame(cv as never, img, t, liveCfg, liveMemory);
     const a2 = performance.now();
-    const u = live.push(frameReading(t, r));
+    const reading = frameReading(t, r);
+    if (process.env.REAL_READINGS) readings.push(reading);
+    const u = live.push(reading);
     trackMs += performance.now() - a2;
     if (u) {
       evals += live.decoder.lastExpanded;
@@ -276,12 +284,13 @@ it("実際のプレイ動画", async () => {
   // REAL_PROFILE=1: ライブが処理したフレーム（120 枚まで）を、もう一度ライブの認識に通して関数ごとの時間を出す
   if (process.env.REAL_PROFILE && picked.length) {
     const mem = {};
-    const eng = new TrackerEngine(start, ARUCO_REFS, { observer: ARUCO_OBSERVER, decoder: liveDec, snapToView: true });
+    const eng = new TrackerEngine(start, ARUCO_REFS, { observer: liveObs, decoder: liveDec, snapToView: true });
     const { nodes, interval } = await profile(() => {
       for (const p of picked) eng.push(frameReading(p.t, processFrame(cv as never, p.img, p.t, liveCfg, mem)));
     });
     console.log(summarize(nodes, interval, picked.length, 30));
   }
+  if (process.env.REAL_READINGS) writeFileSync(process.env.REAL_READINGS, JSON.stringify({ start: Array.from(start), readings }));
   const liveMoves = simplifyMoves(live.decoder.bestMoves()).map((m) => MOVE_NAMES[m.move]).join(" ");
   const shown = live.view?.state ?? live.decoder.best().state;
   out.push(`動画 ${file}: ${sw}×${sh} → ${W}×${H}・${frames} フレーム（ライブが処理したのは ${processed}・1 秒 ${((processed / (frames || 1)) * 60).toFixed(1)} 枚相当）`);
@@ -307,6 +316,11 @@ it("実際のプレイ動画", async () => {
   if (refiner || cached) {
     const r0 = performance.now();
     const end = process.env.REAL_END === "solved" ? solvedState() : process.env.REAL_END === "none" ? null : isSolved(Uint8Array.from(shown)) ? solvedState() : null;
+    // REAL_OBS=ファイル: 精密解析の観測を書き出す（解き直しだけを tests/debug/obsReplay.debug.test.ts で繰り返し測る）
+    if (refiner && process.env.REAL_OBS) {
+      const arr = (a?: ArrayLike<number>) => (a ? Array.from(a) : undefined);
+      writeFileSync(process.env.REAL_OBS, JSON.stringify({ start: Array.from(start), end: end ? Array.from(end) : null, lastT: refiner.lastT, obs: refiner.engine.observationLog.map((o) => ({ ...o, faces: o.faces.map((f) => ({ slot: f.slot, cost: arr(f.cost), labels: arr(f.labels), ids: arr(f.ids), idCost: arr(f.idCost) })) })) }));
+    }
     const res = cached ?? refiner!.result(end);
     if (refiner && refFile) writeFileSync(refFile, JSON.stringify(res));
     out.push(`精密解析${cached ? "（書き出した結果）" : ""} ${(refineMs / frames).toFixed(1)}ms/フレーム・解き直し ${(performance.now() - r0).toFixed(0)}ms・${res.method}・${res.solved ? "完成まで" : "完成に届かない"}・推定した手 ${res.moves.filter((m) => m.inferred).length}`);
@@ -340,6 +354,31 @@ it("実際のプレイ動画", async () => {
           if (t + dt - runFrom > worst.to - worst.from) worst = { from: runFrom, to: t + dt };
         }
       }
+      // 遅れを許した一致: 回している間も数える。時刻 t に 3D に出した状態が、t - LAG_MS から t までのどこかの本当の状態
+      // （回し始めた手は回し終えたとみなしてもよい）と同じだった時間の割合。速い手順では「回していない間」がほとんどなく、上の割合は
+      // 数える時間が 1 秒に満たない
+      const lagged = LAGS.map((lag) => {
+        let same = 0;
+        let counted = 0;
+        for (let i = 0; i < shownLog.length; i++) {
+          const { t } = shownLog[i];
+          if (t < s0 || t > s1) continue;
+          const dt = (shownLog[i + 1]?.t ?? t) - t;
+          let st: Uint8Array = Uint8Array.from(start);
+          let ok = false;
+          for (let j = 0; j <= res.moves.length && !ok; j++) {
+            // j 手回した状態が、t - lag〜t の間にあったか（j 手目の回し始め <= t、j + 1 手目の回し終わり > t - lag）
+            const began = j === 0 || res.moves[j - 1].start <= t;
+            const still = j === res.moves.length || res.moves[j].end > t - lag;
+            if (began && still && statesEqual(st, shownLog[i].state)) ok = true;
+            if (j < res.moves.length) st = applyMove(st, res.moves[j].move);
+          }
+          counted += dt;
+          if (ok) same += dt;
+        }
+        return `${lag}ms ${((same / Math.max(1, counted)) * 100).toFixed(1)}%`;
+      });
+      out.push(`ライブの 3D の一致（ソルブ中、回している間も数える。遅れを許す）: ${lagged.join("・")}`);
       const pct = (a: { same: number; counted: number }) => `${((a.same / Math.max(1, a.counted)) * 100).toFixed(1)}%（${(a.counted / 1000).toFixed(1)} 秒のうち）`;
       out.push(`ライブの 3D が精密解析の状態と同じだった時間（回している間・その後 ${SETTLE_MS}ms を除く）: ソルブ中 ${pct(acc.solve)}・全体 ${pct(acc.all)}・いちばん長く違ったまま ${((worst.to - worst.from) / 1000).toFixed(2)} 秒（${(worst.from / 1000).toFixed(2)}〜${(worst.to / 1000).toFixed(2)}s）`);
     }
