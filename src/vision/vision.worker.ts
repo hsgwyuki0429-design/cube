@@ -3,6 +3,7 @@
 import { type Mat3, ORIENTATIONS, mul } from "../cube/model";
 import { TrackerEngine, focusCells } from "../track/engine";
 import { StreamDecoder, decodeRecording } from "./decode";
+import type { Recording } from "./recorder";
 import { StillSkipper } from "./motion";
 import { FocalTracker, rotationAngle } from "./pose";
 import { type RefineInput, Refiner } from "./refine";
@@ -31,6 +32,10 @@ interface Stream {
   decoder: StreamDecoder | null;
   fedUntil: number; // 受け取った録画の最後の時刻（ms）
   lastPartial: number;
+  // インスペクションの間引き（下の INSPECT_*）: これより前のフレームは間引く（Infinity = まだ回し始めていない・-Infinity = 間引かない）
+  fullFrom: number;
+  held: Recording["chunks"]; // まだ復号に回していない録画（インスペクションの間は HOLD_MS だけ遅らせる）
+  lastInspect: number; // 間引いている間に最後に処理したフレームの時刻
   still: StillSkipper;
   anchor?: { t: number; target: Uint8Array };
   end?: { from: number; to: number; posted: number }; // 止めた後: 残りの解析の進み具合を知らせる
@@ -41,7 +46,32 @@ const streams = new Map<number, Stream>();
 // 中止を頼まれた動画の解析
 const videoCancels = new Set<number>();
 
+// インスペクションの間引き: 精密解析はインスペクションから進めるが、インスペクションの間はキューブを回して見ているだけで手は
+// 回さない（要るのは始まりの状態の確かめと、持ち替えを追うことだけ）。全部のフレームを処理すると、回して見ている間ずっと動きが
+// あって飛ばせず、処理の遅い端末では回し始める前から解析が何秒も遅れ、止めた後の待ちがその分だけ長くなっていた。
+// 回し始めたと分かる（stream-solving）までのフレームは INSPECT_EVERY_MS に 1 枚だけ処理する。回し始めの判定は実際の回し始めより
+// 遅れて届くので、インスペクションの間は録画を HOLD_MS だけ遅らせて復号し、届いた開始の時刻の少し前からは全部処理する
+const INSPECT_EVERY_MS = 60;
+const HOLD_MS = 3000;
+
+// 録画を復号に回す（インスペクションの間は HOLD_MS より新しい分を取っておく）
+function releaseChunks(id: number, s: Stream): void {
+  if (!s.decoder) return;
+  const until = s.fullFrom === Infinity ? (s.fedUntil - HOLD_MS) * 1000 : Infinity;
+  let n = 0;
+  while (n < s.held.length && s.held[n].timestamp <= until) n++;
+  if (!n) return;
+  s.decoder.push(s.held.splice(0, n)).catch((e) => {
+    streams.delete(id);
+    post({ type: "refine-error", id, message: errorMessage(e) });
+  });
+}
+
 function streamFrame(id: number, s: Stream, img: PixelSource, t: number): void {
+  if (t < s.fullFrom) {
+    if (t - s.lastInspect < INSPECT_EVERY_MS) return;
+    s.lastInspect = t;
+  }
   // 止まっている間は飛ばして追いつく（動き出したら直前の 1 枚も処理する）
   for (const f of s.still.next(img, t)) s.refiner.push(f.img, f.t);
   doAnchor(id, s);
@@ -51,7 +81,8 @@ function streamFrame(id: number, s: Stream, img: PixelSource, t: number): void {
   }
   if (s.refiner.lastT - s.lastPartial >= 400) {
     s.lastPartial = s.refiner.lastT;
-    const partial: StreamPartial = { ...s.refiner.partial(), frames: s.refiner.frames, behindMs: Math.max(0, s.fedUntil - s.refiner.lastT) };
+    // 遅れ（インスペクションの間は、わざと遅らせている分を除く）
+    const partial: StreamPartial = { ...s.refiner.partial(), frames: s.refiner.frames, behindMs: Math.max(0, s.fedUntil - s.refiner.lastT - (s.fullFrom === Infinity ? HOLD_MS : 0)) };
     post({ type: "stream-partial", id, partial });
   }
 }
@@ -247,12 +278,15 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
           const refiner = newRefiner(input);
           const total = recording.chunks.filter((c) => c.timestamp / 1000 >= input.from && c.timestamp / 1000 <= input.to).length;
           const progress = progressPoster(id, () => total);
+          // 止まっているフレームは飛ばす（ソルブ中から進める解析と同じ。やり直しの解析を待つ時間を短く）
+          const still = new StillSkipper();
           await decodeRecording(recording, (img, t) => {
             if (t < input.from || t > input.to) return;
-            refiner.push(img, t);
+            for (const f of still.next(img, t)) refiner.push(f.img, f.t);
             progress();
           });
-          post({ type: "refine-result", id, result: refiner.result() });
+          post({ type: "refine-phase", id, phase: "decode" });
+          post({ type: "refine-result", id, result: refiner.result(undefined, (phase) => post({ type: "refine-phase", id, phase })) });
         } catch (e) {
           post({ type: "refine-error", id, message: errorMessage(e) });
         }
@@ -266,7 +300,7 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
         let s = streams.get(msg.id);
         if (!s) {
           if (!msg.input) return;
-          s = { refiner: newRefiner(msg.input), decoder: null, fedUntil: 0, lastPartial: -Infinity, still: new StillSkipper() };
+          s = { refiner: newRefiner(msg.input), decoder: null, fedUntil: 0, lastPartial: -Infinity, still: new StillSkipper(), fullFrom: msg.inspection ? Infinity : -Infinity, held: [], lastInspect: -Infinity };
           streams.set(msg.id, s);
         }
         const st = s;
@@ -274,10 +308,16 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
         if (!rec.chunks.length) return;
         st.decoder ??= new StreamDecoder(rec.config, rec.width, rec.height, (img, t) => streamFrame(msg.id, st, img, t));
         st.fedUntil = Math.max(st.fedUntil, rec.chunks[rec.chunks.length - 1].timestamp / 1000);
-        st.decoder.push(rec.chunks).catch((e) => {
-          streams.delete(msg.id);
-          post({ type: "refine-error", id: msg.id, message: errorMessage(e) });
-        });
+        st.held.push(...rec.chunks);
+        releaseChunks(msg.id, st);
+        return;
+      }
+      case "stream-solving": {
+        const s = streams.get(msg.id);
+        if (!s || s.fullFrom !== Infinity) return;
+        s.fullFrom = msg.from;
+        s.refiner.setInspectUntil(msg.from);
+        releaseChunks(msg.id, s);
         return;
       }
       case "stream-end": {
@@ -288,6 +328,9 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
         }
         s.refiner.setEnd(msg.to);
         s.end = { from: s.refiner.lastT, to: msg.to, posted: 0 };
+        // 回し始めの知らせが届かないまま終わった（手動で止めたなど）: 残りは間引かない
+        if (s.fullFrom === Infinity) s.fullFrom = s.refiner.lastT;
+        releaseChunks(msg.id, s);
         try {
           const t0 = performance.now();
           const behind = s.fedUntil - s.refiner.lastT;

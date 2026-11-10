@@ -7,7 +7,7 @@ import { decodeOffline } from "../src/track/offline";
 import type { Observation } from "../src/track/types";
 import { ALL_MOVES, canonical, editDistance, observe, randomMove, rng } from "./sim";
 
-function session(seed: number, moves: number, blackout: [number, number], perStep = () => 1) {
+function session(seed: number, moves: number, blackout: [number, number], perStep = () => 1, misread = 0.03) {
   const rnd = rng(seed);
   const truth: number[] = [];
   let prev: number | undefined;
@@ -17,7 +17,7 @@ function session(seed: number, moves: number, blackout: [number, number], perSte
   let state = start;
   let t = 0;
   const slots = [F, U, R];
-  const clean = { misread: 0.03, hidden: 0.1, mismatchCost: 1.5 };
+  const clean = { misread, hidden: 0.1, mismatchCost: 1.5 };
   // 指で大きく隠れている区間: ほとんど見えず、見えても誤読が多い
   const dark = { misread: 0.2, hidden: 0.75, mismatchCost: 1.5 };
   obs.push(observe(state, 0, slots, t, t, rnd, clean));
@@ -130,4 +130,33 @@ describe("最後に見えなかった手を足して完成までつなぐ（fini
     expect(moves!.every((m) => m.inferred)).toBe(true);
     expect(statesEqual(applyMoves(solvedState(), moves!.map((m) => m.move)), end)).toBe(true);
   }, 120000);
+});
+
+describe("必ず結果を出す", () => {
+  it("始まりの状態が違っていても（スクランブルを間違えて回した）、完成から後ろ向きにたどった手順を返す", () => {
+    for (let seed = 1; seed <= 4; seed++) {
+      const { truth, start, obs, lastT } = session(seed, 30, [0, 0], () => 1, 0.01);
+      // 渡す始まりの状態は、本当の状態とまったく違う（別のスクランブル）
+      let wrong = start;
+      for (const m of [0, 4, 8, 9, 13, 17, 2, 6, 11, 15, 3, 7, 12, 16, 1]) wrong = applyMove(wrong, m);
+      const r = decodeOffline(obs, wrong, solvedState(), lastT);
+      expect(r.method).toBe("backward");
+      expect(r.reachedEnd).toBe(true);
+      expect(Array.from(r.startState!)).toEqual(Array.from(start));
+      expect(isSolved(applyMoves(start, r.moves.map((m) => m.move)))).toBe(true);
+      expect(acc(r.moves.map((m) => m.move), truth)).toBeGreaterThan(0.9);
+    }
+  });
+
+  it("どうしてもつながらないときも、後ろ向きに追えた終わりの手を返す（タイムの終わりを決められる）", () => {
+    // 真ん中が長く隠れ、その間に何手も進む（橋渡しでも届かない）
+    const { truth, start, obs, lastT } = session(21, 44, [10, 26], () => 2);
+    const r = decodeOffline(obs, start, solvedState(), lastT, { decoder: { beamWidth: 32, maxMovesPerStep: 3, lostAfter: 1000 }, bridge: false });
+    if (r.reachedEnd) return; // つながったなら確かめることはない
+    expect(r.tail?.length).toBeGreaterThan(0);
+    // 終わりの数手は本当の手順の終わりと同じ
+    const tail = r.tail!.slice(-3).map((m) => m.move);
+    expect(canonical(tail)).toEqual(canonical(truth.slice(-3)));
+    expect(r.tail![r.tail!.length - 1].t).toBeGreaterThan(lastT - 1000);
+  });
 });

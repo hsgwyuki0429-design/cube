@@ -4,8 +4,8 @@
 // 止めた瞬間はリアルタイムの追跡からの速報値を出し、計測中に録画しておいた全フレームを別の Worker で
 // 1枚ずつ解析し直して、数秒〜数十秒後に時間と手順を確定する（リアルタイムでは処理が追いつかないフレームも使う）。
 import { cfopSplits } from "../cube/analysis";
-import { type CubeState, MOVE_NAMES, applyMoves, isSolved, moveFace, relativeMove, rotateOrientation, solvedState, statesEqual } from "../cube/model";
-import { randomScramble, solveBetween } from "../cube/solver";
+import { type CubeState, MOVE_NAMES, applyMoves, invertMoves, isSolved, moveFace, relativeMove, rotateOrientation, solvedState, statesEqual } from "../cube/model";
+import { randomScramble, solveBetween, solveState } from "../cube/solver";
 import { StartDetector } from "./startDetect";
 import { markPhase } from "./crashGuard";
 import { ScrambleGuide, undoMoves } from "./scrambleGuide";
@@ -181,6 +181,7 @@ function onTrack(u: TrackUpdate): void {
     if (startT === null) return;
     timerStore.set({ phase: "solving", startT, startIndex: readyMoves, liveMoves: Math.max(0, u.moves.length - readyMoves) });
     controller.recorder.keepMs = 150000;
+    controller.solvingStarted(startT);
     lookRun = 0;
     controller.beep(990, 0.08);
     return;
@@ -352,24 +353,46 @@ async function analyzeRecordingInner(live: LiveSpan, endT: number): Promise<void
   }
   markPhase("saving");
   debug.result = result;
-  // 完成までつながらなかった（足しても届かなかった）ときだけ、リアルタイムの結果のまま
+  const forcedEnd = how === "manual" && result.forced > 0;
+  const startSure = !result.startUncertain;
+  const endSure = !result.endUncertain && !forcedEnd;
+  // 完成までつながらなかった: 手順はリアルタイムのまま。タイムは、解析でフレームから決められた端（最初の手の回し始め・後ろ向きに
+  // 追えた最後の手の回し終わり）だけ解析の時刻にして「確定（一部推定）」にする。どちらの端も決められなければ速報値のまま
   if (!result.solved || !result.moves.length || result.start === null || result.end === null) {
-    updateSolve(id, { analysis: "failed" });
+    const begin = result.moves.length && result.start !== null && startSure ? result.start : live.startT;
+    const finish = result.gapped && result.end !== null && endSure && result.end > begin ? result.end : live.endT;
+    if (begin === live.startT && finish === live.endT) {
+      updateSolve(id, { analysis: "failed" });
+      return;
+    }
+    const cur = timerStore.get().solves.find((x) => x.id === id);
+    const timeMs = Math.max(0, finish - begin);
+    updateSolve(id, { analysis: "partial", timeMs, ...(cur?.moves.length ? { tps: cur.moves.length / Math.max(0.001, timeMs / 1000) } : {}) });
     return;
   }
   // 時間がかかっても結果は出す: 手順は解析のものにする。タイムの端は、フレームから決められた端は解析の時刻、決められなかった端
   // （最初・最後の手が写っていない・手動で止めて最後に見えない手を足した）はリアルタイムの時刻を使い、「確定（一部推定）」にする。
   // リアルタイムが最初の数手を取りこぼしていた（解析の最初の手より後に始まっていた）ら、解析の最初の手の回し始めを使う
-  const forcedEnd = how === "manual" && result.forced > 0;
-  const startSure = !result.startUncertain;
-  const endSure = !result.endUncertain && !forcedEnd;
-  const begin = startSure ? result.start : Math.min(live.startT, result.moves[0].start);
+  const begin = startSure ? result.start : Math.min(live.startT, result.start);
   const finish = endSure ? result.end : Math.max(live.endT, begin);
   const timeMs = Math.max(0, finish - begin);
+  // 始まりの状態が案内と違っていた（スクランブルを間違えて回していた）: 解析は完成から後ろ向きにたどって手順を出している。
+  // 記録のスクランブルを、実際の始まりの状態になるものに書き換える（再生・分割タイムが手順と合うように）
+  let from = start;
+  let scramble: string | undefined;
+  if (result.startState) {
+    from = Uint8Array.from(result.startState);
+    try {
+      scramble = invertMoves(await solveState(from)).map((m) => MOVE_NAMES[m]).join(" ");
+    } catch (e) {
+      console.warn("スクランブルを作り直せませんでした", e);
+    }
+  }
   updateSolve(id, {
     analysis: startSure && endSure ? "done" : "partial",
     timeMs,
-    ...solveFields(start, result.moves, begin, timeMs),
+    ...solveFields(from, result.moves, begin, timeMs),
+    ...(scramble !== undefined ? { scramble } : {}),
     tracked: true,
   });
 }

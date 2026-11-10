@@ -11,7 +11,7 @@ function SafeAnalysis() {
   if (!level) return null;
   return (
     <Field label="精密解析" desc="解析の途中でアプリが落ちたため、自動で切り替えました。戻して落ちるときは、またこの状態になります">
-      <span class="muted small">{level >= 2 ? "止めています（タイムは速報値）" : "軽くしています"}</span>{" "}
+      <span class="muted small">軽くしています（落ちずに終われば自動で戻ります）</span>{" "}
       <button
         class="btn small"
         onClick={() => {

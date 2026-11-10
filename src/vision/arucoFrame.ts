@@ -391,7 +391,11 @@ function liveMarkers(
       return { markers, faces };
     }
   }
-  if (canTrack && grid && st.known.size) {
+  // 格子で読みに行くのは、前のフレームで面が組み立てられたときだけ。前のフレームで何も読めなかった（ぶれ・回して見せている・手で
+  // 隠れた）なら、覚えている格子は古く、次のフレームもほとんど読めない: 実物のソルブでは格子で 1 マスも読めないフレームが 6 割あり、
+  // そのたびに全部の面のマスを合わせに行っては検出していた
+  const fresh = !!st && [...st.known.values()].some((k) => k.t === st.t);
+  if (canTrack && grid && fresh) {
     const { markers, offsets } = readKnown(st, img, t, scheme, design);
     if (markers.length >= TRACK_MIN) {
       let faces = build(markers);

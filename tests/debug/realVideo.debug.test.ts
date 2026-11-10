@@ -193,6 +193,11 @@ it("実際のプレイ動画", async () => {
     };
   }
   Object.assign(liveStats, { tracked: 0, gridded: 0, partial: 0, detected: 0, last: "" });
+  const REFINE_EVERY = Number(process.env.REAL_REFINE_EVERY ?? 1); // 精密解析に N 枚に 1 枚だけ渡す（間引いたときの正確さを見る）
+  const SOLVE_FROM = Number(process.env.REAL_SOLVE_FROM ?? -Infinity);
+  if (refiner && Number.isFinite(SOLVE_FROM)) refiner.setInspectUntil(SOLVE_FROM * 1000);
+  let lastInspect = -Infinity;
+  let refineFrames = 0;
   const K = Number(process.env.REAL_K ?? 0);
   // REAL_FPS=6: 1 秒 N 枚に固定して処理する（処理時間によらないので、設定を比べるときに結果がぶれない）。待っている 3 枚のうち動きのいちばん小さいもの
   const FIX = Number(process.env.REAL_FPS ?? 0);
@@ -272,7 +277,12 @@ it("実際のプレイ動画", async () => {
         liveFrame(best.img, best.t);
       }
     }
-    if (refiner) {
+    // REAL_SOLVE_FROM=11.4: この時刻（秒）より前はインスペクションとして 60ms に 1 枚だけ精密解析に渡す（vision.worker.ts の INSPECT_EVERY_MS）
+    const inspecting = t < SOLVE_FROM * 1000;
+    if (inspecting && t - lastInspect < 60) return;
+    if (inspecting) lastInspect = t;
+    if (refiner && frames % REFINE_EVERY === 0) {
+      refineFrames++;
       const b = performance.now();
       refiner.push(img, t);
       refineMs += performance.now() - b;
@@ -324,7 +334,7 @@ it("実際のプレイ動画", async () => {
     }
     const res = cached ?? refiner!.result(end);
     if (refiner && refFile) writeFileSync(refFile, JSON.stringify(res));
-    out.push(`精密解析${cached ? "（書き出した結果）" : ""} ${(refineMs / frames).toFixed(1)}ms/フレーム・解き直し ${(performance.now() - r0).toFixed(0)}ms・${res.method}・${res.solved ? "完成まで" : "完成に届かない"}・推定した手 ${res.moves.filter((m) => m.inferred).length}`);
+    out.push(`精密解析${cached ? "（書き出した結果）" : ""} ${(refineMs / frames).toFixed(1)}ms/フレーム（渡した ${refineFrames} 枚・計 ${(refineMs / 1000).toFixed(1)} 秒）・解き直し ${(performance.now() - r0).toFixed(0)}ms・${res.method}・${res.solved ? "完成まで" : "完成に届かない"}・推定した手 ${res.moves.filter((m) => m.inferred).length}`);
     out.push(`精密解析の手順（${res.moves.length} 手） ${res.moves.map((m) => `${MOVE_NAMES[m.move]}${m.inferred ? "?" : ""}`).join(" ")}`);
     if (process.env.REAL_ENDS) out.push(`端の手: 最初 ${JSON.stringify(res.moves.slice(0, 3))} raw ${JSON.stringify(res.raw?.slice(0, 3))} / 最後 ${JSON.stringify(res.moves.slice(-2))} raw ${JSON.stringify(res.raw?.slice(-2))}`);
     out.push(`精密解析の時刻 開始 ${res.start === null ? "-" : (res.start / 1000).toFixed(3)}s${res.startUncertain ? "（不確か）" : ""}・終了 ${res.end === null ? "-" : (res.end / 1000).toFixed(3)}s${res.endUncertain ? "（不確か）" : ""}`);

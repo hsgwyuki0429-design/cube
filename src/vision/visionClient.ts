@@ -260,8 +260,14 @@ export class RefineClient {
     return id;
   }
 
-  feed(id: number, recording: Recording, input?: RefineInput): void {
-    this.worker?.postMessage({ type: "stream-feed", id, input, recording } satisfies ToWorker);
+  // inspection: インスペクションから始める解析（最初の feed で渡す。solving が届くまでのフレームは間引く: vision.worker.ts の INSPECT_*）
+  feed(id: number, recording: Recording, input?: RefineInput, inspection?: boolean): void {
+    this.worker?.postMessage({ type: "stream-feed", id, input, recording, inspection } satisfies ToWorker);
+  }
+
+  // 回し始めた: 時刻 from から後のフレームは全部処理させる
+  solving(id: number, from: number): void {
+    this.worker?.postMessage({ type: "stream-solving", id, from } satisfies ToWorker);
   }
 
   // 終わりの時刻と状態（完成なら solved）を渡し、全体の結果をもらう

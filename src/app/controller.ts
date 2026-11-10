@@ -20,7 +20,7 @@ import { type Settings, facingOf, settingsStore } from "./settings";
 import { STICKERS } from "../aruco/design";
 import { loadSolves, personalSequences } from "./storage";
 import { createStore } from "./store";
-import { markPhase, safeLevel } from "./crashGuard";
+import { markPhase, noteAnalysisOk, safeLevel } from "./crashGuard";
 
 // 画面: プレイ・データ（グラフと履歴）・1 回の記録の詳しい画面・解析（スロー動画・ArUco の画面）・設定（使い方も）
 export type Screen = "play" | "data" | "solve" | "analyze" | "settings";
@@ -82,6 +82,11 @@ export const displayColors = (names: string[]): string[] => names.map((n) => NAM
 // 動画ファイルを解析するフレームの間隔の上限（実際の時間で）。240fps のスロー撮影は 2 枚に 1 枚
 export const VIDEO_MAX_FPS = 120;
 
+// 止めた後の解析で、進み具合も段階も届かないままこれだけたったら止まったとみなしてやり直す。知らせの間がいちばん開くのは
+// 手順の解き直し（隠れた区間の橋渡し 10 秒まで: src/track/offline.ts の BRIDGE_MS）
+const STALL_MS = 30000;
+// 回し始めの時刻（リアルタイムの判定）のこれだけ前から、解析は全部のフレームを処理する（最初の手の回し始めは 350ms 前まで遡って探す）
+const SOLVE_LEAD_MS = 500;
 const LIVE_REST_MAX_MS = 20000; // 止めた後の残りの解析の間、ライブの認識を休むのは長くてもこれだけ
 
 // 追跡の探索と観測器の設定（ライブと精密解析で共通の部分）
@@ -447,8 +452,8 @@ class Controller {
     this.cancelAnalysis();
     const s = settingsStore.get();
     const refs = opts.refs ?? this.store.get().track?.refs ?? this.store.get().cube?.refs;
-    // 前回の解析中に 2 回落ちていたら解析しない（速報値のまま。設定から戻せる: src/app/crashGuard.ts）
-    if (!s.analyzeSolves || safeLevel() >= 2 || !refs || this.store.get().camera !== "on" || !FrameRecorder.available()) return false;
+    // 前回の解析中に落ちていたら軽い設定で解析する（やめはしない: 結果は必ず出す。落ちずに終われば元に戻っていく: src/app/crashGuard.ts）
+    if (!s.analyzeSolves || !refs || this.store.get().camera !== "on" || !FrameRecorder.available()) return false;
     this.recorder.clear();
     const session: AnalysisSession = { id: -1, keep: opts.keep, timed: opts.timed, timer: 0, started: false, from: performance.now(), input: null as unknown as RefineInput };
     this.session = session;
@@ -467,7 +472,7 @@ class Controller {
       engine: this.engineOptions(),
       pipeline: this.pipelineConfig(),
       ...(opts.timed ? {} : { keepPatchesMs: 3000 }),
-      ...(safeLevel() === 1 ? { light: true } : {}),
+      ...(safeLevel() >= 1 ? { light: true } : {}),
     };
     const id = await this.refiner.startStream((p) => this.onAnalysisPartial(session, p));
     if (id === null || this.session !== session) return abandon();
@@ -479,8 +484,19 @@ class Controller {
   private feedAnalysis(session: AnalysisSession, untilMs = Infinity): void {
     const rec = this.recorder.takeNew(untilMs);
     if (!rec || session.id < 0 || !rec.chunks.length) return;
-    this.refiner.feed(session.id, rec, session.started ? undefined : session.input);
+    const first = !session.started;
+    this.refiner.feed(session.id, rec, first ? session.input : undefined, first ? session.timed : undefined);
     session.started = true;
+    // 回し始めの知らせが、解析の Worker の準備より先だった
+    if (first && session.solvingFrom !== undefined) this.refiner.solving(session.id, session.solvingFrom);
+  }
+
+  // タイマー: 回し始めた（リアルタイムの開始の時刻 startT）。解析はここの少し前から全部のフレームを処理する（それまでは間引く）
+  solvingStarted(startT: number): void {
+    const session = this.session;
+    if (!session || !session.timed) return;
+    session.solvingFrom = startT - SOLVE_LEAD_MS;
+    if (session.id >= 0 && session.started) this.refiner.solving(session.id, session.solvingFrom);
   }
 
   private onAnalysisPartial(session: AnalysisSession, p: StreamPartial): void {
@@ -492,26 +508,32 @@ class Controller {
   // タイマーを止めた: to までの録画を渡し切り、終わりの状態（完成）で解き直した結果を待つ Promise を返す
   async endAnalysis(to: number, target: ArrayLike<number> | null, progress?: (p: number) => void): Promise<Promise<RefineResult> | null> {
     const session = this.session;
-    if (!session || session.id < 0 || !session.timed) return null;
+    if (!session || !session.timed || !session.input) return null;
     clearInterval(session.timer);
     this.session = null;
     this.store.set({ analysis: null });
     await this.recorder.finish(to);
-    this.feedAnalysis(session, to);
-    // 解析が途中で失敗した（Worker が落ちた・例外）ときのために、録画全体を取っておく（圧縮した映像のかたまりを指すだけ）
+    if (session.id >= 0) this.feedAnalysis(session, to);
+    // 解析が途中で失敗した（Worker が落ちた・例外・止まった）ときのために、録画全体を取っておく（圧縮した映像のかたまりを指すだけ）
     const backup = this.recorder.extract(session.from, to);
     this.recorder.clear(); // 渡し終えた録画は使わない（解析の Worker が自分の分を持っている）
-    // 時間がかかっても結果は出す: 失敗したら、Worker を作り直して軽い設定で録画全体を最初から解析し直す
-    const result = this.refiner.endStream(session.id, to, target, progress).catch(async (e) => {
-      if (!backup) throw e;
-      console.warn("解析をやり直します", e);
+    // 必ず結果を出す:
+    //   - 解析の Worker がまだ始まっていなかった（OpenCV の読み込み中に解き終えた）ら、録画全体をいまから解析する
+    //   - 失敗した・STALL_MS のあいだ何も届かない（iPhone は Worker だけを黙って止めることがあり、いつまでも「解析中」のままだった）なら、
+    //     Worker を作り直して軽い設定で録画全体を最初から解析し直す（これも見張る）
+    const again = (why: unknown) => {
+      if (!backup) throw why instanceof Error ? why : new Error(String(why));
+      console.warn("解析をやり直します", why);
       this.refiner.close();
-      return this.refiner.run(backup, { ...session.input, to, light: true }, progress);
-    });
+      return this.watched((p) => this.refiner.run(backup, { ...session.input, to, light: true }, p), progress);
+    };
+    const first = session.id >= 0 ? this.watched((p) => this.refiner.endStream(session.id, to, target, p), progress) : Promise.reject(new Error("解析が始まっていませんでした"));
+    const result = first.catch(again);
     this.liveResting = true;
     const rest = window.setTimeout(() => (this.liveResting = false), LIVE_REST_MAX_MS);
     // 終わったら解析の Worker を閉じてメモリを返す（次のインスペクションで作り直す）
     void result
+      .then(() => noteAnalysisOk())
       .catch(() => undefined)
       .finally(() => {
         clearTimeout(rest);
@@ -519,6 +541,42 @@ class Controller {
         this.refiner.closeIfIdle();
       });
     return result;
+  }
+
+  // 解析を見張る: 進み具合・段階の知らせが STALL_MS 届かなければ「止まった」として失敗にする（Worker は閉じる）
+  private watched(start: (progress: (p: number) => void) => Promise<RefineResult>, progress?: (p: number) => void): Promise<RefineResult> {
+    return new Promise((resolve, reject) => {
+      let last = performance.now();
+      const bump = () => (last = performance.now());
+      const prevPhase = this.refiner.onPhase;
+      this.refiner.onPhase = (phase) => {
+        bump();
+        prevPhase?.(phase);
+      };
+      const timer = window.setInterval(() => {
+        if (performance.now() - last < STALL_MS) return;
+        done();
+        this.refiner.close();
+        reject(new Error("解析が止まりました"));
+      }, 1000);
+      const done = () => {
+        clearInterval(timer);
+        this.refiner.onPhase = prevPhase;
+      };
+      start((p) => {
+        bump();
+        progress?.(p);
+      }).then(
+        (r) => {
+          done();
+          resolve(r);
+        },
+        (e) => {
+          done();
+          reject(e);
+        },
+      );
+    });
   }
 
   cancelAnalysis(): void {
@@ -630,6 +688,7 @@ interface AnalysisSession {
   started: boolean;
   from: number;
   input: RefineInput;
+  solvingFrom?: number; // 回し始めた（この時刻から後は全部のフレームを解析する）
 }
 
 export const controller = new Controller();

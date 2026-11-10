@@ -25,7 +25,11 @@ export const DEFAULT_OFFLINE: OfflineOptions = {
 
 export interface OfflineResult {
   moves: DecodedMove[];
-  method: "meet" | "bridge" | "forward-finish" | "forward";
+  method: "meet" | "bridge" | "backward" | "forward-finish" | "forward";
+  // method が backward のとき: 後ろ向きにたどり着いた始まりの状態（渡された始まりの状態とは違う: スクランブルを間違えて回していた）
+  startState?: CubeState;
+  // 終わりに届かなかったとき: 後ろ向きが終わりから追えていた分の手順（時刻の順。タイムの終わりを決めるのに使う）
+  tail?: DecodedMove[];
   meetAt: number; // つないだ観測の番号（meet のとき）
   cost: number;
   reachedEnd: boolean;
@@ -149,12 +153,31 @@ export function decodeOffline(obs: Observation[], start: CubeState, end: CubeSta
   }
   // つながらない（前後どちらも、隠れていた同じ区間で見失った）: 隠れる前の前向きの仮説と、隠れた後の後ろ向きの仮説を、
   // 短い手順（最大 6 手）でつなぐ。途中の手は直接見えていないので inferred
+  // 後ろ向きの手は、逆の手を逆の順に。時刻も反転する
+  const backMoves = (b: Hypothesis) =>
+    listOf(b)
+      .reverse()
+      .map((m) => ({ ...m, move: inverseMove(m.move), t0: -m.t, t: -(m.t0 ?? m.t) }));
+  // 後ろ向きだけで最初の観測まで追えていた: 始まりの状態が渡されたものと違う（スクランブルを間違えて回した・案内と違う状態から
+  // 始めた）。前向きは最初から合わず、どこでもつながらないが、完成から後ろ向きにたどった手順はソルブの全部になっている。
+  // 見失い（矛盾 LOST_COST 以上の観測が 4 つ続く）がどこにもないこと
+  const lostAt = (k: number) => (B[k].hyps[0]?.obsCost ?? Infinity) >= LOST_COST;
+  let lostRun = false;
+  for (let k = 0; k + 3 < valid.length && !lostRun; k++) lostRun = lostAt(k) && lostAt(k + 1) && lostAt(k + 2) && lostAt(k + 3);
+  const b0 = B[0].hyps[0];
+  if (b0 && valid.length >= 8 && !lostRun && !lostAt(0))
+    return { moves: backMoves(b0), method: "backward", meetAt: -1, cost: b0.cost + B[0].offset, reachedEnd: true, startState: Uint8Array.from(b0.state) };
+  // 前後どちらも、隠れていた同じ区間で見失った: 隠れる前の前向きの仮説と、隠れた後の後ろ向きの仮説を短い手順でつなぐ
   const bridged = options.bridge === false ? null : bridge(F, B, valid);
   if (bridged) return bridged;
   // それでもつながらない: 前向きの結果を、終わりの状態にたどり着くよう補う
   const fixed = finishDeep(fwd, end, lastT);
   if (fixed) return { moves: fixed, method: "forward-finish", meetAt: -1, cost: fwd.costOffset, reachedEnd: true };
-  return forwardBest();
+  // 届かない: 後ろ向きが終わりから続けて追えていた所までの手順を付ける（タイムの終わりは決められる）
+  let kT = valid.length;
+  while (kT > 0 && !lostAt(kT - 1)) kT--;
+  const tb = kT < valid.length ? B[kT].hyps[0] : undefined;
+  return { ...forwardBest(), ...(tb ? { tail: backMoves(tb) } : {}) };
 }
 
 // 前向きの有力な仮説から、終わりの状態に届く手を足す（2 手で届かなければ 3 手・4 手まで。足した手は inferred）。
@@ -263,7 +286,8 @@ function tableOf(snap: Snapshot, top: number, reachOf: (s: Uint8Array) => Reach)
 // （以前は全観測の表を持ち続け、観測が数百あると数 GB になって iPhone でタブごと落ちた）。届く状態は状態ごとに覚えておく（直近の分だけ）。
 // 探すのは、まず前向きが観測と合わなくなった所と後ろ向きが合わなくなった所の間（隠れていた区間の前後）。見つからなければ残りを、
 // 時間の上限（BRIDGE_MS）まで
-const BRIDGE_MS = 30000; // 時間がかかってもよい（結果を出すことを優先。表は直近の分だけなのでメモリは増えない）
+const BRIDGE_MS = 10000; // 結果を出すことを優先して長めに（表は直近の分だけなのでメモリは増えない）。この間は進み具合を知らせられないので、
+// 呼ぶ側の「止まった」の見張り（controller.endAnalysis の STALL_MS）より十分短く
 const LOST_COST = 3; // 観測の矛盾がこれ以上の観測が 3 つ続いたら見失っている
 
 function bridge(F: Snapshot[], B: Snapshot[], obs: Observation[]): OfflineResult | null {

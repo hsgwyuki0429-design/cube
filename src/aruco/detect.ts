@@ -74,6 +74,10 @@ export const THOROUGH_PARAMS: Partial<ArucoParams> = { adaptiveThreshWinSizeStep
 // 4 個・幅 1/2 の配置（マーカーが小さい）の窓。合成の 60 場面（tests/debug/arucoEval.debug.test.ts の A）で、ライブ 3〜23（5 回）→ 5〜15（3 回）、
 // 精密解析 3〜33（7 回）→ 5〜20（4 回）にしても色が正しく分かるマスは同じ（ライブ 64.2 → 64.3%・精密解析 64.9 → 65.1%、誤りは 0.7 → 0.3%）。
 // 1 フレームは 1280×960 でライブ 135 → 106ms
+// 真ん中の窓 10 を抜いて 5 と 15 の 2 回にすると、実物の動画（マーカーの辺 19〜31 画素）で検出は 16.0 → 10.7ms、読めるステッカーは
+// 98.7〜99.3% だが（tests/debug/detectSpeed.debug.test.ts）、ライブの一致は全フレームでソルブ 87.6 → 79.1%・速い T-perm 90.4 → 69.3% に
+// 下がった（作り変え 0 → 6〜9 回）。精密解析も実物のソルブで 6 手を推定でつなぐようになった。4 個のうち読めるマーカーが減ると、
+// ステッカーの中の位置が決まらない読みが増える。3 回のままにする
 const SMALL_WINDOWS: Partial<ArucoParams> = { adaptiveThreshWinSizeMin: 5, adaptiveThreshWinSizeStep: 5, adaptiveThreshWinSizeMax: 15 };
 const SMALL_THOROUGH: Partial<ArucoParams> = { adaptiveThreshWinSizeMin: 5, adaptiveThreshWinSizeStep: 5, adaptiveThreshWinSizeMax: 20 };
 const MIN_FIT = Number((globalThis as { process?: { env: Record<string, string | undefined> } }).process?.env.ARUCO_MIN_FIT ?? 0.85);

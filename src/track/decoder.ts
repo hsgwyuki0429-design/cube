@@ -734,10 +734,14 @@ export class MoveDecoder {
       let bestObs = Infinity;
       for (const c of best.values()) if (c.obsCost < bestObs) bestObs = c.obsCost;
       if (bestObs > this.options.deepenAbove) {
-        const violAll = new Float64Array(bridgeDepth * 3 * NUM_MOVES); // 深さごと（下の viol）
         const scratch = new Uint8Array(54);
         const scratch2 = new Uint8Array(54);
+        const searched = new Set<number>();
         for (const { h, i } of order.slice(0, this.options.deepHyps)) {
+          // 同じ状態・姿勢の仮説（手順の書き方だけが違う）からは 1 回だけ探す
+          const hk = combineKey(hashState(h.state), h.orient);
+          if (searched.has(hk)) continue;
+          searched.add(hk);
           const os = orients.includes(h.orient) ? orients : [...orients, h.orient];
           let filled = false;
           for (const o of os) {
@@ -761,6 +765,7 @@ export class MoveDecoder {
             if (missing) continue;
             const rotC = o === h.orient ? 0 : rotationCost;
             const prevLen = h.tail?.len ?? 0;
+            const strong = Array.from(c.lb, (v) => v > BRIDGE_MAX_OBS);
             const path: number[] = [];
             const ctx: number[] = [0];
             const cost: number[] = [0];
@@ -775,32 +780,36 @@ export class MoveDecoder {
               const R = bridgeDepth - d; // あと何手まで足せるか（1 以上）
               const base = d * n;
               const last = d ? path[d - 1] : -1;
-              // j 手（1〜min(R, 3)）で合わせるとき、最初の手 m では合わせられない読みのコストの和: viol[(j - 1) * NUM_MOVES + m]
+              // j 手（1〜min(R, 3)）で合わせるとき、最初の手になれない手のビット（どれかの読みを合わせられない手）: bad[j - 1]。
+              // 読んだステッカーは全部合うことを求めるので、読みごとの表の OR だけで済む（読みの数だけの演算。弱い読み = 矛盾の
+              // コストが BRIDGE_MAX_OBS 以下のものは数えない）
               const J = Math.min(R, 3);
-              const viol = violAll.subarray(d * 3 * NUM_MOVES, (d + 1) * 3 * NUM_MOVES);
-              viol.fill(0);
-              for (let j = 1; j <= J; j++) {
-                // 子そのものを評価するのは、手順の木で評価していない深さだけ。4 手以上残っていれば下の段へは必ず進む
-                if (j === 1 ? d + 1 <= depth : R >= 4) continue;
-                const table = NOT_FIRST[j - 1];
-                const off = (j - 1) * NUM_MOVES;
-                for (let k = 0; k < n; k++) {
-                  let mask = table[at[base + k] * 54 + c.f[k]];
-                  while (mask) {
-                    const bit = 31 - Math.clz32(mask);
-                    viol[off + bit] += c.lb[k];
-                    mask ^= 1 << bit;
-                  }
-                }
+              let bad1 = 0;
+              let bad2 = 0;
+              let bad3 = 0;
+              // 子そのものを評価するのは、手順の木で評価していない深さだけ。4 手以上残っていれば下の段へは必ず進む
+              const need1 = d + 1 > depth;
+              const need23 = R < 4;
+              if (need1) {
+                const t1 = NOT_FIRST[0];
+                for (let k = 0; k < n; k++) if (strong[k]) bad1 |= t1[at[base + k] * 54 + c.f[k]];
+              }
+              if (need23 && J >= 2) {
+                const t2 = NOT_FIRST[1];
+                for (let k = 0; k < n; k++) if (strong[k]) bad2 |= t2[at[base + k] * 54 + c.f[k]];
+              }
+              if (need23 && J >= 3) {
+                const t3 = NOT_FIRST[2];
+                for (let k = 0; k < n; k++) if (strong[k]) bad3 |= t3[at[base + k] * 54 + c.f[k]];
               }
               for (let m = 0; m < NUM_MOVES; m++) {
                 if (redundantAfter(last, m)) continue;
                 const pc = h.cost + rotC + cost[d] + moveCost + (prior ? pw * prior.penalty(ctx[d], m) : 0);
                 if (pc >= top.threshold) continue;
-                const evalChild = d + 1 > depth && viol[m] <= BRIDGE_MAX_OBS && pc + viol[m] < top.threshold;
+                const bit = 1 << m;
+                const evalChild = need1 && !(bad1 & bit);
                 // さらに深く: あと 2 手以上で合わせられるか（4 手以上残っていれば、どのステッカーも届く）
-                let go = R >= 4;
-                for (let j = 2; j <= J && !go; j++) go = viol[(j - 1) * NUM_MOVES + m] <= BRIDGE_MAX_OBS && pc + (j - 1) * moveCost + viol[(j - 1) * NUM_MOVES + m] < top.threshold;
+                const go = R >= 4 || (J >= 2 && !(bad2 & bit) && pc + moveCost < top.threshold) || (J >= 3 && !(bad3 & bit) && pc + 2 * moveCost < top.threshold);
                 if (!evalChild && !go) continue;
                 const dstTable = MOVE_DST[m];
                 for (let k = 0; k < n; k++) at[base + n + k] = dstTable[at[base + k]];
