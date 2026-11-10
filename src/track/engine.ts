@@ -29,6 +29,7 @@ export interface EngineOptions {
   snapToView?: boolean;
 }
 
+const TIMING_FINAL_MS = 1000; // 手の観測からこれだけたてば、その手の時刻はもう変わらない
 const REPEAT_COST = 0.8;
 // 作り変え（ライブは見えているキューブにどんどん合わせる）: 最良の仮説の観測の矛盾がこれ以上（1 マスの色の矛盾 1.5）の観測が
 // 2 回続いたら、SNAP_NOW 以上なら（2 マス以上）すぐ、見えている色に合う状態を 3D に出す。作り変えた状態が観測をこれだけ以上よく
@@ -198,6 +199,7 @@ export class TrackerEngine {
     this.turnCur = null;
     this.turnHints = [];
     this.lastSeen.fill(-1);
+    this.timingCache.clear();
   }
 
   // 精密解析（別の Worker）が時刻 t までを解き直した結果に乗り換え、t より後の観測をもう一度通す。
@@ -408,9 +410,22 @@ export class TrackerEngine {
   }
 
   // 手の開始・終了時刻（フレームの記録から）
+  // 手の時刻は、その手の観測から TIMING_FINAL_MS たてば変わらない（moveTiming が見るのは観測の 550ms 後までのフレーム）ので覚えておく。
+  // snapshot は観測のたびに全部の手の時刻を出すので、手が増えるほど毎回の計算が増えていた（実物のソルブ 79 手のライブを全フレームで
+  // 追跡 1.0 → 0.7ms/フレーム）
+  private timingCache = new Map<string, MoveTiming>();
   timing(m: DecodedMove): MoveTiming | null {
     if (!this.frames.length || (m.t0 ?? m.t) < this.frames[0].t) return null;
-    return moveTiming(this.frames, m, { ...DEFAULT_TIMING, refs: this.colors.refs });
+    const settled = this.frames[this.frames.length - 1].t - m.t > TIMING_FINAL_MS;
+    const key = settled ? `${m.move}:${m.t0}:${m.t}:${m.orient}:${m.inferred ? 1 : 0}` : "";
+    const hit = settled ? this.timingCache.get(key) : undefined;
+    if (hit) return hit;
+    const tm = moveTiming(this.frames, m, { ...DEFAULT_TIMING, refs: this.colors.refs });
+    if (settled) {
+      if (this.timingCache.size > 4000) this.timingCache.clear();
+      this.timingCache.set(key, tm);
+    }
+    return tm;
   }
 
   snapshot(obs?: Observation): TrackUpdate {
