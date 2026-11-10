@@ -122,7 +122,12 @@ export interface RefineResult {
   status: TrackStatus;
   inferred: number;
   forced: number; // 完成にたどり着くために最後に足した手の数（直接は見えていない）
-  method?: string; // 再構成の方法（meet = 前後からつないだ / forward-finish / forward）
+  method?: string; // 再構成の方法（meet = 前後からつないだ / backward = 後ろ向きだけ / forward-finish / forward）
+  // 始まりの状態が渡されたものと違っていた（スクランブルを間違えて回していた）: 完成から後ろ向きにたどり着いた始まりの状態。
+  // moves はこの状態から完成まで
+  startState?: number[];
+  // 完成までつながらなかった（solved = false）が、終わりの時刻は後ろ向きに追えた最後の手から決めた（タイムは出せる）
+  gapped?: boolean;
   startUncertain: boolean; // 最初の手が直接見えておらず、開始時刻をフレームから決められなかった
   endUncertain: boolean; // 最後の手が直接見えておらず、終了時刻をフレームから決められなかった
   raw?: { move: number; t0?: number; t: number; start: number; end: number; inferred?: boolean }[]; // まとめる前の手（調査用）
@@ -198,6 +203,13 @@ export class Refiner {
     // ソルブ後の解析は時間をかけてよいので、二値化の窓を細かく試し、読めなかったマスは全部読み直す。
     // 直前のフレームのマーカーの周りだけで検出する（縁の近くに見つかったら全体でやり直す）
     this.config = { ...DEFAULT_PIPELINE, ...REFINE_PIPELINE, ...input.pipeline, arucoThorough: true, arucoRegion: true };
+  }
+
+  // インスペクションの終わり（リアルタイムが回し始めたと判定した少し前）。それより前のフレームは間引いて渡されている
+  // （vision.worker.ts の INSPECT_*）ので、その間に読めた「打ち消し合って消えた手」（持ち替えの読み違い）はタイムの端に使わない
+  private inspectUntil = -Infinity;
+  setInspectUntil(t: number): void {
+    this.inspectUntil = t;
   }
 
   // 解析する範囲の終わりを決める（ソルブ中から解析していて、止めた時刻が分かったとき）
@@ -344,6 +356,8 @@ export class Refiner {
       }
     }
     this.method = off.method;
+    // 届かなかったとき、後ろ向きが終わりから追えていた最後の手（タイムの終わりに使う）
+    const tailLast = !solved && off.tail?.length ? off.tail[off.tail.length - 1] : null;
     onPhase?.("timing");
     const timeOf = <T extends DecodedMove>(m: T) => {
       const tm = this.engine.timing(m);
@@ -372,7 +386,7 @@ export class Refiner {
     // 不確か（F2 B2 F2 → B2 で、最後の F2 を回している間は正面が読めなかった: B2 の終わりを「確定」にすると 276ms 短かった）
     let rawStartUnsure = false;
     let rawEndUnsure = false;
-    if (first && raw[0] && raw[0] !== moves[0] && !raw[0].inferred) {
+    if (first && raw[0] && raw[0] !== moves[0] && !raw[0].inferred && raw[0].t >= this.inspectUntil) {
       const r = timeOf(raw[0]);
       if (r.exact && r.moved && r.start < first.start) {
         Object.assign(first, { start: refineStart(this.patches, r, r.start, this.engine.colors.refs) ?? r.start, exact: true });
@@ -434,12 +448,28 @@ export class Refiner {
         endUncertain = false;
       }
     }
+    // 完成までつながらなかった: 終わりの時刻は、後ろ向きに追えた最後の手の回し終わり（フレームから決まったときだけ確か）
+    let gapEnd: number | null = null;
+    let gapEndSure = false;
+    if (tailLast) {
+      const r = timeOf(tailLast);
+      const e = tailLast.inferred ? null : refineEnd(this.patches, tailLast, r.end, refs);
+      gapEnd = e ?? r.end;
+      gapEndSure = !tailLast.inferred && (e !== null || r.endExact);
+    }
     const merged = mergeQuickRepeats(timed, undefined, undefined, separateMotions).map((m) => ({ move: m.move, orient: m.orient, start: m.start, end: Math.max(m.start, m.end), exact: m.exact, ...(m.inferred ? { inferred: true } : {}) }));
+    // 最初の手がインスペクションの間（リアルタイムが回し始めたと判定するより前の、間引いたフレーム）に置かれている: その手の時刻は
+    // 当てにならない（持ち替えと重なった手は、状態は同じでも前の観測で説明がつく。実物のソルブで、最初の F が 0.7 秒前の持ち替えの
+    // 所に置かれた）。回し始めは、その後の最初の手の回し始めにして、不確かにする
+    let lateStart: number | null = null;
+    if (first && first.t < this.inspectUntil) lateStart = timed.find((m) => m.t >= this.inspectUntil)?.start ?? null;
     return {
       moves: merged,
       solved,
-      start: merged.length ? merged[0].start : null,
-      end: merged.length ? merged[merged.length - 1].end : null,
+      start: lateStart ?? (merged.length ? merged[0].start : null),
+      end: gapEnd ?? (merged.length ? merged[merged.length - 1].end : null),
+      ...(gapEnd !== null ? { gapped: true } : {}),
+      ...(off.startState ? { startState: Array.from(off.startState) } : {}),
       frames: this.frames,
       status: dec.status,
       inferred: merged.filter((m) => m.inferred).length,
@@ -447,8 +477,8 @@ export class Refiner {
       method: this.method,
       // 端の手の層が見えず、時刻をフレームから決められなかった（観測の時刻のまま）ときも不確か。見えない層（低く構えて U・B が
       // 写らないなど）の手は、観測の時刻が数百 ms ずれることがある
-      startUncertain: !!first?.inferred || beforeWindow || !first?.exact || rawStartUnsure,
-      endUncertain: endUncertain || (!!last && !last.inferred && !last.endExact) || rawEndUnsure,
+      startUncertain: !!first?.inferred || beforeWindow || !first?.exact || rawStartUnsure || lateStart !== null,
+      endUncertain: gapEnd !== null ? !gapEndSure : endUncertain || (!!last && !last.inferred && !last.endExact) || rawEndUnsure,
       raw: timed.map((m) => ({ move: m.move, t0: m.t0, t: m.t, start: m.start, end: m.end, inferred: m.inferred })),
     };
   }

@@ -148,7 +148,8 @@ export class FrameRecorder {
       }
     }
     try {
-      await this.encoder.flush();
+      // flush が返ってこない端末があっても先へ進む（それまでの分で解析する。待ち続けると結果がいつまでも出ない）
+      await Promise.race([this.encoder.flush(), new Promise((r) => setTimeout(r, 4000))]);
     } catch {
       // 失敗しても、それまでの分は使える
     }

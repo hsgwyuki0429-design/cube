@@ -24,7 +24,10 @@ export type ToWorker =
   // 追跡を精密解析の結果に乗り換える（t までを解き直した状態・姿勢・手順。keep はそれより前からあった手の数）
   | { type: "track-rebase"; state: number[]; orient: number; moves: DecodedMove[]; t: number; keep: number }
   // ソルブ中から進める精密解析: 録画の増えた分を少しずつ渡し、最後に終わりの時刻と状態を渡して結果をもらう
-  | { type: "stream-feed"; id: number; input?: RefineInput; recording: Recording }
+  // inspection: インスペクションから始める解析（タイマー）。stream-solving が届くまでのフレームは間引く
+  | { type: "stream-feed"; id: number; input?: RefineInput; recording: Recording; inspection?: boolean }
+  // 回し始めた（リアルタイムの開始の判定）: 時刻 from から後のフレームは全部処理する
+  | { type: "stream-solving"; id: number; from: number }
   | { type: "stream-end"; id: number; to: number; target: number[] | null }
   | { type: "stream-cancel"; id: number }
   // フリーで完成した（時刻 t に状態 target）: そこまでを前後から解き直す
