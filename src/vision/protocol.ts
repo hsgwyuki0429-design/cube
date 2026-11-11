@@ -12,7 +12,7 @@ import type { RefineInput, RefineResult } from "./refine";
 import type { VideoFileInfo } from "./videoFile";
 
 export type ToWorker =
-  | { type: "init" }
+  | { type: "init"; opencv?: boolean } // opencv: false なら OpenCV を読み込まない（専用の検出だけを使う。本体のステッカー）
   | { type: "config"; config: Partial<PipelineConfig> }
   | { type: "frame"; id: number; t: number; bitmap: ImageBitmap }
   | { type: "track-start"; state: number[]; refs: Lab[]; options: Partial<EngineOptions>; orients?: number[] }
@@ -36,7 +36,7 @@ export type ToWorker =
   | { type: "video-refine"; id: number; file: Blob; input: RefineInput; target: number[] | null; options: VideoRefineOptions }
   | { type: "video-cancel"; id: number }
   // 検出だけ（精密解析の並列化: src/vision/detectPool.ts）
-  | { type: "detect"; id: number; img: { data: Uint8ClampedArray; width: number; height: number }; hint: DetectHint | null; scheme: StickerScheme; design: string; thorough: boolean };
+  | { type: "detect"; id: number; img: { data: Uint8ClampedArray; width: number; height: number }; hint: DetectHint | null; scheme: StickerScheme; design: string; thorough: boolean; quad?: boolean | Partial<import("../aruco/quadDetect").QuadOptions> };
 
 export interface VideoRefineOptions {
   maxSide: number; // 長辺をこれに縮める

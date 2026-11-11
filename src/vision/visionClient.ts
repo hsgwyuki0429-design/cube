@@ -1,4 +1,6 @@
 // 認識 Worker のクライアント。空いているときだけ最新フレームを送る（詰まったら間引く）。
+import { markerSize, stickerScheme } from "../aruco/codes";
+import { STICKERS, designOf } from "../aruco/design";
 import type { EngineOptions, TrackUpdate } from "../track/engine";
 import type { DecodedMove } from "../track/types";
 import type { Lab } from "./color";
@@ -11,6 +13,10 @@ import type { VideoFileInfo } from "./videoFile";
 // Worker に送って結果がまだ来ていないフレームの上限。Worker は待っているフレームのうち動きのいちばん小さいものを処理する
 // （src/vision/vision.worker.ts の pickFrame）。処理が速ければ待つフレームはほとんどない
 const MAX_INFLIGHT = 3;
+
+// 本体のステッカー（3×3 の符号を 4 個）は専用の検出（src/aruco/quadDetect.ts）で読むので、認識の Worker は OpenCV を読み込まない
+// （約 4MB の読み込みと、Worker 1 個あたり 134MB のヒープがいらない。src/vision/arucoFrame.ts の usesQuad と同じ条件）
+const NEEDS_OPENCV = !(markerSize(stickerScheme(STICKERS.stickers)) === 3 && designOf(STICKERS.arucoDesign).at.length === 4);
 
 export class VisionClient {
   private worker: Worker;
@@ -70,7 +76,7 @@ export class VisionClient {
         this.inflight = 0; // 処理中のフレームの結果は来ないので、次のフレームを送れるようにする
       };
     });
-    this.post({ type: "init" });
+    this.post({ type: "init", opencv: NEEDS_OPENCV });
   }
 
   private post(msg: ToWorker, transfer: Transferable[] = []): void {
@@ -182,7 +188,7 @@ export class RefineClient {
         this.close();
       };
     });
-    worker.postMessage({ type: "init" } satisfies ToWorker);
+    worker.postMessage({ type: "init", opencv: NEEDS_OPENCV } satisfies ToWorker);
     return this.ready;
   }
 

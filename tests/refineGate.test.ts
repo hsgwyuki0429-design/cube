@@ -19,7 +19,7 @@ describe("精密解析の軽い検査", () => {
     const alg = "R U' F2";
     const truth = parseMoves(alg);
     const design = designOf("quad-half");
-    const make = (gate: boolean) => new Refiner(cv, { state: Array.from(solvedState()), refs: ARUCO_REFS, from: 0, to: Infinity, startHint: 300, pipeline: { stickers: "unique54", arucoDesign: "quad-half" }, gate });
+    const make = (gate: boolean) => new Refiner(cv, { state: Array.from(solvedState()), refs: ARUCO_REFS, from: 0, to: Infinity, startHint: 300, pipeline: { stickers: "unique54", arucoDesign: "quad-half", ...JSON.parse(process.env.PCFG ?? "{}") }, gate });
     const gated = make(true);
     const full = make(false);
     const eye: Vec3 = [2.4, 2.4, 5.5];
@@ -52,6 +52,7 @@ describe("精密解析の軽い検査", () => {
     const b = full.result(target);
     expect(a.moves.map((m) => MOVE_NAMES[m.move]).join(" ")).toBe(alg);
     expect(b.moves.map((m) => MOVE_NAMES[m.move]).join(" ")).toBe(alg);
+    console.log(a.moves.map((m, i) => `${MOVE_NAMES[m.move]} 本当 ${lead + i * period}〜${lead + i * period + turnMs} 飛ばす ${m.start.toFixed(0)}〜${m.end.toFixed(0)}${m.exact ? "" : "?"} 全部 ${b.moves[i].start.toFixed(0)}〜${b.moves[i].end.toFixed(0)}${b.moves[i].exact ? "" : "?"}`).join("\n"));
     expect(gated.gated).toBeGreaterThan(30);
     a.moves.forEach((m, i) => {
       expect(Math.abs(m.start - b.moves[i].start)).toBeLessThanOrEqual(17);

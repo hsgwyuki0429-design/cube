@@ -44,8 +44,12 @@ export const DEFAULT_TIMING: TimingOptions = { restSpread: 22, onsetDelta: 9, se
 type Shift = [number, number] | null | undefined;
 // 比べるフレームが離れている（精密解析の軽い検査で間を飛ばした）ほど、キューブ全体の動きで見え方が変わり、格子からのずれも揺れる
 // （奥の斜めの面で 200ms 離れると 0.13 ほど）。離れた分だけ動いたとみなすずれを大きくする
+// 逆に、フレームの間が 33ms より短い（60fps 以上）ときは、回している層も 1 フレームでは少ししか動かない（90° を 170ms で回して
+// 60fps なら外側のマスで 0.16〜0.24）ので、間に比例して小さくする（1/4 まで。120fps の合成動画でタイムの誤差 −21 → −12ms）。ぶれたマーカーも読める検出（src/aruco/quadDetect.ts）
+// では、回している途中の隣り合う 2 枚を「止まっている」とみて回し終わりが 60ms 早く出ていた
 function shiftLimit(gapMs: number, opts: TimingOptions): number {
-  return opts.shiftDelta * (1 + Math.max(0, gapMs - 50) / 150);
+  const fast = gapMs > 0 ? Math.min(1, Math.max(0.25, gapMs / 33)) : 1;
+  return opts.shiftDelta * fast * (1 + Math.max(0, gapMs - 50) / 150);
 }
 // マーカーが動いた: 隣のフレーム（基準）で読めていたマーカーが読めない、またはずれが shiftDelta 以上変わった
 function shiftMoved(a: Shift, ref: Shift, opts: TimingOptions, gapMs: number): boolean {
@@ -185,6 +189,10 @@ export function moveTiming(frames: LoggedFrame[], m: DecodedMove, opts: TimingOp
     for (const f of frames[k].faces)
       f.ids?.forEach((id, cell) => {
         const key = `${f.slot}:${cell}`;
+        // 格子からずれて読めたマーカーは、まだ回っている途中のもの（回す前のステッカーがぶれて読めた）なので使わない: 観測が回している
+        // 途中に出ると、回す前の静止まで「回し終わった後」とみて、回し始めを決められなかった
+        const sh = f.shift?.[cell];
+        if (f.shift && (!sh || Math.hypot(sh[0], sh[1]) >= opts.shiftDelta / 2)) return; // マーカーが読めていないマスの ID は前のフレームから引き継いだもの
         if (id >= 0 && !post.has(key) && cellInLayer(m.orient, f.slot, cell, face)) post.set(key, id);
       });
   const afterMove = (k: number) => {
