@@ -36,6 +36,7 @@ function rotCode(code: number): number {
 }
 
 const SIB_TOL = 0.4;
+const SHARP = 0.4; // 辺の境目の 1 画素あたりの明るさの変化（マーカーの明暗の差に対して）がこれ未満なら、ぶれている
 const SURE_FIT = 0.97; // これ以上の割合で符号どおりに読めたマーカーは、ほかの窓で読み直さない
 // 成分ごとに覚える数（画素の数と外接する矩形）
 const STATS = 5;
@@ -656,6 +657,9 @@ export class QuadDetector {
           my += qy * best;
         }
         if (n < 3 || n * 2 < K) continue;
+        // 境目がぼやけている（1 画素あたりの明るさの変化が、マーカーの明暗の差の SHARP 倍に満たない）辺があれば、ぶれたマーカー
+        // （回している途中の層）なので合わせ直さない: ぶれた縁のどこに合うかがフレームごとに変わり、手の時刻が 1 フレームずれた
+        if (sw / n < contrast * SHARP) return null;
         // 重み付きの主軸。1 回当ててから、直線から 0.75 画素より離れた点（別の境目を拾った点）を除いて当て直す
         let ux = dx;
         let uy = dy;
