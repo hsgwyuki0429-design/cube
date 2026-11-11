@@ -189,6 +189,10 @@ export function moveTiming(frames: LoggedFrame[], m: DecodedMove, opts: TimingOp
     for (const f of frames[k].faces)
       f.ids?.forEach((id, cell) => {
         const key = `${f.slot}:${cell}`;
+        // 格子からずれて読めたマーカーは、まだ回っている途中のもの（回す前のステッカーがぶれて読めた）なので使わない: 観測が回している
+        // 途中に出ると、回す前の静止まで「回し終わった後」とみて、回し始めを決められなかった
+        const sh = f.shift?.[cell];
+        if (f.shift && (!sh || Math.hypot(sh[0], sh[1]) >= opts.shiftDelta / 2)) return; // マーカーが読めていないマスの ID は前のフレームから引き継いだもの
         if (id >= 0 && !post.has(key) && cellInLayer(m.orient, f.slot, cell, face)) post.set(key, id);
       });
   const afterMove = (k: number) => {

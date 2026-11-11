@@ -296,7 +296,11 @@ export class Refiner {
     this.onFrame?.(t, r);
     // 基準: この格子で、処理に回したいちばん新しいフレームの色（1 か所で処理するときは、このフレーム）
     const latest = this.picked && this.picked.t > t ? this.picked.img : img;
+    // 見えている面が減ったフレーム（回している途中・指）の後は、続けて精密に処理する: 残った面だけを基準にすると、回している面
+    // そのもの（揃った面は回しても真ん中あたりの色が変わらない）だけが残ったとき、回している間のフレームを「同じ」とみて飛ばす
+    const before = this.ref?.faces.length ?? 0;
     this.ref = signatureOf(latest, r.faces);
+    if ((this.ref?.faces.length ?? 0) < before) this.tail = Math.max(this.tail, GATE_TAIL);
     const reading = frameReading(t, r);
     this.engine.push(reading);
     if (this.forward) {
