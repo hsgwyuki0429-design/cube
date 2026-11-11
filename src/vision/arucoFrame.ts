@@ -9,7 +9,8 @@ import { DEFAULT_GRID, type GridRead, colorFits, colorRefsOf, gridReadCell, grid
 import { DEFAULT_TURN, type TurnResult, type TurnTrack, layerCells, projectedFace, recognizeTurn, unwrapTurn } from "../aruco/turn";
 import type { TurnSnapshot } from "../track/types";
 import type { Pose } from "./pose";
-import { ArucoBench, DEFAULT_CONFIGS, type Marker, type Region, THOROUGH_PARAMS } from "../aruco/detect";
+import { ArucoBench, DEFAULT_CONFIGS, type Marker, type MarkerDetector, type Region, THOROUGH_PARAMS } from "../aruco/detect";
+import { QuadBench, type QuadOptions } from "../aruco/quadDetect";
 import { trackMarkers } from "../aruco/markerTrack";
 import { type StickerScheme, decode, markerSize } from "../aruco/codes";
 import { STANDARD_DESIGN, type StickerDesign, designOf } from "../aruco/design";
@@ -21,7 +22,7 @@ import type { DetectedFace, FrameResult } from "./pipeline";
 import type { CV } from "./image";
 import type { PixelSource } from "./image";
 
-let bench: { cv: CV; scheme: StickerScheme; thorough: boolean; design: StickerDesign; b: ArucoBench } | null = null;
+let bench: { cv: CV; scheme: StickerScheme; thorough: boolean; design: StickerDesign; quad: string; b: MarkerDetector } | null = null;
 // 再認識（切り出したマス）用。二値化の窓を細かく試す
 let rereader: { cv: CV; scheme: StickerScheme; design: StickerDesign; b: ArucoBench } | null = null;
 // フレームの間で引き継ぐキューブの傾き（面が 1 つしか見えないときの向きの決定に使う）。記憶の入れ物ごと
@@ -93,7 +94,7 @@ export interface DetectHint {
 
 // 手がかりの切り出しで検出し、縁の近くにマーカーがある（キューブが大きく動いた）・何も見つからないときは全体でやり直す。
 // フレームの間で引き継ぐものを使わないので、別の Worker でも動く（精密解析の並列化: src/vision/detectPool.ts）
-export function detectWithHint(b: ArucoBench, img: PixelSource, hint: DetectHint | null): Marker[] {
+export function detectWithHint(b: MarkerDetector, img: PixelSource, hint: DetectHint | null): Marker[] {
   if (hint) {
     const { region: r, shrink, edge: e } = hint;
     const found = b.detect(img, r, shrink)[0].markers;
@@ -128,17 +129,28 @@ export function detectHint(memory: object, img: { width: number; height: number 
 }
 
 // 検出器（精密解析の設定）。別の Worker で検出だけするとき
-export function detectorFor(cv: CV, scheme: StickerScheme, thorough: boolean, designKey: string): ArucoBench {
+// quad: 専用の検出（src/aruco/quadDetect.ts。OpenCV を使わない）の設定。省略時は、3×3 の符号を 4 個並べる配置（本体のステッカー）なら
+// 専用の検出、ほかは OpenCV。false で OpenCV（比較用）。専用の検出のときは cv がなくてもよい（認識の Worker は OpenCV を読み込まない）
+export function usesQuad(scheme: StickerScheme, designKey: string, quad?: Partial<QuadOptions> | boolean): boolean {
+  return quad === undefined ? markerSize(scheme) === 3 && designOf(designKey).at.length === 4 : !!quad;
+}
+export function detectorFor(cv: CV, scheme: StickerScheme, thorough: boolean, designKey: string, quadOpt?: Partial<QuadOptions> | boolean): MarkerDetector {
   const design = designOf(designKey);
-  if (!bench || bench.cv !== cv || bench.scheme !== scheme || bench.thorough !== thorough || bench.design !== design) {
+  const quad: Partial<QuadOptions> | false = usesQuad(scheme, designKey, quadOpt) ? { sibling: 0.5 / design.side, ...(typeof quadOpt === "object" ? quadOpt : {}) } : false;
+  if (!quad && !cv) throw new Error("この符号・配置の検出には OpenCV が要ります（読み込んでいません）");
+  const qk = quad ? JSON.stringify(quad) : "";
+  if (!bench || bench.cv !== cv || bench.scheme !== scheme || bench.thorough !== thorough || bench.design !== design || bench.quad !== qk) {
     bench?.b.delete();
-    const config = thorough ? { ...DEFAULT_CONFIGS[1], params: THOROUGH_PARAMS } : DEFAULT_CONFIGS[1]; // max(RGB)
-    bench = { cv, scheme, thorough, design, b: new ArucoBench(cv, [config], scheme, design) };
+    if (quad) bench = { cv, scheme, thorough, design, quad: qk, b: new QuadBench(scheme, quad) };
+    else {
+      const config = thorough ? { ...DEFAULT_CONFIGS[1], params: THOROUGH_PARAMS } : DEFAULT_CONFIGS[1]; // max(RGB)
+      bench = { cv, scheme, thorough, design, quad: qk, b: new ArucoBench(cv, [config], scheme, design) };
+    }
   }
   return bench.b;
 }
 
-function detectMarkers(b: ArucoBench, img: PixelSource, t: number, memory: object, region: boolean, shrinkSide = Infinity, track = false): Marker[] {
+function detectMarkers(b: MarkerDetector, img: PixelSource, t: number, memory: object, region: boolean, shrinkSide = Infinity, track = false): Marker[] {
   const prev = region ? boxes.get(memory) : undefined;
   let markers: Marker[] | null = null;
   const tr = track ? tracks.get(memory) : undefined;
@@ -360,7 +372,7 @@ function relabeled(st: LiveState, fs: FacesResult): boolean {
 }
 
 function liveMarkers(
-  b: ArucoBench,
+  b: MarkerDetector,
   img: PixelSource,
   t: number,
   memory: object,
@@ -460,11 +472,11 @@ export function processAruco(
   memory: object,
   scheme: StickerScheme = "aruco54",
   thorough = false,
-  opts: { reread?: number; focus?: number[]; colorFill?: boolean; idTrack?: boolean; region?: boolean; design?: string; turn?: boolean; shrink?: boolean; track?: boolean; grid?: boolean; fineWindows?: boolean } = {},
+  opts: { reread?: number; focus?: number[]; colorFill?: boolean; idTrack?: boolean; region?: boolean; design?: string; turn?: boolean; shrink?: boolean; track?: boolean; grid?: boolean; fineWindows?: boolean; quad?: Partial<QuadOptions> | boolean } = {},
   detected?: Marker[], // 別の Worker で検出したマーカー（精密解析の並列化。detectWithHint）
 ): FrameResult {
   const design = designOf(opts.design ?? STANDARD_DESIGN.key);
-  const b = detectorFor(cv, scheme, opts.fineWindows ?? thorough, design.key);
+  const b = detectorFor(cv, scheme, opts.fineWindows ?? thorough, design.key, opts.quad);
   let markers: Marker[];
   const prev = tilts.get(memory);
   const build = (ms: Marker[]) => reconstructFaces(ms, img, prev && t - prev.t < TILT_MS ? prev.tilt : null, scheme, undefined, true, design);

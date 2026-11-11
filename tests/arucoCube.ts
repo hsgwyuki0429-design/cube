@@ -60,6 +60,7 @@ export interface CubeRenderOptions {
   tile?: number; // ステッカーレスのキューブ: 各マスを本体の色の板（辺 tile）にして、その上にステッカーを貼る
   fingers?: Finger[]; // 指（画像座標のカプセル。キューブの上に描く）
   shake?: number; // 露光中のキューブ全体の回転（ラジアン、画面の縦軸まわり）。手ぶれ・持ち替えのぶれ
+  truth?: { id: number; corners: number[] }[]; // 渡すと、カメラを向いたマーカーの本当の四隅（画素の真ん中が整数の座標）を足す。隠れているかは見ない
 }
 
 const sub = (a: Vec3, b: Vec3): Vec3 => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
@@ -190,6 +191,20 @@ function renderOnce(cv: CV, o: CubeRenderOptions, fraction: number, shake = 0): 
     const zc = dotv(d, fwd);
     return [w / 2 + (f * dotv(d, right)) / zc, h / 2 - (f * dotv(d, upv)) / zc];
   };
+  if (o.truth) {
+    const sideT = o.design?.side ?? 1 - 2 * (o.margin ?? 0.08);
+    for (const q of quads) {
+      if (!q.sticker) continue;
+      for (const [cx, cy] of o.design?.at ?? [[0.5, 0.5]]) {
+        const corners: number[] = [];
+        for (const [du, dv] of [[0, 0], [1, 0], [1, 1], [0, 1]]) {
+          const pt = project(addv(addv(q.p0, scl(q.a, cx - sideT / 2 + du * sideT)), scl(q.b, cy - sideT / 2 + dv * sideT)));
+          corners.push(pt[0] - 0.5, pt[1] - 0.5);
+        }
+        o.truth.push({ id: q.sticker.id, corners });
+      }
+    }
+  }
   const SS = 2; // 2×2 のサブピクセル
   const sub2 = new Float32Array(w * h * SS * SS * 3);
   const zsub = new Float32Array(w * h * SS * SS).fill(Number.POSITIVE_INFINITY);

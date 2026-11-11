@@ -117,6 +117,15 @@ export interface DetectResult {
   ms: number; // 前処理 + 検出 + 色の測定
 }
 
+// マーカーの検出器（OpenCV の ArucoBench・専用の QuadBench: src/aruco/quadDetect.ts）
+export interface MarkerDetector {
+  detect(img: ImageLike, region?: Region, shrink?: 1 | 2): DetectResult[];
+  describeMarker(img: ImageLike, id: number, c: number[]): Marker;
+  bitsOf(id: number): Uint8Array;
+  readonly cellCount: number;
+  delete(): void;
+}
+
 // 画像の一部（左上 x, y・幅 w・高さ h）
 export interface Region {
   x: number;

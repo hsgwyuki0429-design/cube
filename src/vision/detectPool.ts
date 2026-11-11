@@ -3,7 +3,8 @@
 // Worker ごとに OpenCV を読み込むので、1 個あたり 100MB ほど使う
 import type { StickerScheme } from "../aruco/codes";
 import type { Marker } from "../aruco/detect";
-import type { DetectHint } from "./arucoFrame";
+import type { QuadOptions } from "../aruco/quadDetect";
+import { type DetectHint, usesQuad } from "./arucoFrame";
 import type { PixelSource } from "./image";
 import type { FromWorker, ToWorker } from "./protocol";
 
@@ -11,6 +12,7 @@ export interface DetectSettings {
   scheme: StickerScheme;
   design: string;
   thorough: boolean;
+  quad?: boolean | Partial<QuadOptions>; // 専用の検出の設定（src/vision/arucoFrame.ts の detectorFor と同じ）
 }
 
 // 端末のコア数から、検出に使う Worker の数（解析の Worker とライブの認識の分を残す）。スマホは 1 個まで: Worker 1 個で
@@ -50,7 +52,7 @@ export class DetectPool {
           };
         }),
       );
-      w.postMessage({ type: "init" } satisfies ToWorker);
+      w.postMessage({ type: "init", opencv: !usesQuad(settings.scheme, settings.design, settings.quad) } satisfies ToWorker);
       this.workers.push(w);
       this.busy.push(0);
     }

@@ -39,6 +39,8 @@ export interface PipelineConfig {
   // 組み立てた面の読めなかったマスを、マーカーのマスの明暗を直接読んで埋める（src/aruco/gridRead.ts。ライブは追えなかったマーカーの
   // 代わりにも使い、検出を省く）
   arucoGrid?: boolean;
+  // 専用の検出（src/aruco/quadDetect.ts。OpenCV を使わない）。true か、その設定
+  arucoQuad?: boolean | Partial<import("../aruco/quadDetect").QuadOptions>;
 }
 
 export const DEFAULT_PIPELINE: PipelineConfig = { stickers: "unique54" };
@@ -86,5 +88,6 @@ export function processFrame(cv: CV, img: PixelSource, t: number, config: Pipeli
     track: config.arucoTrack,
     grid: config.arucoGrid,
     fineWindows: config.arucoFineWindows,
+    quad: config.arucoQuad,
   }, detected);
 }

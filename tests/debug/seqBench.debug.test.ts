@@ -29,6 +29,7 @@ const LIVE: Record<string, Partial<PipelineConfig> & { decoder?: Partial<Decoder
   base: {},
   // 本体のライブ（controller.liveConfig・liveEngineOptions: 読めた ID を強く信じる・1 フレームでも観測・5 手まで深く探す）
   live: { arucoGrid: true, arucoColorFill: false, decoder: { priorWeight: 0, confirmMargin: 1, deepHyps: 4, bridgeDepth: 5 }, observer: LIVE_OBSERVER },
+  livecv: { arucoQuad: false, arucoGrid: true, arucoColorFill: false, decoder: { priorWeight: 0, confirmMargin: 1, deepHyps: 4, bridgeDepth: 5 }, observer: LIVE_OBSERVER }, // 本体のライブを OpenCV の検出で（比較用）
   noprior: { decoder: { priorWeight: 0 } }, // 手順の知識を使わない（本体のライブ: controller.liveEngineOptions）
   m15: { decoder: { priorWeight: 0, confirmMargin: 1.5 } }, // 確定を緩める（有力な仮説とみなすコスト差）
   m1: { decoder: { priorWeight: 0, confirmMargin: 1 } },
@@ -49,6 +50,7 @@ const LIVE: Record<string, Partial<PipelineConfig> & { decoder?: Partial<Decoder
 };
 const REFINE: Record<string, { pipeline?: Partial<PipelineConfig>; gate?: boolean; still?: boolean }> = {
   base: {},
+  cv: { pipeline: { arucoQuad: false } }, // OpenCV の検出（比較用。既定は専用の検出 src/aruco/quadDetect.ts）
   nogate: { gate: false },
   nostill: { still: false },
   nofill: { pipeline: { arucoColorFill: false } },

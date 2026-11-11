@@ -104,7 +104,7 @@ async function parallelFeeder(refiner: Refiner, n = poolSize()): Promise<{ pool:
   const cfg = refiner.pipelineConfig;
   let pool: DetectPool | null = null;
   try {
-    pool = new DetectPool(n, { scheme: stickerScheme(cfg.stickers), design: cfg.arucoDesign ?? "standard", thorough: cfg.arucoFineWindows ?? !!cfg.arucoThorough });
+    pool = new DetectPool(n, { scheme: stickerScheme(cfg.stickers), design: cfg.arucoDesign ?? "standard", thorough: cfg.arucoFineWindows ?? !!cfg.arucoThorough, quad: cfg.arucoQuad });
     await pool.start();
     const p = pool;
     return { pool: p, feeder: new ParallelFeeder(refiner, (img, hint) => p.detect(img, hint), n * 2) };
@@ -115,9 +115,12 @@ async function parallelFeeder(refiner: Refiner, n = poolSize()): Promise<{ pool:
   }
 }
 
+// OpenCV。専用の検出だけを使うとき（init の opencv: false）は読み込んでいないので null のまま渡す（検出器を作る所で、要るのに
+// なければ例外になる: src/vision/arucoFrame.ts の detectorFor）
+let wantCv = true;
 function needCv(): CV {
-  if (!cv) throw new Error("画像認識（OpenCV）を読み込めませんでした");
-  return cv;
+  if (!cv && wantCv) throw new Error("画像認識（OpenCV）を読み込めませんでした");
+  return cv as CV;
 }
 
 // 精密解析の進み具合: 1 フレーム処理するたびに呼ぶと、200ms ごとに送る
@@ -214,7 +217,7 @@ function processLiveFrame(msg: QueuedFrame): void {
   ctx!.drawImage(bitmap, 0, 0);
   bitmap.close();
   const img = ctx!.getImageData(0, 0, w, h);
-  const result = cv ? processFrame(cv, img, msg.t, focus?.length ? { ...config, focus } : config, memory) : { faces: [], quads: [] };
+  const result = cv || !wantCv ? processFrame(cv as CV, img, msg.t, focus?.length ? { ...config, focus } : config, memory) : { faces: [], quads: [] };
   const reading = frameReading(msg.t, result);
   const track = engine?.push(reading) ?? undefined;
   if (track) focus = focusCells(track.cells, track.orient);
@@ -241,13 +244,16 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
     switch (msg.type) {
       case "init": {
         const t0 = performance.now();
-        try {
-          cv = await loadOpenCv();
-        } catch (e) {
-          cv = null;
-          console.warn("OpenCV.js を読み込めませんでした。", e);
+        wantCv = msg.opencv !== false;
+        if (wantCv) {
+          try {
+            cv = await loadOpenCv();
+          } catch (e) {
+            cv = null;
+            console.warn("OpenCV.js を読み込めませんでした。", e);
+          }
         }
-        post({ type: "ready", ms: performance.now() - t0, opencv: !!cv });
+        post({ type: "ready", ms: performance.now() - t0, opencv: !!cv || !wantCv });
         return;
       }
       case "config":
@@ -401,7 +407,7 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
       }
       case "detect": {
         // 検出だけ（精密解析の並列化: 解析の Worker が、この Worker を何個か作って検出を分ける）
-        const b = detectorFor(needCv(), msg.scheme, msg.thorough, msg.design);
+        const b = detectorFor(needCv(), msg.scheme, msg.thorough, msg.design, msg.quad);
         post({ type: "detected", id: msg.id, markers: detectWithHint(b, msg.img, msg.hint) });
         return;
       }
