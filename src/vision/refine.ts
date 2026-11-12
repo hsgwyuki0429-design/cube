@@ -169,7 +169,13 @@ export const REFINE_PIPELINE: Partial<PipelineConfig> = { arucoReread: 0, arucoG
 
 // 解き直しの後ろ向きに使う時間の上限（src/track/offline.ts の backwardMs）。実物のソルブを本体の録画の画質（720p・2.5Mbps）にすると、後ろ向きが
 // 見失ったまま全観測を探して Node で 8 秒（iPhone では 2〜3 倍）かかった。超えたら、そこまでの後ろ向きでつなぐ・橋渡しする
-const BACKWARD_MS = 15000;
+const BACKWARD_MS = 30000;
+// 1 回目の解き直しで前後がつながらなかった（橋渡し・前向きを補った・届かない）ときの 2 回目: 同じ観測を、1 観測 4 手まで・候補 256 で
+// 解き直す（観測は残っているのでフレームは処理し直さない）。録画の画質の実物のソルブで、1 回目は 6 手を推定でつなぐ・終わりを補うだけ
+// だったものが、どちらも推定 0 手で完成までつながった（88 手は正解と同じ）。4 手まででも候補 64 では前向きが見失って悪くなる。
+// Node で 15〜25 秒かかるので、1 回目でつながったときは使わない
+const DEEP_DECODER = { beamWidth: 256, maxMovesPerStep: 4 };
+const DEEP_BACKWARD_MS = 60000;
 
 export class Refiner {
   readonly engine: TrackerEngine;
@@ -344,11 +350,19 @@ export class Refiner {
   // target: 最後の状態が分かっていれば（タイマーなら完成）、それにたどり着く仮説を選ぶ
   // onPhase: 段階を知らせる（解き直しの後に "timing"。落ちたときにどこで落ちたかを残すため: src/app/crashGuard.ts）。解き直しの間も
   // "decode" をときどき（呼ぶ側で間引く）: 本体は知らせが届かないと止まったとみなしてやり直す（controller.endAnalysis の STALL_MS）
+  deepUsed = false; // 調査用: 2 回目の深い解き直しの結果を使った
   result(target: CubeState | null = solvedState(), onPhase?: (phase: "decode" | "timing") => void): RefineResult {
     const dec = this.engine.decoder;
     const tick = onPhase ? () => onPhase("decode") : undefined;
     // 前向き（スクランブル後から）と後ろ向き（完成から）の両方で解き直し、辻褄の合う所でつなぐ
-    const off = decodeOffline(this.engine.observationLog, Uint8Array.from(this.input.state), target, this.lastT, { ...this.offlineOptions(), tick }, this.forward ?? undefined);
+    let off = decodeOffline(this.engine.observationLog, Uint8Array.from(this.input.state), target, this.lastT, { ...this.offlineOptions(), tick }, this.forward ?? undefined);
+    if (target && off.method !== "meet" && off.method !== "backward") {
+      const base = this.offlineOptions();
+      const deep = decodeOffline(this.engine.observationLog, Uint8Array.from(this.input.state), target, this.lastT, { ...base, decoder: { ...base.decoder, ...DEEP_DECODER }, backwardMs: DEEP_BACKWARD_MS, tick });
+      const guessed = (r: typeof off) => r.moves.filter((m) => m.inferred).length;
+      if (deep.reachedEnd && (!off.reachedEnd || guessed(deep) < guessed(off) || (guessed(deep) === guessed(off) && deep.method === "meet"))) off = deep;
+      this.deepUsed = off === deep;
+    }
     let moves = off.moves;
     let solved = target ? off.reachedEnd && isSolved(target) : isSolved(dec.best().state);
     let forced = off.method === "forward-finish" ? off.moves.filter((m) => m.inferred && m.t === this.lastT).length : 0;
