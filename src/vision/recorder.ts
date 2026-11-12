@@ -15,15 +15,23 @@ export interface Recording {
 }
 
 // ハードウェアの圧縮が使える形式を先に試す（スマホの CPU を認識処理に残すため）。
-// H.264 は Annex B（キーフレームに SPS/PPS を含む）にして、復号の設定を単純にする
+// H.264 は Annex B（キーフレームに SPS/PPS を含む）にして、復号の設定を単純にする。Baseline の Level 3.2（avc1.420020）を先に:
+// 3.1（42001f）は 720p を 30fps までしか想定していない（60fps で録る）
 const CODECS: { codec: string; hw: HardwareAcceleration }[] = [
+  { codec: "avc1.420020", hw: "prefer-hardware" },
   { codec: "avc1.42001f", hw: "prefer-hardware" },
   { codec: "vp8", hw: "prefer-hardware" },
   { codec: "vp09.00.10.08", hw: "prefer-hardware" },
+  { codec: "avc1.420020", hw: "no-preference" },
   { codec: "avc1.42001f", hw: "no-preference" },
   { codec: "vp8", hw: "no-preference" },
   { codec: "vp09.00.10.08", hw: "no-preference" },
 ];
+
+// 圧縮の強さ（ビット/秒）。2.5Mbps では、実物のソルブ（マーカーの辺 19〜31 画素）で 1 フレームに ID が読めるマスが元の画質の 8 割
+// （7.6〜8.0 → 6.1〜6.6）に減り、精密解析が完成までつながらない・解き直しが 16 秒かかることがあった。5Mbps で 7.1〜7.4 に戻り、
+// どちらも 1 秒ほどで完成までつながった（8Mbps でも大差ない）。タイマーの録画は 150 秒まで残すので、最大 94MB ほど
+const BITRATE = 5_000_000;
 
 export class FrameRecorder {
   private encoder: VideoEncoder | null = null;
@@ -58,7 +66,7 @@ export class FrameRecorder {
         codec,
         width: w,
         height: h,
-        bitrate: 2_500_000,
+        bitrate: BITRATE,
         framerate: 60,
         latencyMode: "realtime",
         hardwareAcceleration: hw,

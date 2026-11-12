@@ -188,6 +188,15 @@ it("実際のプレイ動画", async () => {
   const liveMemory = {};
   const refiner = process.env.REAL_REFINE === "0" ? null : new Refiner(cv as never, { state: Array.from(start), refs: ARUCO_REFS, from: from * 1000, to: to * 1000, ...(process.env.REAL_REFINE_GATE === "0" ? { gate: false } : {}), engine: { observer: ARUCO_OBSERVER, ...JSON.parse(process.env.REAL_REFINE_ENGINE ?? "{}"), decoder: { beamWidth: 32, maxMovesPerStep: 3, rotationCost: 1.5, ...JSON.parse(process.env.REAL_REFINE_ENGINE ?? "{}").decoder } }, pipeline: { ...STICKERS, ...JSON.parse(process.env.REAL_REFINE_CFG ?? "{}") } });
   // REAL_RFRAMES=22.1-23.0: 精密解析が精密に処理したフレームの面
+  // 精密解析が精密に処理したフレームの読み（ID が読めたマスの数。認識の良し悪し）
+  const rstat = { frames: 0, faces: 0, ids: 0, empty: 0 };
+  if (refiner && !process.env.REAL_RFRAMES)
+    refiner.onFrame = (_t, r: FrameResult) => {
+      rstat.frames++;
+      rstat.faces += r.faces.length;
+      if (!r.faces.length) rstat.empty++;
+      for (const f of r.faces) for (const id of f.ids ?? []) if (id >= 0) rstat.ids++;
+    };
   if (refiner && process.env.REAL_RFRAMES) {
     const [f0, f1] = process.env.REAL_RFRAMES.split("-").map((x) => Number(x) * 1000);
     refiner.onFrame = (t, r: FrameResult) => {
@@ -341,7 +350,8 @@ it("実際のプレイ動画", async () => {
     }
     const res = cached ?? refiner!.result(end);
     if (refiner && refFile) writeFileSync(refFile, JSON.stringify(res));
-    out.push(`精密解析${cached ? "（書き出した結果）" : ""} ${(refineMs / frames).toFixed(1)}ms/フレーム（渡した ${refineFrames} 枚・計 ${(refineMs / 1000).toFixed(1)} 秒）・解き直し ${(performance.now() - r0).toFixed(0)}ms・${res.method}・${res.solved ? "完成まで" : "完成に届かない"}・推定した手 ${res.moves.filter((m) => m.inferred).length}`);
+    if (rstat.frames) out.push(`精密解析の読み: 精密に処理した ${rstat.frames} 枚・面なし ${((100 * rstat.empty) / rstat.frames).toFixed(1)}%・平均 ${(rstat.faces / rstat.frames).toFixed(2)} 面・ID が読めたマス 平均 ${(rstat.ids / rstat.frames).toFixed(2)}`);
+    out.push(`精密解析${cached ? "（書き出した結果）" : ""} ${(refineMs / frames).toFixed(1)}ms/フレーム（渡した ${refineFrames} 枚・計 ${(refineMs / 1000).toFixed(1)} 秒）・解き直し ${(performance.now() - r0).toFixed(0)}ms・${res.method}${refiner?.deepUsed ? "（2 回目の深い解き直し）" : ""}・${res.solved ? "完成まで" : "完成に届かない"}・推定した手 ${res.moves.filter((m) => m.inferred).length}`);
     out.push(`精密解析の手順（${res.moves.length} 手） ${res.moves.map((m) => `${MOVE_NAMES[m.move]}${m.inferred ? "?" : ""}`).join(" ")}`);
     if (process.env.REAL_ENDS) out.push(`端の手: 最初 ${JSON.stringify(res.moves.slice(0, 3))} raw ${JSON.stringify(res.raw?.slice(0, 3))} / 最後 ${JSON.stringify(res.moves.slice(-2))} raw ${JSON.stringify(res.raw?.slice(-2))}`);
     out.push(`精密解析の時刻 開始 ${res.start === null ? "-" : (res.start / 1000).toFixed(3)}s${res.startUncertain ? "（不確か）" : ""}・終了 ${res.end === null ? "-" : (res.end / 1000).toFixed(3)}s${res.endUncertain ? "（不確か）" : ""}`);
