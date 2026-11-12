@@ -190,7 +190,7 @@ it("実際のプレイ動画", async () => {
   // REAL_RFRAMES=22.1-23.0: 精密解析が精密に処理したフレームの面
   // 精密解析が精密に処理したフレームの読み（ID が読めたマスの数。認識の良し悪し）
   const rstat = { frames: 0, faces: 0, ids: 0, empty: 0 };
-  // 精密に処理したフレームごとの読み（REAL_OBS と一緒に書き出す）: [時刻, 面の数, ID が読めたマス, 格子からずれたマーカーの最大（マス）, 回転途中の形が見えたか]
+  // 精密に処理したフレームごとの読み（REAL_OBS と一緒に書き出す）: [時刻, 面の数, ID が読めたマス, 格子からずれたマーカーの最大（マス）, 回転途中の形が見えたか, 面ごとのマス]
   const frameLog: number[][] = [];
   if (refiner && !process.env.REAL_RFRAMES)
     refiner.onFrame = (t, r: FrameResult) => {
@@ -200,7 +200,9 @@ it("実際のプレイ動画", async () => {
         for (const id of f.ids ?? []) if (id >= 0) ids++;
         for (const sh of f.shift ?? []) if (sh) shift = Math.max(shift, Math.hypot(sh[0], sh[1]));
       }
-      frameLog.push([t, r.faces.length, ids, Math.round(shift * 100) / 100, r.turn ? 1 : 0]);
+      // 6 番目: 面ごとに [slot, 9 マスの ID（-1 = 読めない）, 9 マスのずれ × 100（-1 = 読めない）]
+      const cellsOf = r.faces.map((f) => [f.slot, ...Array.from({ length: 9 }, (_, c) => f.ids?.[c] ?? -1), ...Array.from({ length: 9 }, (_, c) => (f.shift?.[c] ? Math.round(Math.hypot(f.shift[c]![0], f.shift[c]![1]) * 100) : -1))]);
+      frameLog.push([t, r.faces.length, ids, Math.round(shift * 100) / 100, r.turn ? 1 : 0, cellsOf as unknown as number]);
       rstat.frames++;
       rstat.faces += r.faces.length;
       if (!r.faces.length) rstat.empty++;
