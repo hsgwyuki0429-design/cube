@@ -14,6 +14,7 @@
 //   REAL_READINGS=ファイル（ライブが処理したフレームの読みを書き出す: liveReplay.debug.test.ts で追跡だけを測る）
 //   REAL_NOLIVE=1（ライブを省く）・REAL_STILL=1（精密解析で止まっているフレームを飛ばす。本体の録画の解析と同じ）・
 //   REAL_ENDS=1（精密解析の最初・最後の手の時刻の詳しい内容）
+//   REAL_START_FILE=ファイル（始まりの状態: JSON の startState か start）
 //   REAL_RREADINGS=ファイル（精密解析が精密に処理したフレームの読み: betweenMoves.debug.test.ts）
 //   REAL_OBS=ファイル（精密解析の観測を書き出す: obsReplay.debug.test.ts で解き直しだけを測る）
 //   REAL_REF=ファイル（精密解析の結果を書き出す。REAL_REFINE=0 なら読み込んで、ライブの一致だけ測る: ライブを直して何度も測るとき）
@@ -116,7 +117,11 @@ it("実際のプレイ動画", async () => {
   const out: string[] = [];
 
   let start = solvedState();
-  if (process.env.REAL_START === "scan") {
+  // REAL_START_FILE=ファイル: 始まりの状態（JSON の startState か start。精密解析の結果・REAL_READINGS の書き出しをそのまま使える）
+  if (process.env.REAL_START_FILE) {
+    const j = JSON.parse(readFileSync(process.env.REAL_START_FILE, "utf8")) as { startState?: number[]; start?: number[] };
+    start = Uint8Array.from((j.startState ?? j.start)!);
+  } else if (process.env.REAL_START === "scan") {
     // 回し始める前のフレームで読んだステッカーの ID を、センターの ID から決めた姿勢で facelet ごとに数える
     const votes = Array.from({ length: 54 }, () => new Map<number, number>());
     const mem = {};
