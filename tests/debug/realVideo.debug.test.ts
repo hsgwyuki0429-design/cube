@@ -190,8 +190,17 @@ it("実際のプレイ動画", async () => {
   // REAL_RFRAMES=22.1-23.0: 精密解析が精密に処理したフレームの面
   // 精密解析が精密に処理したフレームの読み（ID が読めたマスの数。認識の良し悪し）
   const rstat = { frames: 0, faces: 0, ids: 0, empty: 0 };
+  // 精密に処理したフレームごとの読み（REAL_OBS と一緒に書き出す）: [時刻, 面の数, ID が読めたマス, 格子からずれたマーカーの最大（マス）, 回転途中の形が見えたか]
+  const frameLog: number[][] = [];
   if (refiner && !process.env.REAL_RFRAMES)
-    refiner.onFrame = (_t, r: FrameResult) => {
+    refiner.onFrame = (t, r: FrameResult) => {
+      let ids = 0;
+      let shift = 0;
+      for (const f of r.faces) {
+        for (const id of f.ids ?? []) if (id >= 0) ids++;
+        for (const sh of f.shift ?? []) if (sh) shift = Math.max(shift, Math.hypot(sh[0], sh[1]));
+      }
+      frameLog.push([t, r.faces.length, ids, Math.round(shift * 100) / 100, r.turn ? 1 : 0]);
       rstat.frames++;
       rstat.faces += r.faces.length;
       if (!r.faces.length) rstat.empty++;
@@ -346,7 +355,7 @@ it("実際のプレイ動画", async () => {
     // REAL_OBS=ファイル: 精密解析の観測を書き出す（解き直しだけを tests/debug/obsReplay.debug.test.ts で繰り返し測る）
     if (refiner && process.env.REAL_OBS) {
       const arr = (a?: ArrayLike<number>) => (a ? Array.from(a) : undefined);
-      writeFileSync(process.env.REAL_OBS, JSON.stringify({ start: Array.from(start), end: end ? Array.from(end) : null, lastT: refiner.lastT, obs: refiner.engine.observationLog.map((o) => ({ ...o, faces: o.faces.map((f) => ({ slot: f.slot, cost: arr(f.cost), labels: arr(f.labels), ids: arr(f.ids), idCost: arr(f.idCost) })) })) }));
+      writeFileSync(process.env.REAL_OBS, JSON.stringify({ start: Array.from(start), end: end ? Array.from(end) : null, lastT: refiner.lastT, frames: frameLog, obs: refiner.engine.observationLog.map((o) => ({ ...o, faces: o.faces.map((f) => ({ slot: f.slot, cost: arr(f.cost), labels: arr(f.labels), ids: arr(f.ids), idCost: arr(f.idCost) })) })) }));
     }
     const res = cached ?? refiner!.result(end);
     if (refiner && refFile) writeFileSync(refFile, JSON.stringify(res));

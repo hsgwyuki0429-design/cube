@@ -2,11 +2,17 @@
 // 1 観測で読めるマスは 8 ほど。同じ状態の間（手と手の間）の観測を足し合わせると 15〜18 マスになり、深く探しても「たまたま合う間違った
 // 手順」が出にくくなる。手と手の間の半分は止まった瞬間が 1 フレームもない（続けて回す）ので、区間の間には 2 手以上入るのがふつう。
 //   OBS_FILE=obs.json REF_FILE=ref.json npx vitest run -c vitest.debug.config.ts tests/debug/segmentReplay.debug.test.ts --silent=false
+//   SEG_RULE=face|shift|turn|all（フレームの読みで区切る。REAL_OBS に frames があるとき）・SEG_MIN_BOTH・SEG_GAP
 //   SEG_DEC='[{"maxMovesPerStep":4,"beamWidth":256}]'（試すデコーダの設定の並び）
 // 結果（2026-11、Testvideo2 の 5047・5048 を録画の画質 2.5Mbps で）: 本当の手の時刻で区切れば 1 区間 14〜16 マスになるが、観測どうしの
 // 食い違いだけで区切ると 8.3 → 9.0〜9.7 マスにしかならず（両方で読めたマスが少なく、回った後も食い違いが見えないまま足してしまう）、
 // 5048 で正解と 10 手違う手順が「完成まで」つながった（誤った手順を確定にするのがいちばん悪い）。区切りは観測ではなく、フレームの
 // マーカーの動き（層が動いたか: src/track/timing.ts のずれ）で決める必要がある
+// 続けて、精密解析が処理したフレームの読み（REAL_OBS の frames）で「面が組み立てられないフレームは回している途中」として区切った（SEG_RULE）。
+// 本当に手が入った観測の間のうち 6 割前後（162 中 103 など）は、間のフレームでもどこかの面が組み立てられていて区切れない（U を回している間も
+// 正面の下 2 段・右の面は読める）。ずれ・回転途中の形も足すと見逃しは 16〜32 に減るが、止まっている所も区切って足し合わせがほとんど
+// 起きない。解き直すと速くはなる（1 回目 15〜19 秒 → 1〜7 秒）が、face・shift では 4 本のうち 5048 で、終わりの 15 手が違う手順が
+// 「完成まで」つながった。本体には入れない
 import { readFileSync } from "node:fs";
 import { it } from "vitest";
 import { MOVE_NAMES, applyMoves, isSolved } from "../../src/cube/model";
@@ -66,6 +72,24 @@ function mergeInto(a: Observation, b: Observation): void {
   }
 }
 
+// フレームの読み（realVideo の REAL_OBS の frames: [時刻, 面の数, ID のマス, ずれの最大, 回転の形]）で「回している途中」とみなすフレーム
+// SEG_RULE: face = 面が組み立てられない / shift = 面なしか格子からのずれ > 0.18 / turn = 面なしか回転途中の形 / all = どれか
+let frames: number[][] = [];
+function moving(f: number[]): boolean {
+  const rule = process.env.SEG_RULE ?? "";
+  if (rule === "face") return f[1] === 0;
+  if (rule === "shift") return f[1] === 0 || f[3] > 0.18;
+  if (rule === "turn") return f[1] === 0 || f[4] === 1;
+  if (rule === "all") return f[1] === 0 || f[3] > 0.18 || f[4] === 1;
+  return false;
+}
+// 観測 a から b までの間（b を含まない）に、回している途中とみなすフレームがあるか
+function movedBetween(a: number, b: number): boolean {
+  if (!process.env.SEG_RULE) return false;
+  for (const f of frames) if (f[0] >= a && f[0] < b && moving(f)) return true;
+  return false;
+}
+
 function segments(obs: Observation[]): Observation[] {
   const out: Observation[] = [];
   let cur: Observation | null = null;
@@ -74,7 +98,7 @@ function segments(obs: Observation[]): Observation[] {
     if (!o.faces.length) continue;
     // 回転途中の形が見えた・同じマスの読みが食い違った（何か回った）・間が開いたら次の区間
     const gap = last ? o.t - last.t : 0;
-    if (cur && last && !o.turns?.length && gap < Number(process.env.SEG_GAP ?? 400) && agrees(cur, o) && agrees(last, o)) mergeInto(cur, o);
+    if (cur && last && !o.turns?.length && gap < Number(process.env.SEG_GAP ?? 400) && !movedBetween(last.t, o.t) && agrees(cur, o) && agrees(last, o)) mergeInto(cur, o);
     else {
       cur = { t: o.t, tPrevEnd: o.tPrevEnd, faces: o.faces.map((f) => ({ ...f, cost: f.cost.slice(), labels: f.labels.slice(), ...(f.ids ? { ids: f.ids.slice(), idCost: f.idCost!.slice() } : {}) })), turns: o.turns };
       out.push(cur);
@@ -96,7 +120,8 @@ function editDistance(a: string[], b: string[]): number {
 it("止まっている区間ごとに足し合わせて解き直す", () => {
   const file = process.env.OBS_FILE;
   if (!file) return;
-  const raw = JSON.parse(readFileSync(file, "utf8")) as { start: number[]; end: number[] | null; lastT: number; obs: RawObs[] };
+  const raw = JSON.parse(readFileSync(file, "utf8")) as { start: number[]; end: number[] | null; lastT: number; frames?: number[][]; obs: RawObs[] };
+  frames = raw.frames ?? [];
   const obs = raw.obs.map(toObs);
   const truth = process.env.REF_FILE ? (JSON.parse(readFileSync(process.env.REF_FILE, "utf8")) as { moves: { move: number }[] }).moves.map((m) => MOVE_NAMES[m.move]) : null;
   const start = Uint8Array.from(raw.start);
@@ -119,6 +144,7 @@ it("止まっている区間ごとに足し合わせて解き直す", () => {
       const names = moves.map((m) => MOVE_NAMES[m.move]);
       const ok = end ? isSolved(applyMoves(start, res.moves.map((m) => m.move))) : false;
       const dist = truth ? editDistance(names, simplifyMoves(truth.map((n) => ({ move: MOVE_NAMES.indexOf(n), t: 0, orient: 0 }))).map((m) => MOVE_NAMES[m.move])) : -1;
+      if (process.env.SEG_PRINT) console.log(`手順 ${names.join(" ")}`);
       console.log(`${name} ${JSON.stringify(dec)}: ${(ms / 1000).toFixed(1)} 秒・${res.method}・${ok ? "完成まで" : "届かない"}・${names.length} 手・推定 ${moves.filter((m) => m.inferred).length}${truth ? `・正解との違い ${dist} 手` : ""}`);
     }
   }
