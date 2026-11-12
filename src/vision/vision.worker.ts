@@ -98,6 +98,19 @@ function doAnchor(id: number, s: Stream): void {
 
 const post = (msg: FromWorker) => (self as unknown as Worker).postMessage(msg);
 
+// 解き直しの段階を本体に知らせる。解き直しの間の "decode"（動いている知らせ）は 1 秒に 1 回まで
+function phasePoster(id: number): (phase: "decode" | "timing") => void {
+  let last = -Infinity;
+  return (phase) => {
+    if (phase === "decode") {
+      const now = performance.now();
+      if (now - last < 1000) return;
+      last = now;
+    }
+    post({ type: "refine-phase", id, phase });
+  };
+}
+
 // 精密解析の検出を別の Worker に分ける（src/vision/detectPool.ts）。作れない・OpenCV を読み込めないときは null（この Worker だけで）
 async function parallelFeeder(refiner: Refiner, n = poolSize()): Promise<{ pool: DetectPool; feeder: ParallelFeeder } | null> {
   if (!n || typeof Worker === "undefined") return null;
@@ -286,13 +299,21 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
           const progress = progressPoster(id, () => total);
           // 止まっているフレームは飛ばす（ソルブ中から進める解析と同じ。やり直しの解析を待つ時間を短く）
           const still = new StillSkipper();
+          // インスペクションの間は、ソルブ中から進める解析と同じく間引く（streamFrame）
+          const inspectUntil = input.inspectUntil ?? -Infinity;
+          if (Number.isFinite(inspectUntil)) refiner.setInspectUntil(inspectUntil);
+          let lastInspect = -Infinity;
           await decodeRecording(recording, (img, t) => {
             if (t < input.from || t > input.to) return;
-            for (const f of still.next(img, t)) refiner.push(f.img, f.t);
             progress();
+            if (t < inspectUntil) {
+              if (t - lastInspect < INSPECT_EVERY_MS) return;
+              lastInspect = t;
+            }
+            for (const f of still.next(img, t)) refiner.push(f.img, f.t);
           });
           post({ type: "refine-phase", id, phase: "decode" });
-          post({ type: "refine-result", id, result: refiner.result(undefined, (phase) => post({ type: "refine-phase", id, phase })) });
+          post({ type: "refine-result", id, result: refiner.result(undefined, phasePoster(id)) });
         } catch (e) {
           post({ type: "refine-error", id, message: errorMessage(e) });
         }
@@ -344,7 +365,7 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
           await s.decoder?.flush();
           const t1 = performance.now();
           post({ type: "refine-phase", id: msg.id, phase: "decode" });
-          const result = s.refiner.result(msg.target ? Uint8Array.from(msg.target) : null, (phase) => post({ type: "refine-phase", id: msg.id, phase }));
+          const result = s.refiner.result(msg.target ? Uint8Array.from(msg.target) : null, phasePoster(msg.id));
           // 調査用: 止めた時点の遅れ・残りの処理・解き直しの時間
           console.info(`[analysis] behind ${behind.toFixed(0)}ms rest ${(t1 - t0).toFixed(0)}ms result ${(performance.now() - t1).toFixed(0)}ms frames ${s.refiner.frames} gated ${s.refiner.gated} copied ${s.decoder?.copied ?? 0}`);
           post({ type: "refine-result", id: msg.id, result });
@@ -397,7 +418,7 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
           feeder?.pool.close();
           if (videoCancels.has(id)) throw new Error("中止しました");
           post({ type: "refine-progress", id, done: total, total });
-          post({ type: "refine-result", id, result: refiner.result(target ? Uint8Array.from(target) : null) });
+          post({ type: "refine-result", id, result: refiner.result(target ? Uint8Array.from(target) : null, phasePoster(id)) });
         } catch (e) {
           post({ type: "refine-error", id, message: errorMessage(e) });
         } finally {

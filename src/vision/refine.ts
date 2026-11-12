@@ -28,8 +28,10 @@ export interface RefineInput {
   keepPatchesMs?: number;
   // 軽い検査で、前に精密に処理したフレームとマスの色が同じフレームを飛ばす（既定 true。下の「軽い検査」）
   gate?: boolean;
-  // 軽い解析（前回の解析中に落ちたとき: src/app/crashGuard.ts）: 候補を半分にし、隠れた区間の橋渡しをしない
-  light?: boolean;
+  // インスペクションの終わり（回し始めの少し前、ms）。録画全体を解析するとき（止まった後のやり直し）、これより前のフレームはソルブ中から
+  // 進める解析と同じく間引く（vision.worker.ts の INSPECT_EVERY_MS）。インスペクションで回して見せている間を全部処理すると、持ち替えを
+  // 手と読み違えて完成までつながらないことがあった（録画の画質の実物のソルブ 2 本）
+  inspectUntil?: number;
 }
 
 // 軽い検査: 全フレームを精密に処理する代わりに、前に精密に処理したフレーム（基準）の面の格子で、各マスの真ん中あたりの色を数点だけ測り
@@ -165,8 +167,9 @@ export const REFINE_ENGINE: Partial<EngineOptions> = {
 // （指で半分以上隠れたマスの読み直しの分。手順には効いていなかった）
 export const REFINE_PIPELINE: Partial<PipelineConfig> = { arucoReread: 0, arucoGrid: true, arucoFineWindows: false };
 
-// 軽い解析の設定（RefineInput.light）
-const LIGHT_DECODER = { beamWidth: 32, maxMovesPerStep: 3, recoveryDepth: 3 };
+// 解き直しの後ろ向きに使う時間の上限（src/track/offline.ts の backwardMs）。実物のソルブを本体の録画の画質（720p・2.5Mbps）にすると、後ろ向きが
+// 見失ったまま全観測を探して Node で 8 秒（iPhone では 2〜3 倍）かかった。超えたら、そこまでの後ろ向きでつなぐ・橋渡しする
+const BACKWARD_MS = 15000;
 
 export class Refiner {
   readonly engine: TrackerEngine;
@@ -195,7 +198,7 @@ export class Refiner {
     const opts = input.engine ?? {};
     this.engine = new TrackerEngine(Uint8Array.from(input.state), input.refs, {
       ...opts,
-      decoder: { ...opts.decoder, ...REFINE_ENGINE.decoder, ...(input.light ? LIGHT_DECODER : {}) },
+      decoder: { ...opts.decoder, ...REFINE_ENGINE.decoder },
       logMs: Infinity,
       keepObservations: true,
       repeatMs: 0,
@@ -238,8 +241,7 @@ export class Refiner {
   }
 
   private offlineOptions(): OfflineOptions {
-    const light = this.input.light ? LIGHT_DECODER : {};
-    return { decoder: { ...this.input.engine?.decoder, ...DEFAULT_OFFLINE.decoder, ...light }, personal: this.input.engine?.personal, bridge: !this.input.light };
+    return { decoder: { ...this.input.engine?.decoder, ...DEFAULT_OFFLINE.decoder }, personal: this.input.engine?.personal, backwardMs: BACKWARD_MS };
   }
 
   // 途中結果: 前向きにここまで解いた最良の仮説（リアルタイムの追跡をこれに乗り換える）
@@ -340,11 +342,13 @@ export class Refiner {
   }
 
   // target: 最後の状態が分かっていれば（タイマーなら完成）、それにたどり着く仮説を選ぶ
-  // onPhase: 段階を知らせる（解き直しの後に "timing"。落ちたときにどこで落ちたかを残すため: src/app/crashGuard.ts）
-  result(target: CubeState | null = solvedState(), onPhase?: (phase: "timing") => void): RefineResult {
+  // onPhase: 段階を知らせる（解き直しの後に "timing"。落ちたときにどこで落ちたかを残すため: src/app/crashGuard.ts）。解き直しの間も
+  // "decode" をときどき（呼ぶ側で間引く）: 本体は知らせが届かないと止まったとみなしてやり直す（controller.endAnalysis の STALL_MS）
+  result(target: CubeState | null = solvedState(), onPhase?: (phase: "decode" | "timing") => void): RefineResult {
     const dec = this.engine.decoder;
+    const tick = onPhase ? () => onPhase("decode") : undefined;
     // 前向き（スクランブル後から）と後ろ向き（完成から）の両方で解き直し、辻褄の合う所でつなぐ
-    const off = decodeOffline(this.engine.observationLog, Uint8Array.from(this.input.state), target, this.lastT, this.offlineOptions(), this.forward ?? undefined);
+    const off = decodeOffline(this.engine.observationLog, Uint8Array.from(this.input.state), target, this.lastT, { ...this.offlineOptions(), tick }, this.forward ?? undefined);
     let moves = off.moves;
     let solved = target ? off.reachedEnd && isSolved(target) : isSolved(dec.best().state);
     let forced = off.method === "forward-finish" ? off.moves.filter((m) => m.inferred && m.t === this.lastT).length : 0;
@@ -354,7 +358,7 @@ export class Refiner {
       solved = isSolved(dec.best().state);
       forced = 0;
       if (target && !statesEqual(dec.best().state, target)) {
-        const fixed = finishDeep(dec, target, this.lastT);
+        const fixed = finishDeep(dec, target, this.lastT, tick);
         if (fixed) {
           forced = fixed.filter((m) => m.inferred && m.t === this.lastT).length;
           moves = fixed;

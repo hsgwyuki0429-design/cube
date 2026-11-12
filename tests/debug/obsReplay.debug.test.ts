@@ -18,7 +18,7 @@ it("書き出した観測の解き直し", async () => {
     faces: o.faces.map((f) => ({ slot: f.slot, cost: Float32Array.from(f.cost), labels: Int8Array.from(f.labels), ...(f.ids ? { ids: Int16Array.from(f.ids), idCost: Float32Array.from(f.idCost!) } : {}) })),
   }));
   // 本体の精密解析と同じ（src/vision/refine.ts の offlineOptions: controller.engineOptions の探索の設定 + DEFAULT_OFFLINE）
-  const options = { decoder: { beamWidth: 32, maxMovesPerStep: 3, rotationCost: 1.5, ...DEFAULT_OFFLINE.decoder, ...JSON.parse(process.env.OBS_DEC ?? "{}") }, bridge: true };
+  const options = { decoder: { beamWidth: 32, maxMovesPerStep: 3, rotationCost: 1.5, ...DEFAULT_OFFLINE.decoder, ...JSON.parse(process.env.OBS_DEC ?? "{}") }, bridge: true, backwardMs: Number(process.env.OBS_BACK ?? Infinity) };
   const start = Uint8Array.from(raw.start);
   const end = raw.end ? Uint8Array.from(raw.end) : null;
   const run = () => {

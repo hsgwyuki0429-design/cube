@@ -20,7 +20,7 @@ import { type Settings, facingOf, settingsStore } from "./settings";
 import { STICKERS } from "../aruco/design";
 import { loadSolves, personalSequences } from "./storage";
 import { createStore } from "./store";
-import { markPhase, noteAnalysisOk, safeLevel } from "./crashGuard";
+import { markPhase } from "./crashGuard";
 
 // 画面: プレイ・データ（グラフと履歴）・1 回の記録の詳しい画面・解析（スロー動画・ArUco の画面）・設定（使い方も）
 export type Screen = "play" | "data" | "solve" | "analyze" | "settings";
@@ -472,7 +472,6 @@ class Controller {
       engine: this.engineOptions(),
       pipeline: this.pipelineConfig(),
       ...(opts.timed ? {} : { keepPatchesMs: 3000 }),
-      ...(safeLevel() >= 1 ? { light: true } : {}),
     };
     const id = await this.refiner.startStream((p) => this.onAnalysisPartial(session, p));
     if (id === null || this.session !== session) return abandon();
@@ -525,7 +524,7 @@ class Controller {
       if (!backup) throw why instanceof Error ? why : new Error(String(why));
       console.warn("解析をやり直します", why);
       this.refiner.close();
-      return this.watched((p) => this.refiner.run(backup, { ...session.input, to, light: true }, p), progress);
+      return this.watched((p) => this.refiner.run(backup, { ...session.input, to, ...(session.solvingFrom !== undefined ? { inspectUntil: session.solvingFrom } : {}) }, p), progress);
     };
     const first = session.id >= 0 ? this.watched((p) => this.refiner.endStream(session.id, to, target, p), progress) : Promise.reject(new Error("解析が始まっていませんでした"));
     const result = first.catch(again);
@@ -533,7 +532,6 @@ class Controller {
     const rest = window.setTimeout(() => (this.liveResting = false), LIVE_REST_MAX_MS);
     // 終わったら解析の Worker を閉じてメモリを返す（次のインスペクションで作り直す）
     void result
-      .then(() => noteAnalysisOk())
       .catch(() => undefined)
       .finally(() => {
         clearTimeout(rest);

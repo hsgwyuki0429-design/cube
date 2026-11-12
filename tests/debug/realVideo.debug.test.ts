@@ -12,6 +12,7 @@
 //   フレームを PNG で）・REAL_REFINE_CFG='{"arucoColorFill":false}' など（精密解析の認識の設定を上書き）・REAL_LIVE='{"arucoColorFill":true}' など（ライブの認識の設定を上書き）・
 //   REAL_REFINE_GATE=0（精密解析の軽い検査で飛ばさない）・REAL_REFINE_ENGINE='{"decoder":{"priorWeight":0}}' など（精密解析の追跡の設定）
 //   REAL_READINGS=ファイル（ライブが処理したフレームの読みを書き出す: liveReplay.debug.test.ts で追跡だけを測る）
+//   REAL_NOLIVE=1（ライブを省く）・REAL_STILL=1（精密解析で止まっているフレームを飛ばす。本体の録画の解析と同じ）・
 //   REAL_ENDS=1（精密解析の最初・最後の手の時刻の詳しい内容）
 //   REAL_OBS=ファイル（精密解析の観測を書き出す: obsReplay.debug.test.ts で解き直しだけを測る）
 //   REAL_REF=ファイル（精密解析の結果を書き出す。REAL_REFINE=0 なら読み込んで、ライブの一致だけ測る: ライブを直して何度も測るとき）
@@ -33,6 +34,7 @@ import { ARUCO_OBSERVER, type FrameReading, LIVE_OBSERVER } from "../../src/trac
 import { DEFAULT_OFFLINE, reversedObservations } from "../../src/track/offline";
 import { liveStats } from "../../src/vision/arucoFrame";
 import { type FrameResult, frameReading, processFrame } from "../../src/vision/pipeline";
+import { StillSkipper } from "../../src/vision/motion";
 import { type RefineResult, Refiner } from "../../src/vision/refine";
 import { loadTestOpenCv } from "../cv";
 import { writePng } from "./png";
@@ -197,6 +199,7 @@ it("実際のプレイ動画", async () => {
   const SOLVE_FROM = Number(process.env.REAL_SOLVE_FROM ?? -Infinity);
   if (refiner && Number.isFinite(SOLVE_FROM)) refiner.setInspectUntil(SOLVE_FROM * 1000);
   let lastInspect = -Infinity;
+  const still = process.env.REAL_STILL ? new StillSkipper() : null;
   let refineFrames = 0;
   const K = Number(process.env.REAL_K ?? 0);
   // REAL_FPS=6: 1 秒 N 枚に固定して処理する（処理時間によらないので、設定を比べるときに結果がぶれない）。待っている 3 枚のうち動きのいちばん小さいもの
@@ -263,7 +266,9 @@ it("実際のプレイ動画", async () => {
   await readFrames((img, t) => {
     if (process.env.REAL_SAVE && Math.abs(t / 1000 - saveAt) < 0.009) writePng(`${process.env.REAL_SAVE}/frame-${saveAt}.png`, img);
     frames++;
-    if (!K && !FIX) liveFrame(img, t);
+    if (process.env.REAL_NOLIVE) {
+      // ライブを省く（精密解析だけを本体と同じ条件で測るとき）
+    } else if (!K && !FIX) liveFrame(img, t);
     else {
       // 実機のように: 結果の来ていないフレームは 3 枚まで（visionClient の MAX_INFLIGHT）。空いたら動きのいちばん小さいもの
       const th = thumb(img);
@@ -284,7 +289,9 @@ it("実際のプレイ動画", async () => {
     if (refiner && frames % REFINE_EVERY === 0) {
       refineFrames++;
       const b = performance.now();
-      refiner.push(img, t);
+      // REAL_STILL=1: 本体の録画の解析と同じく、止まっているフレームを飛ばす（vision.worker.ts の streamFrame の StillSkipper）
+      if (still) for (const f of still.next(img, t)) refiner.push(f.img, f.t);
+      else refiner.push(img, t);
       refineMs += performance.now() - b;
       if (dump) {
         const d = refiner.engine.decoder;

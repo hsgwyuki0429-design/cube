@@ -1,29 +1,8 @@
-import { useEffect, useRef, useState } from "preact/hooks";
-import { resetSafeLevel, safeLevel } from "../app/crashGuard";
+import { useEffect, useRef } from "preact/hooks";
 import { controller } from "../app/controller";
 import { type Settings, settingsStore, updateSettings } from "../app/settings";
 import { useStore } from "../app/store";
 import { HelpPage } from "./HelpPage";
-
-// 前回の解析中にアプリが落ちたので、精密解析を軽く・止めている（src/app/crashGuard.ts）。ふつうに戻せる
-function SafeAnalysis() {
-  const [level, setLevel] = useState(safeLevel());
-  if (!level) return null;
-  return (
-    <Field label="精密解析" desc="解析の途中でアプリが落ちたため、自動で切り替えました。戻して落ちるときは、またこの状態になります">
-      <span class="muted small">軽くしています（落ちずに終われば自動で戻ります）</span>{" "}
-      <button
-        class="btn small"
-        onClick={() => {
-          resetSafeLevel();
-          setLevel(0);
-        }}
-      >
-        元に戻す
-      </button>
-    </Field>
-  );
-}
 
 function Field(props: { label: string; desc?: string; children: preact.ComponentChildren }) {
   return (
@@ -137,7 +116,6 @@ export function SettingsPage() {
           <Field label="効果音">
             <Toggle k="sound" />
           </Field>
-          <SafeAnalysis />
         </div>
       </div>
       <details class="help-details" id="help">
