@@ -15,7 +15,12 @@ import type { DecodedMove, Observation } from "./types";
 export interface OfflineOptions {
   decoder: Partial<DecoderOptions>;
   personal?: number[][]; // 自分のソルブの手順（手順の知識に加える）
-  bridge?: boolean; // つながらないときに隠れた区間を橋渡しするか（既定 true。軽い解析ではしない）
+  bridge?: boolean; // つながらないときに隠れた区間を橋渡しするか（既定 true）
+  // 解き直しの間、ときどき呼ぶ（呼ぶ側に「動いている」と知らせる: 解析の Worker から本体へ。本体は知らせが STALL_MS 届かないと止まったとみなす）
+  tick?: () => void;
+  // 後ろ向きに使う時間の上限（ms）。超えたらそこまでの後ろ向きでつなぐ・橋渡しする・前向きを補う。録画の画質が悪く後ろ向きが見失ったまま
+  // 全観測を探すと、iPhone では 20 秒を超えた（結果を出すことを優先する）
+  backwardMs?: number;
 }
 
 export const DEFAULT_OFFLINE: OfflineOptions = {
@@ -122,8 +127,11 @@ export function decodeOffline(obs: Observation[], start: CubeState, end: CubeSta
   // 後ろ向きに 1 観測ずつ進めながらつなぐ: 観測 k の時点で同じ状態・姿勢の仮説（観測 k のコストは両方に入っているので 1 回引く）。
   // 合計のコストが最小の所（同じなら早い観測）
   let best: { cost: number; k: number; f: Hypothesis; b: Hypothesis } | null = null;
+  const backDeadline = performance.now() + (options.backwardMs ?? Infinity);
   for (let j = 0; j < rev.length; j++) {
     const k = valid.length - 1 - j;
+    options.tick?.();
+    if (performance.now() > backDeadline) break;
     bwd.observe(rev[j]);
     B[k] = { hyps: [...bwd.hypotheses()], offset: bwd.costOffset };
     const fm = new Map<string, Hypothesis>();
@@ -168,10 +176,10 @@ export function decodeOffline(obs: Observation[], start: CubeState, end: CubeSta
   if (b0 && valid.length >= 8 && !lostRun && !lostAt(0))
     return { moves: backMoves(b0), method: "backward", meetAt: -1, cost: b0.cost + B[0].offset, reachedEnd: true, startState: Uint8Array.from(b0.state) };
   // 前後どちらも、隠れていた同じ区間で見失った: 隠れる前の前向きの仮説と、隠れた後の後ろ向きの仮説を短い手順でつなぐ
-  const bridged = options.bridge === false ? null : bridge(F, B, valid);
+  const bridged = options.bridge === false ? null : bridge(F, B, valid, options.tick);
   if (bridged) return bridged;
   // それでもつながらない: 前向きの結果を、終わりの状態にたどり着くよう補う
-  const fixed = finishDeep(fwd, end, lastT);
+  const fixed = finishDeep(fwd, end, lastT, options.tick);
   if (fixed) return { moves: fixed, method: "forward-finish", meetAt: -1, cost: fwd.costOffset, reachedEnd: true };
   // 届かない: 後ろ向きが終わりから続けて追えていた所までの手順を付ける（タイムの終わりは決められる）
   let kT = valid.length;
@@ -182,8 +190,9 @@ export function decodeOffline(obs: Observation[], start: CubeState, end: CubeSta
 
 // 前向きの有力な仮説から、終わりの状態に届く手を足す（2 手で届かなければ 3 手・4 手まで。足した手は inferred）。
 // 時間がかかってもよいので、つながらないまま結果を出さないより、見えなかった手を足して完成までつなぐ
-export function finishDeep(dec: MoveDecoder, end: CubeState, t: number): DecodedMove[] | null {
+export function finishDeep(dec: MoveDecoder, end: CubeState, t: number, tick?: () => void): DecodedMove[] | null {
   for (const depth of [2, 3, 4]) {
+    tick?.();
     const r = dec.finish(end, t, depth, depth > 2 ? 4 : 6);
     if (r) return r;
   }
@@ -286,11 +295,10 @@ function tableOf(snap: Snapshot, top: number, reachOf: (s: Uint8Array) => Reach)
 // （以前は全観測の表を持ち続け、観測が数百あると数 GB になって iPhone でタブごと落ちた）。届く状態は状態ごとに覚えておく（直近の分だけ）。
 // 探すのは、まず前向きが観測と合わなくなった所と後ろ向きが合わなくなった所の間（隠れていた区間の前後）。見つからなければ残りを、
 // 時間の上限（BRIDGE_MS）まで
-const BRIDGE_MS = 10000; // 結果を出すことを優先して長めに（表は直近の分だけなのでメモリは増えない）。この間は進み具合を知らせられないので、
-// 呼ぶ側の「止まった」の見張り（controller.endAnalysis の STALL_MS）より十分短く
+const BRIDGE_MS = 10000; // 結果を出すことを優先して長めに（表は直近の分だけなのでメモリは増えない）。この間も tick で「動いている」と知らせる
 const LOST_COST = 3; // 観測の矛盾がこれ以上の観測が 3 つ続いたら見失っている
 
-function bridge(F: Snapshot[], B: Snapshot[], obs: Observation[]): OfflineResult | null {
+function bridge(F: Snapshot[], B: Snapshot[], obs: Observation[], tick?: () => void): OfflineResult | null {
   const N = obs.length;
   const TOP = 16;
   const DEPTH = 3;
@@ -317,6 +325,7 @@ function bridge(F: Snapshot[], B: Snapshot[], obs: Observation[]): OfflineResult
     const window = new Map<number, Table>();
     for (let k = Math.max(0, lo - GAP); k < lo - 1; k++) window.set(k, tableOf(F[k], TOP, reachOf));
     for (let k2 = Math.max(1, lo); k2 <= Math.min(hi, N - 1); k2++) {
+      tick?.();
       if (performance.now() > deadline) return;
       window.set(k2 - 1, tableOf(F[k2 - 1], TOP, reachOf));
       window.delete(k2 - 1 - GAP);

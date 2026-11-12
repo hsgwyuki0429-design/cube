@@ -3,7 +3,7 @@
 import { describe, expect, it } from "vitest";
 import { F, R, U, applyMove, applyMoves, invertMoves, isSolved, solvedState } from "../src/cube/model";
 import { MoveDecoder } from "../src/track/decoder";
-import { decodeOffline } from "../src/track/offline";
+import { DEFAULT_OFFLINE, decodeOffline } from "../src/track/offline";
 import type { Observation } from "../src/track/types";
 import { ALL_MOVES, canonical, editDistance, observe, randomMove, rng } from "./sim";
 
@@ -158,5 +158,26 @@ describe("必ず結果を出す", () => {
     const tail = r.tail!.slice(-3).map((m) => m.move);
     expect(canonical(tail)).toEqual(canonical(truth.slice(-3)));
     expect(r.tail![r.tail!.length - 1].t).toBeGreaterThan(lastT - 1000);
+  });
+
+  // 解き直しが長くかかっても、本体の「止まった」の見張り（controller.endAnalysis の STALL_MS）に止められないよう、ときどき知らせる。
+  // 録画の画質（720p・2.5Mbps）の実物のソルブで、後ろ向き + 橋渡しが知らせなしに Node で 18 秒（iPhone では見張りの 30 秒を超えた）
+  it("解き直しの間、ときどき tick を呼ぶ（後ろ向き・橋渡しの間も）", () => {
+    // 真ん中が長く隠れ、その間に何手も進む（後ろ向きは見失い、橋渡しも探す）
+    const s = session(21, 44, [10, 26], () => 2);
+    const at: number[] = [];
+    decodeOffline(s.obs, s.start, solvedState(), s.lastT, { ...DEFAULT_OFFLINE, tick: () => at.push(performance.now()) });
+    expect(at.length).toBeGreaterThan(s.obs.length / 2);
+    let gap = 0;
+    for (let i = 1; i < at.length; i++) gap = Math.max(gap, at[i] - at[i - 1]);
+    expect(gap).toBeLessThan(2000);
+  }, 60000);
+
+  it("後ろ向きの時間の上限を超えても結果を出す（そこまでの後ろ向き・橋渡し・前向きを補う）", () => {
+    const { start, obs, lastT } = session(9, 30, [12, 16]);
+    const off = decodeOffline(obs, start, solvedState(), lastT, { ...DEFAULT_OFFLINE, backwardMs: 0 });
+    expect(off.moves.length).toBeGreaterThan(0);
+    expect(off.reachedEnd).toBe(true);
+    expect(isSolved(applyMoves(start, off.moves.map((m) => m.move)))).toBe(true);
   });
 });

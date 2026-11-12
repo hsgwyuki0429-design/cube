@@ -46,13 +46,13 @@ try {
   console.error("init failed", e);
 }
 
-// 前回は解析の途中で落ちた（iPhone でメモリが足りずにタブごと読み込み直された）: どこで落ちたかを出し、次から解析を軽くする
+// 前回は解析の途中で落ちた（iPhone でメモリが足りずにタブごと読み込み直された）: どこで落ちたかを出す
 const crashed = checkLastRun();
 if (crashed)
   setTimeout(
     () =>
       controller.toast(
-        `前回は「${PHASE_LABEL[crashed.phase]}」の途中でアプリが落ちました。${crashed.level >= 2 ? "精密解析を止め、タイムは速報値にします" : "次から精密解析を軽くします"}（設定から戻せます）`,
+        `前回は「${PHASE_LABEL[crashed.phase]}」の途中でアプリが落ちました。そのときのタイムは速報値のままです`,
         12000,
       ),
     500,
