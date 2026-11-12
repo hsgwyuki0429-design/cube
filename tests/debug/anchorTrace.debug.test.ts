@@ -31,7 +31,7 @@ it("アンカー方式をたどる", () => {
         const b = a.hyps[0];
         lines.push(
           `${(a.t0 / 1000).toFixed(3)}〜${(a.t1 / 1000).toFixed(3)} ステッカー ${a.stickers} 姿勢 ${a.orients ? a.orients.length : "-"} ${a.connected ? "つないだ" : "飛ばした"}・` +
-            `一番の仮説 ${near(b.state) === null ? "×" : `○(${near(b.state)})`} コスト ${b.cost.toFixed(1)} 手 ${b.moves.length}・正解は ${rank < 0 ? "なし" : `${rank + 1} 位`}・最後の手 ${b.moves.slice(-4).map((m) => MOVE_NAMES[m]).join(" ")}`,
+            `候補 ${a.hyps.length}・一番の仮説 ${near(b.state) === null ? "×" : `○(${near(b.state)})`} コスト ${b.cost.toFixed(1)} 手 ${b.moves.length}・正解は ${rank < 0 ? "なし" : `${rank + 1} 位`}・最後の手 ${b.moves.slice(-4).map((m) => MOVE_NAMES[m]).join(" ")}`,
         );
       },
     },

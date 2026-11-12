@@ -25,6 +25,8 @@ export interface AnchorOptions {
   minWeight: number; // 使う読みの確からしさ（引き継いだ ID・はっきりしない読みは使わない: 静止しているインスペクション中でも、
   //                    持ち替えをまたいで引き継いだ ID が正解の状態と食い違っていた）
   maxDepth: number; // 隣り合うアンカーの間の手の数の上限（両側から探す）
+  extraLen: number; // 読みと食い違わない一番短い手順より、何手長いものまで残すか（一番短いものだけでは、見えたステッカーが少ない
+  //                  アンカーでたまたま合う短い手順だけが残り、本当の手順が根拠なく落ちる）
   tolerance: number; // 1 つのつなぎ（アンカーの間のフレーム）で許す読みの食い違い（これを超える候補だけを落とす）。2 では原画質の
   //                   ソルブでも正しい道が途中で落ちた（回している途中の読み・まれな読み違い）。4 で最後までつながる
   maxSet: number; // アンカーごとに残す状態の上限（超えたら、その先は決められないとする。上位だけ残すことはしない）
@@ -50,6 +52,7 @@ export const DEFAULT_ANCHORS: AnchorOptions = {
   minWeak: 2,
   minWeight: 0.85,
   maxDepth: 8,
+  extraLen: 0,
   tolerance: 4,
   maxSet: 512,
   candidates: 4000,
@@ -436,9 +439,9 @@ function advance(frames: Frame[], hyps: Hyp[], a: Anchor, o: AnchorOptions, dead
     const orients = a.orients ?? (h.orient >= 0 ? [h.orient] : ALL_ORIENTS);
     const Bs = orients.map((o2) => new Layers(Uint8Array.from(a.pos.map((pp) => VIEW[o2 * 54 + pp])), true));
     // 読みと食い違わない一番短い長さを探し、その長さの候補をすべて残す
-    let found = false;
+    let firstL = -1;
     const tStop = performance.now() + o.connectMs;
-    for (let L = 1; L <= o.maxDepth && !found; L++) {
+    for (let L = 1; L <= o.maxDepth && (firstL < 0 || L <= firstL + o.extraLen); L++) {
       if (performance.now() > tStop) return { out, blocked: "時間切れ" };
       for (let k = 0; k < orients.length; k++) {
         const o2 = orients[k];
@@ -451,7 +454,7 @@ function advance(frames: Frame[], hyps: Hyp[], a: Anchor, o: AnchorOptions, dead
           const fallback = h.orient >= 0 && h.orient !== o2 ? [h.orient, o2] : [o2];
           const sc = scoreFrames(frs, idsList, seq, (f) => (f.centers ? f.centers : fallback), o);
           if (sc.cost > o.tolerance) continue; // 読みと食い違う
-          found = true;
+          if (firstL < 0) firstL = L;
           const mvs: DecodedMove[] = seq.map((mv, j) => ({ move: mv, t0: sc.starts[j], t: sc.ends[j], orient: h.orient >= 0 ? h.orient : o2 }));
           const rot = h.orient >= 0 && o2 !== h.orient ? o.rotationCost : 0;
           add(out, { done: a.last, p: ps[ps.length - 1], orient: o2, mis: h.mis + sc.cost, cost: h.cost + seqCost(seq, o) + rot, moves: [...h.moves, ...mvs], alt: h.alt, unsure: h.unsure });

@@ -23,9 +23,17 @@ it("精密解析が崩れる所", () => {
   }));
   const NEAR = Number(process.env.CL_NEAR ?? 8);
   const AROUND = Number(process.env.CL_AROUND ?? 3);
-  const start = Uint8Array.from(raw.start);
   const ref: CubeState[] = [Uint8Array.from(truth.startState ?? raw.start)];
   for (const m of truth.moves) ref.push(applyMove(ref[ref.length - 1], m.move));
+  // CL_K=29: アプリと同じくソルブだけ（正解の k 手目の 1.5 秒前の観測から、正解のその時の状態で始める）
+  const K = process.env.CL_K ? Number(process.env.CL_K) : null;
+  const start = K === null ? Uint8Array.from(raw.start) : ref[K];
+  if (K !== null) {
+    const from = truth.moves[K].start - 1500;
+    const kept = obs.filter((o) => o.t >= from);
+    obs.length = 0;
+    obs.push(...kept);
+  }
   const refAt = (t: number) => truth.moves.filter((m) => m.end <= t).length; // t までに回し終えた正解の手の数（粗い）
   const options = { beamWidth: 32, maxMovesPerStep: 3, rotationCost: 1.5, ...DEFAULT_OFFLINE.decoder, ...JSON.parse(process.env.CL_DEC ?? "{}") };
   const out: string[] = [`観測 ${obs.length}・正解 ${truth.moves.length} 手・始まりの状態が正解と${statesEqual(start, ref[0]) ? "同じ" : "違う"}`];

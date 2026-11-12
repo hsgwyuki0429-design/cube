@@ -28,14 +28,48 @@ function editDistance(a: number[], b: number[]): number {
 
 // 本体の精密解析と同じ解き直し（src/vision/refine.ts の result: 1 回目、つながらなければ深い 2 回目）
 function beamDecode(obs: Observation[], start: CubeState, end: CubeState, lastT: number): OfflineResult {
-  const dec = { beamWidth: 32, maxMovesPerStep: 3, rotationCost: 1.5, ...DEFAULT_OFFLINE.decoder };
+  // DB_DEC='{"beamWidth":2048}' など: 1 回目のデコーダの設定を上書き（DB_NODEEP=1 で 2 回目を省く）
+  const dec = { beamWidth: 32, maxMovesPerStep: 3, rotationCost: 1.5, ...DEFAULT_OFFLINE.decoder, ...JSON.parse(process.env.DB_DEC ?? "{}") };
   let off = decodeOffline(obs, start, end, lastT, { decoder: dec, backwardMs: 30000 });
-  if (off.method !== "meet" && off.method !== "backward") {
+  if (!process.env.DB_NODEEP && off.method !== "meet" && off.method !== "backward") {
     const deep = decodeOffline(obs, start, end, lastT, { decoder: { ...dec, beamWidth: 256, maxMovesPerStep: 4 }, backwardMs: 60000 });
     const guessed = (r: OfflineResult) => r.moves.filter((m) => m.inferred).length;
     if (deep.reachedEnd && (!off.reachedEnd || guessed(deep) < guessed(off) || (guessed(deep) === guessed(off) && deep.method === "meet"))) off = deep;
   }
   return off;
+}
+
+// フレームごとの観測: はっきり読めた（確からしさ minW 以上）ID が 1 つでもあるフレームを、そのまま 1 つの観測にする
+// （観測器は 2 枚続いて同じ読みのときだけ観測にするので、1 枚だけ読めたフレームは使われていなかった）。
+// 色の矛盾 mis・別のステッカーの矛盾 idc（マスごと）。読みが前のフレームと同じなら観測にしない（同じ証拠を数え直さない）
+function frameObservations(reads: { t: number; faces: { slot: number; ids: number[]; w?: number[] }[] }[], t0: number, minW: number, mis: number, idc: number): Observation[] {
+  const out: Observation[] = [];
+  let lastKey = "";
+  let lastT = t0;
+  for (const r of reads) {
+    if (r.t < t0) continue;
+    const faces = r.faces
+      .map((f) => {
+        const ids = Int16Array.from(f.ids, (x, c) => (x >= 0 && (f.w?.[c] ?? 1) >= minW ? x : -1));
+        if (!ids.some((x) => x >= 0)) return null;
+        const labels = Int8Array.from(ids, (x) => (x >= 0 ? Math.floor(x / 9) : -1));
+        const cost = new Float32Array(54);
+        for (let c = 0; c < 9; c++) if (labels[c] >= 0) for (let k = 0; k < 6; k++) cost[c * 6 + k] = k === labels[c] ? 0 : mis;
+        const idCost = Float32Array.from(ids, (x) => (x >= 0 ? idc : 0));
+        return { slot: f.slot, cost, labels, ids, idCost };
+      })
+      .filter((f): f is NonNullable<typeof f> => !!f);
+    if (!faces.length) continue;
+    const key = faces.map((f) => `${f.slot}:${Array.from(f.ids).join(",")}`).join("|");
+    if (key === lastKey) {
+      lastT = r.t;
+      continue;
+    }
+    lastKey = key;
+    out.push({ t: r.t, tPrevEnd: lastT, faces });
+    lastT = r.t;
+  }
+  return out;
 }
 
 it("精密解析の解き直しを比べる", () => {
@@ -82,7 +116,17 @@ it("精密解析の解き直しを比べる", () => {
         let solved: boolean;
         let inferred = 0;
         let info = "";
-        if (method === "beam") {
+        if (method === "frames") {
+          // DB_FRAMES='{"minW":0.85,"mis":2,"idc":2}'
+          const fo = { minW: 0.85, mis: 2, idc: 2, ...JSON.parse(process.env.DB_FRAMES ?? "{}") };
+          const fobs = frameObservations(reads.readings as never, t0, fo.minW, fo.mis, fo.idc);
+          const r = beamDecode(fobs, start, end, rawObs.lastT);
+          const wrongStart = r.startState && !statesEqual(r.startState, start);
+          moves = r.moves.map((m) => m.move);
+          solved = r.reachedEnd && !wrongStart;
+          inferred = r.moves.filter((m) => m.inferred).length;
+          info = `${r.method}${wrongStart ? "・始まりが違う" : ""}・観測 ${fobs.length}（元 ${obs.length}）`;
+        } else if (method === "beam") {
           const r = beamDecode(obs, start, end, rawObs.lastT);
           const wrongStart = r.startState && !statesEqual(r.startState, start);
           moves = r.moves.map((m) => m.move);
