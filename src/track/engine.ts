@@ -202,22 +202,6 @@ export class TrackerEngine {
     this.timingCache.clear();
   }
 
-  // 精密解析（別の Worker）が時刻 t までを解き直した結果に乗り換え、t より後の観測をもう一度通す。
-  // keep: 解析を始めたときにすでにあった手の数（その手は残し、後ろに解析の手順をつなぐ）
-  rebase(state: CubeState, orient: number, moves: DecodedMove[], t: number, keep: number): TrackUpdate {
-    const prefix = [...this.decoder.bestMoves().slice(0, keep), ...moves];
-    this.decoder.rebase(state, orient, prefix);
-    let first = this.observationLog.findIndex((o) => o.t > t);
-    if (first < 0) first = this.observationLog.length;
-    this.observationLog.splice(0, first);
-    let last: Observation | undefined;
-    for (const o of this.observationLog) {
-      this.decoder.observe(o);
-      last = o;
-    }
-    return this.snapshot(last);
-  }
-
   push(frame: FrameReading): TrackUpdate | null {
     this.frames.push({ t: frame.t, faces: frame.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, spread: f.spread, masked: f.masked, shift: f.shift, ids: f.ids })) });
     while (this.frames.length && frame.t - this.frames[0].t > this.logMs) this.frames.shift();

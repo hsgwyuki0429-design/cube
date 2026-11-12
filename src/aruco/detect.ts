@@ -4,7 +4,7 @@
 //   max  … max(R,G,B)（HSV の V）。色付きのセルも明るく残る
 import { type Mat3, type Pt, applyH, cornerCenter, cornerPoints, fitSquare } from "../vision/homography";
 import { type CV, maxRgb } from "../vision/image";
-import { type StickerScheme, codesOf, makeDictionary, markerBits, markerSize } from "./codes";
+import { type StickerScheme, codesOf, makeDictionary, markerBits, markerSize, rotCode } from "./codes";
 import { STANDARD_DESIGN, type StickerDesign } from "./design";
 
 export type Preprocess = "gray" | "max";
@@ -464,12 +464,6 @@ export function rescueRejected(img: ImageLike, rejected: number[][], codes: numb
 }
 
 // 符号を時計回りに 90°（ビット r*n+c → c*n + (n-1-r)）
-function rotCode(code: number, n: number): number {
-  let out = 0;
-  for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if ((code >> (r * n + c)) & 1) out |= 1 << (c * n + (n - 1 - r));
-  return out;
-}
-
 const now = () => (typeof performance !== "undefined" ? performance.now() : Date.now());
 
 // max(R, G, B)（HSV の V）

@@ -1,8 +1,8 @@
 // ソルブの区間分割（CFOP: クロス / F2L / OLL / PLL）。状態の列から「最初に条件を満たした手」で区切る。
+import { dot3 as dot } from "../lib/util";
 import { type CubeState, NORMAL, OPPOSITE, applyMove, faceletGeometry, isSolved } from "./model";
 
 const GEOM = Array.from({ length: 54 }, (_, i) => faceletGeometry(i));
-const dot = (a: number[], b: number[]) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 const nonZero = (p: number[]) => p.filter((v) => v !== 0).length;
 
 // 面 c を底面としたときの各条件で調べる facelet

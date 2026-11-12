@@ -37,7 +37,6 @@ interface Stream {
   held: Recording["chunks"]; // まだ復号に回していない録画（インスペクションの間は HOLD_MS だけ遅らせる）
   lastInspect: number; // 間引いている間に最後に処理したフレームの時刻
   still: StillSkipper;
-  anchor?: { t: number; target: Uint8Array };
   end?: { from: number; to: number; posted: number }; // 止めた後: 残りの解析の進み具合を知らせる
   // 検出を別の Worker に分けることはしない（動画ファイルの解析だけ）: OpenCV を読み込んだ Worker は 1 個 130MB ほどを確保するので、
   // ライブの認識・解析に加えて 2〜3 個起こすと、iPhone ではプレイ中にタブごと落ちた
@@ -74,7 +73,6 @@ function streamFrame(id: number, s: Stream, img: PixelSource, t: number): void {
   }
   // 止まっている間は飛ばして追いつく（動き出したら直前の 1 枚も処理する）
   for (const f of s.still.next(img, t)) s.refiner.push(f.img, f.t);
-  doAnchor(id, s);
   if (s.end && performance.now() - s.end.posted > 200) {
     s.end.posted = performance.now();
     post({ type: "refine-progress", id, done: Math.max(0, t - s.end.from), total: Math.max(1, s.end.to - s.end.from) });
@@ -85,15 +83,6 @@ function streamFrame(id: number, s: Stream, img: PixelSource, t: number): void {
     const partial: StreamPartial = { ...s.refiner.partial(), frames: s.refiner.frames, behindMs: Math.max(0, s.fedUntil - s.refiner.lastT - (s.fullFrom === Infinity ? HOLD_MS : 0)) };
     post({ type: "stream-partial", id, partial });
   }
-}
-
-// 完成の区切りまで解析が進んでいたら、そこまでを前後から解き直して知らせる
-function doAnchor(id: number, s: Stream): void {
-  const a = s.anchor;
-  if (!a || s.refiner.lastT < a.t) return;
-  s.anchor = undefined;
-  const cp = s.refiner.checkpoint(a.t, a.target);
-  if (cp) post({ type: "stream-partial", id, partial: { ...cp, frames: s.refiner.frames, behindMs: Math.max(0, s.fedUntil - s.refiner.lastT), anchored: true } });
 }
 
 const post = (msg: FromWorker) => (self as unknown as Worker).postMessage(msg);
@@ -319,10 +308,6 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
         }
         return;
       }
-      case "track-rebase": {
-        if (engine) engine.rebase(Uint8Array.from(msg.state), msg.orient, msg.moves, msg.t, msg.keep);
-        return;
-      }
       case "stream-feed": {
         let s = streams.get(msg.id);
         if (!s) {
@@ -375,13 +360,6 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
           s.decoder?.close();
           streams.delete(msg.id);
         }
-        return;
-      }
-      case "stream-anchor": {
-        const s = streams.get(msg.id);
-        if (!s) return;
-        s.anchor = { t: msg.t, target: Uint8Array.from(msg.target) };
-        doAnchor(msg.id, s);
         return;
       }
       case "video-refine": {

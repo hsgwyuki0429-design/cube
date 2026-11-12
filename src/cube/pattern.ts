@@ -1,4 +1,5 @@
 // ステッカー状態 ⇄ cubing.js の KPattern、スキャン結果の妥当性チェック。
+import { dot3 as dot } from "../lib/util";
 import { KPattern, type KPuzzle } from "cubing/kpuzzle";
 import { cube3x3x3 } from "cubing/puzzles";
 import { hungarian } from "../scan/assign";
@@ -24,7 +25,6 @@ const CORNER_SLOTS: number[][] = [
 const sumNormals = (faces: number[]): Vec3 =>
   faces.reduce<Vec3>((a, f) => [a[0] + NORMAL[f][0], a[1] + NORMAL[f][1], a[2] + NORMAL[f][2]], [0, 0, 0]);
 const cross = (a: Vec3, b: Vec3): Vec3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-const dot = (a: Vec3, b: Vec3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 
 // コーナーの3面を、外から見て時計回りに、U/D 面から始めて並べる
 function clockwise(faces: number[]): number[] {

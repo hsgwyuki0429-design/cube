@@ -193,7 +193,7 @@ export class Refiner {
   frames = 0;
   lastT = 0;
   method = "";
-  // 前向きの再構成を観測が出るたびに進めておく（result で後ろ向きとつなぐだけにする）。区切り（checkpoint）を使うフリーでは使わない
+  // 前向きの再構成を観測が出るたびに進めておく（result で後ろ向きとつなぐだけにする）
   private forward: OfflineForward | null;
   private fedObs = 0;
 
@@ -229,28 +229,11 @@ export class Refiner {
     this.input.to = to;
   }
 
-  // 区切り: 時刻 t に状態 target（フリーで完成したとき）だったと分かった。前の区切りからそこまでを前後から解き直し、
-  // 以後はその状態から続ける。解き直した手順（それまでの区切りの手順を含む）を返す。つながらなければ null
-  private seg: { state: CubeState; moves: DecodedMove[] } | null = null;
-  checkpoint(t: number, target: CubeState): { t: number; state: number[]; orient: number; moves: DecodedMove[]; status: string } | null {
-    const start = this.seg?.state ?? Uint8Array.from(this.input.state);
-    const obs = this.engine.observationLog.filter((o) => o.t <= t);
-    if (!obs.some((o) => o.faces.length)) return null;
-    const off = decodeOffline(obs, start, target, t, { decoder: { ...this.input.engine?.decoder, ...DEFAULT_OFFLINE.decoder }, personal: this.input.engine?.personal });
-    if (!off.reachedEnd) return null;
-    const moves = simplifyMoves(off.moves);
-    const orient = moves.length ? moves[moves.length - 1].orient : this.engine.decoder.best().orient;
-    const full = [...(this.seg?.moves ?? []), ...moves];
-    this.engine.rebase(target, orient, full, t, 0);
-    this.seg = { state: Uint8Array.from(target), moves: full };
-    return { t, state: Array.from(target), orient, moves: full, status: "tracking" };
-  }
-
   private offlineOptions(): OfflineOptions {
     return { decoder: { ...this.input.engine?.decoder, ...DEFAULT_OFFLINE.decoder }, personal: this.input.engine?.personal, backwardMs: BACKWARD_MS };
   }
 
-  // 途中結果: 前向きにここまで解いた最良の仮説（リアルタイムの追跡をこれに乗り換える）
+  // 途中結果: 前向きにここまで解いた最良の仮説（遅れの表示用。ライブの追跡には反映しない）
   partial(): { t: number; state: number[]; orient: number; moves: DecodedMove[]; status: string } {
     const dec = this.engine.decoder;
     const best = dec.best();

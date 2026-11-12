@@ -1,7 +1,7 @@
 // cubing.js のソルバー・スクランブル生成のラッパー。
 // ブラウザでは専用 Worker（solver.worker.ts）で、Node（テスト）では直接呼ぶ。
 import type { KPatternData } from "cubing/kpuzzle";
-import { type CubeState, MOVE_NAMES, invertMoves, parseMoves } from "./model";
+import { type CubeState, invertMoves, parseMoves } from "./model";
 import { loadKPuzzle, stateToPattern } from "./pattern";
 import { type XCrossResult, solveXCross } from "./xcross";
 
@@ -86,4 +86,3 @@ export async function optimalXCross(state: CubeState, face: number): Promise<XCr
   return solveXCross(state, face);
 }
 
-export const movesText = (moves: number[]) => moves.map((m) => MOVE_NAMES[m]).join(" ");

@@ -38,7 +38,6 @@ export function distance3(a: number, b: number): number {
   for (let k = 0, x = b; k < 4; k++, x = rot3(x)) d = Math.min(d, pop(a ^ x));
   return d;
 }
-export const distance12 = (a: number, b: number) => distance3(ARUCO12_CODES[a], ARUCO12_CODES[b]);
 const confusable = (codes: number[]) => codes.map((a, i) => codes.map((_, j) => j).filter((j) => j !== i && distance3(a, codes[j]) <= 2));
 // 2 ビットの読み違いで入れ替わりうる ID（距離 2 の組: 白–赤・緑–白センター・緑–橙センター・赤センター–黄センター）
 export const CONFUSABLE12: number[][] = confusable(ARUCO12_CODES);
@@ -133,4 +132,11 @@ export function makeDictionary(cv: any, s: StickerScheme): any {
   const dict = new cv.aruco_Dictionary(bl, n, 0); // 誤り訂正なし（距離 2 しか取れない）
   bl.delete();
   return dict;
+}
+
+// n×n の符号（行優先のビット）を時計回りに 90° 回す
+export function rotCode(code: number, n: number): number {
+  let out = 0;
+  for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if ((code >> (r * n + c)) & 1) out |= 1 << (c * n + (n - 1 - r));
+  return out;
 }

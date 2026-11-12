@@ -22,7 +22,6 @@ export type ToWorker =
   | { type: "track-query"; id: number }
   | { type: "refine"; id: number; recording: Recording; input: RefineInput }
   // 追跡を精密解析の結果に乗り換える（t までを解き直した状態・姿勢・手順。keep はそれより前からあった手の数）
-  | { type: "track-rebase"; state: number[]; orient: number; moves: DecodedMove[]; t: number; keep: number }
   // ソルブ中から進める精密解析: 録画の増えた分を少しずつ渡し、最後に終わりの時刻と状態を渡して結果をもらう
   // inspection: インスペクションから始める解析（タイマー）。stream-solving が届くまでのフレームは間引く
   | { type: "stream-feed"; id: number; input?: RefineInput; recording: Recording; inspection?: boolean }
@@ -31,7 +30,6 @@ export type ToWorker =
   | { type: "stream-end"; id: number; to: number; target: number[] | null }
   | { type: "stream-cancel"; id: number }
   // フリーで完成した（時刻 t に状態 target）: そこまでを前後から解き直す
-  | { type: "stream-anchor"; id: number; t: number; target: number[] }
   // 動画ファイル（スロー撮影など）を精密解析する。target: 最後の状態（タイマーなら完成。分からなければ null）
   | { type: "video-refine"; id: number; file: Blob; input: RefineInput; target: number[] | null; options: VideoRefineOptions }
   | { type: "video-cancel"; id: number }
@@ -84,5 +82,4 @@ export interface StreamPartial {
   status: string;
   frames: number;
   behindMs: number; // 受け取った録画の最後からの遅れ
-  anchored?: boolean; // 完成の区切りまでを前後から解き直した結果
 }
