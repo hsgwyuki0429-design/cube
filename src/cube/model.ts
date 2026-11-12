@@ -9,7 +9,6 @@
 export type Vec3 = [number, number, number];
 
 export const FACES = ["U", "R", "F", "D", "L", "B"] as const;
-export type FaceName = (typeof FACES)[number];
 export const U = 0, R = 1, F = 2, D = 3, L = 4, B = 5;
 
 export const NORMAL: Vec3[] = [

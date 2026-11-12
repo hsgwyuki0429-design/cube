@@ -3,10 +3,10 @@
 // 回したときにカメラから見えていた向き（SolveMove.o）に合わせる。指でドラッグしている間だけ指のとおりに向きを変え、離すとカメラから
 // 見えていた向きへ戻る
 import { useEffect, useRef, useState } from "preact/hooks";
-import { Matrix4, type Object3D, Quaternion, Vector3 } from "three";
+import { type Object3D, Quaternion, Vector3 } from "three";
 import type { TwistyPlayer } from "cubing/twisty";
 import { MOVE_NAMES, ORIENTATIONS } from "../cube/model";
-import { PLAYER_BASE } from "./Cube3D";
+import { PLAYER_BASE, matToQuat } from "./Cube3D";
 
 export interface ReplayMove {
   move: number; // キューブ固定の手
@@ -27,14 +27,7 @@ const slowOf = (moves: ReplayMove[]) => {
 const TILT = new Quaternion()
   .setFromAxisAngle(new Vector3(0, 1, 0), (-30 * Math.PI) / 180)
   .multiply(new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), (25 * Math.PI) / 180));
-const quatOf = (o: number | null) => {
-  const q = new Quaternion();
-  if (o !== null) {
-    const m = ORIENTATIONS[o];
-    q.setFromRotationMatrix(new Matrix4().set(m[0], m[1], m[2], 0, m[3], m[4], m[5], 0, m[6], m[7], m[8], 0, 0, 0, 0, 1));
-  }
-  return new Quaternion().multiplyQuaternions(TILT, q);
-};
+const quatOf = (o: number | null) => new Quaternion().multiplyQuaternions(TILT, o === null ? new Quaternion() : matToQuat(ORIENTATIONS[o]));
 
 // 記録した連続的な向き（計測開始からの ms, x, y, z, w）の時刻 t の向き（前後を球面補間）
 function poseAt(poses: number[][], t: number): Quaternion | null {

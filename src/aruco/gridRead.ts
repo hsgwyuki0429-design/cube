@@ -6,9 +6,9 @@
 // 1 フレーム 20〜60ms。3×3 の符号（unique54・aruco12）で、マーカーの間にステッカーの色が見える配置（4 個: quad-half）向け
 // （1 個の配置はマーカーの間がないので読めない: null）。DOM もカメラも知らない
 import { type Mat3, type Pt, applyH, invertH } from "../vision/homography";
-import { median } from "../lib/util";
+import { chroma, median } from "../lib/util";
 import { type VisibleFace, cellH, readConfidence } from "./cube";
-import { type StickerScheme, centerOffset, codesOf, decode } from "./codes";
+import { type StickerScheme, centerOffset, codesOf, decode, rotCode } from "./codes";
 import type { ImageLike, Marker } from "./detect";
 import type { StickerDesign } from "./design";
 
@@ -33,12 +33,6 @@ export interface GridOptions {
 export const DEFAULT_GRID: GridOptions = { reach: 0.12, minContrast: 35, minFit: 0.92 };
 
 // 符号を時計回りに 90°（ビット r*n+c → c*n + (n-1-r)。src/aruco/detect.ts と同じ）
-function rotCode(code: number, n: number): number {
-  let out = 0;
-  for (let r = 0; r < n; r++) for (let c = 0; c < n; c++) if ((code >> (r * n + c)) & 1) out |= 1 << (c * n + (n - 1 - r));
-  return out;
-}
-
 // 符号（回した 4 通り）→ ID と回した回数
 const tables = new Map<StickerScheme, Map<number, { id: number; rot: number }>>();
 function codeTable(scheme: StickerScheme): Map<number, { id: number; rot: number }> {
@@ -321,10 +315,6 @@ export function gridReadCell(img: ImageLike, H: Mat3, cell: number, scheme: Stic
 // 割った RGB）が、読んだ ID の色の仲間よりほかの色の仲間にずっと近ければ読み違い（実物の動画で、白の面のマスを緑のステッカーと
 // 読んだことがあった）。照明で色がずれても同じ色のステッカーは同じようにずれるので、色そのものではなく仲間と比べる
 export type ColorRefs = Map<number, number[]>; // 面（色）→ 色味の中央値
-const chroma = (rgb: readonly number[]) => {
-  const m = Math.max(rgb[0], rgb[1], rgb[2], 1);
-  return [rgb[0] / m, rgb[1] / m, rgb[2] / m];
-};
 export function colorRefsOf(markers: Marker[], scheme: StickerScheme): ColorRefs {
   const groups = new Map<number, number[][]>();
   for (const m of markers) {

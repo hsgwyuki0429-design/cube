@@ -4,7 +4,7 @@
 // 止めた瞬間はリアルタイムの追跡からの速報値を出し、計測中に録画しておいた全フレームを別の Worker で
 // 1枚ずつ解析し直して、数秒〜数十秒後に時間と手順を確定する（リアルタイムでは処理が追いつかないフレームも使う）。
 import { cfopSplits } from "../cube/analysis";
-import { type CubeState, MOVE_NAMES, applyMoves, invertMoves, isSolved, moveFace, relativeMove, rotateOrientation, solvedState, statesEqual } from "../cube/model";
+import { type CubeState, MOVE_NAMES, applyMoves, invertMoves, isSolved, moveFace, movesToString, relativeMove, rotateOrientation, solvedState, statesEqual } from "../cube/model";
 import { randomScramble, solveBetween, solveState } from "../cube/solver";
 import { StartDetector } from "./startDetect";
 import { markPhase } from "./crashGuard";
@@ -266,7 +266,7 @@ function finish(u: TrackUpdate | null, how: StopReason, lookT?: number): void {
   const solve: Solve = {
     id: `${Date.now()}`,
     date: Date.now(),
-    scramble: s.scramble.map((m) => MOVE_NAMES[m]).join(" "),
+    scramble: movesToString(s.scramble),
     timeMs,
     penalty,
     moves: solveMoves(moves, s.startT),
@@ -383,7 +383,7 @@ async function analyzeRecordingInner(live: LiveSpan, endT: number): Promise<void
   if (result.startState) {
     from = Uint8Array.from(result.startState);
     try {
-      scramble = invertMoves(await solveState(from)).map((m) => MOVE_NAMES[m]).join(" ");
+      scramble = movesToString(invertMoves(await solveState(from)));
     } catch (e) {
       console.warn("スクランブルを作り直せませんでした", e);
     }
@@ -410,7 +410,7 @@ export function addVideoSolve(result: RefineResult, scramble: number[]): { solve
   const solve: Solve = {
     id: `${Date.now()}`,
     date: Date.now(),
-    scramble: scramble.map((m) => MOVE_NAMES[m]).join(" "),
+    scramble: movesToString(scramble),
     timeMs,
     penalty: "",
     ...solveFields(start, result.moves, begin, timeMs),

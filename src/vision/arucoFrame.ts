@@ -17,7 +17,7 @@ import { STANDARD_DESIGN, type StickerDesign, designOf } from "../aruco/design";
 import { ARUCO_REFS } from "../aruco/palette";
 import { type RereadMemory, rereadFaces } from "../aruco/reread";
 import type { Lab } from "./color";
-import { type Mat3, type Pt, applyH, cornerCenter, cornerPoints, invertH } from "./homography";
+import { type Mat3, type Pt, applyH, cornerCenter, cornerPoints, invertH, mulH } from "./homography";
 import type { DetectedFace, FrameResult } from "./pipeline";
 import type { CV } from "./image";
 import type { PixelSource } from "./image";
@@ -652,12 +652,6 @@ function applyTurnLayers(faces: VisibleFace[], tr: TurnResult, size: { width: nu
     f.conf[cell] = Math.min(LAYER_CONF, readConfidence(fitOf.get(p.id) ?? 0));
   }
 }
-
-const mulH = (a: Mat3, b: Mat3): Mat3 => {
-  const out: number[] = [];
-  for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) out.push(a[r * 3] * b[c] + a[r * 3 + 1] * b[3 + c] + a[r * 3 + 2] * b[6 + c]);
-  return out;
-};
 
 // 回している層と角度を前のフレームとつなぐ（同じ層が回り続けていれば、回し始めからの角度を足していく）。
 // 回している層が見えたフレームだけ、そのつながりを返す

@@ -4,7 +4,7 @@ import { useEffect, useRef } from "preact/hooks";
 import { Color, Matrix4, Quaternion, Vector3, type Object3D } from "three";
 import type { TwistyPlayer } from "cubing/twisty";
 import { controller } from "../app/controller";
-import { MOVE_NAMES, ORIENTATIONS, ROTATION, mul } from "../cube/model";
+import { MOVE_NAMES, ORIENTATIONS, ROTATION, movesToString, mul } from "../cube/model";
 import { setupMovesFor } from "../cube/solver";
 import { DEFAULT_GYRO, GyroFilter, follow } from "./gyro";
 
@@ -178,7 +178,7 @@ export function Cube3D(props: Cube3DProps) {
     if (!p || props.controls) return;
     if (props.setupMoves === null) return;
     // 表示の始まりの状態と、そこから回す手。ライブで作り変えたら、作り変えた状態からその後の手
-    let setup = props.setupMoves.map((m) => MOVE_NAMES[m]).join(" ");
+    let setup = movesToString(props.setupMoves);
     let moves = props.moves;
     let key = `${props.epoch}`;
     // 表示だけの作り変え（view）があればその状態、なければ追跡の作り変え（base）からの手
@@ -192,7 +192,7 @@ export function Cube3D(props: Cube3DProps) {
           setupMovesFor(Uint8Array.from(fixed.state))
             .then((ms) => {
               if (pendingBase.current !== fixed.key) return;
-              baseSetup.current = { key: fixed.key, alg: ms.map((m) => MOVE_NAMES[m]).join(" ") };
+              baseSetup.current = { key: fixed.key, alg: movesToString(ms) };
               applyRef.current();
             })
             .catch((e) => console.warn("3D: 作り変えた状態を作れませんでした", e));
@@ -210,7 +210,7 @@ export function Cube3D(props: Cube3DProps) {
       pumping.current = 0;
       queue.current = [];
       p.experimentalSetupAlg = setup;
-      p.alg = moves.map((m) => MOVE_NAMES[m]).join(" ");
+      p.alg = movesToString(moves);
       p.jumpToEnd();
       shown.current = [...moves];
       return;

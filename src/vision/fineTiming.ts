@@ -5,20 +5,15 @@
 // 静止時から変わり始めた（変わり終えた）フレームを探す。10° 以下の動きでも縁がずれて差が出る。
 // キューブ全体の動きは格子で正規化して消し、残る当てはめの揺れは回していないセルの差を引いて打ち消す。
 import { moveFace } from "../cube/model";
-import { cellInLayer, cellOnFace } from "../track/timing";
+import { cellInLayer, cellOnFace, cubeLike } from "../track/timing";
 import type { DecodedMove } from "../track/types";
 import type { Mat3 } from "./homography";
 import { slotPoint } from "./layout";
 import type { Lab } from "./color";
 import type { PixelSource } from "./image";
 
-// キューブの色らしいか（指・手が乗ったセルは、どの色からも遠い）
-function cubeLike(lab: Lab | undefined, refs: Lab[] | undefined): boolean {
-  if (!lab || !refs) return true;
-  let best = Infinity;
-  for (const r of refs) best = Math.min(best, Math.hypot((lab[0] - r[0]) / 2, lab[1] - r[1], lab[2] - r[2]));
-  return best < 30;
-}
+// キューブの色らしいか（指・手が乗ったセルは、どの色からも遠い）。色が分からなければ使う
+const labOk = (lab: Lab | undefined, refs: Lab[] | undefined) => !lab || cubeLike(lab, refs);
 
 export const CELL_PX = 10;
 // 面の外側も少し含める: 回り始めた層の角は面の輪郭からはみ出し、反対側では隙間が開く。
@@ -120,7 +115,7 @@ export function layerMotion(base: PatchFrame, f: PatchFrame, orient: number, fac
     for (let cell = 0; cell < 9; cell++) {
       if (a.masked[cell] || b.masked[cell] || cellOnFace(orient, a.slot, cell, face)) continue;
       // 指が乗っているセル（どちらかのフレームでキューブの色でない）は使わない。指の動きを層の動きと取り違えないように
-      if (!cubeLike(a.labs?.[cell], refs) || !cubeLike(b.labs?.[cell], refs)) continue;
+      if (!labOk(a.labs?.[cell], refs) || !labOk(b.labs?.[cell], refs)) continue;
       if (cellInLayer(orient, a.slot, cell, face)) {
         layer += d.sum[cell];
         nLayer += d.n[cell];

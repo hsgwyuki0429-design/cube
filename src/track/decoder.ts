@@ -996,18 +996,6 @@ export class MoveDecoder {
     this.uncertainStreak = 0;
     this.status = "tracking";
   }
-
-  // 別の経路（精密解析）が決めた状態・姿勢・手順に乗り換える。prefix がそれまでの手順になる
-  rebase(state: CubeState, orient: number, prefix: DecodedMove[]): void {
-    let tail = null as MoveNode | null;
-    prefix.forEach((m, i) => {
-      tail = { move: m.move, t0: m.t0 ?? m.t, t: m.t, orient: m.orient, inferred: !!m.inferred, prev: tail, len: i + 1 };
-    });
-    this.beam = [{ state: new Uint8Array(state), orient, cost: 0, obsCost: 0, tail }];
-    this.lastGoodBeam = this.beam;
-    this.uncertainStreak = 0;
-    this.status = "tracking";
-  }
 }
 
 // 状態 state・姿勢 o の仮説に対する観測の矛盾コスト（調査用。デコーダの中と同じ計算）

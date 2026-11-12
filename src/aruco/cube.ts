@@ -4,12 +4,12 @@
 // ID = 揃った状態での facelet 番号なので、ID÷9 がそのステッカーの色（センターの面）。色を読む代わりに確かな色が分かる。
 // 面の組み立て: マーカー 1 枚の 4 隅からその面の平面の射影変換が分かる。同じ面のマーカーはその座標で
 // 「ほぼ同じ大きさの、軸にそろった正方形」が格子の間隔で並ぶ。直交する面や回している途中の層はそうならないので外れる。
-import { median } from "../lib/util";
+import { chroma, dot3, median } from "../lib/util";
 import { NORMAL, ROWDIR, VIEW, applyMove, cubeFaceAt, faceletGeometry, moveAmount, moveFace, solvedState } from "../cube/model";
 import { DEFAULT_OFFLINE, decodeOffline } from "../track/offline";
 import { simplifyMoves } from "../track/merge";
 import type { DecodedMove, FaceObservation, Observation } from "../track/types";
-import { type Mat3, type Pt, applyH, cornerPoints, fitHomography, invert3, invertH } from "../vision/homography";
+import { type Mat3, type Pt, applyH, cornerPoints, fitHomography, invert3, invertH, mulH } from "../vision/homography";
 import { type Pose, defaultFocal } from "../vision/pose";
 import { CONFUSABLE12, type Decoded, type StickerScheme, centerOffset, decode } from "./codes";
 import type { Marker } from "./detect";
@@ -181,12 +181,6 @@ function fitCells(cs: Iterable<GridCell>, pitch: number): Mat3 | null {
 }
 
 // 3×3 の行列の積 a·b
-function mulH(a: Mat3, b: number[]): Mat3 {
-  const out: number[] = [];
-  for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) out.push(a[r * 3] * b[c] + a[r * 3 + 1] * b[3 + c] + a[r * 3 + 2] * b[6 + c]);
-  return out as Mat3;
-}
-
 function gatherGroup(ref: Marker, pool: Marker[], o: FaceOptions): Group | null {
   let G = fitHomography(UNIT, cornersOf(ref));
   if (!G) return null;
@@ -280,10 +274,6 @@ export function colorConsistent(scheme: StickerScheme, id: number, rgb: [number,
 // 写った色を同じフレームの他のマーカーの色と比べる（unique54）。照明で色がずれても同じ色のステッカーは同じようにずれるので、
 // 読んだ色の仲間（自分を除く）より別の色の仲間にずっと近いマーカーを誤読として捨てる。色味は最大のチャンネルで割って比べる（明暗によらない）
 export function frameColorFilter<T extends { rgb: [number, number, number]; face: number }>(ms: T[]): T[] {
-  const chroma = (rgb: [number, number, number]) => {
-    const m = Math.max(rgb[0], rgb[1], rgb[2], 1);
-    return [rgb[0] / m, rgb[1] / m, rgb[2] / m];
-  };
   const xs = ms.map((m) => chroma(m.rgb));
   const dist = (a: number[], b: number[]) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
   const med = (vs: number[][]) => [0, 1, 2].map((k) => median(vs.map((v) => v[k])));
@@ -303,10 +293,6 @@ export function frameColorFilter<T extends { rgb: [number, number, number]; face
 
 // 同じ色の仲間（自分を除いて 2 枚以上）の色味の中央値にごく近く、取り違えの相手の色の仲間よりも近いマーカー（12 種類）
 function supportedByFrame(ms: { m: Marker; face: number }[]): Set<Marker> {
-  const chroma = (rgb: [number, number, number]) => {
-    const k = Math.max(rgb[0], rgb[1], rgb[2], 1);
-    return [rgb[0] / k, rgb[1] / k, rgb[2] / k];
-  };
   const xs = ms.map((x) => chroma(x.m.rgb));
   const dist = (a: number[], b: number[]) => Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
   const medianOf = (face: number, skip: number) => {
@@ -610,8 +596,6 @@ export function reconstructFaces(
 const FRONT_MIN_Z = Math.cos((62 * Math.PI) / 180);
 
 type V3 = [number, number, number];
-const dot3 = (a: V3, b: V3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-
 // カメラフレームの面の外向き法線（+x 右・+y 上・+z カメラ側）。背面（5）は見えない
 const SLOT_NORMALS: V3[] = [
   [0, 1, 0],

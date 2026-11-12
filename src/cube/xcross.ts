@@ -4,6 +4,7 @@
 // 向きも分かる）だけを追う。手で各ステッカーがどこへ移るかは MOVE_DEST。最短は IDA*（深さを 1 ずつ増やす深さ優先）で、
 // 残りの手数の下限は「クロスの 4 エッジを揃える最短手数」と「ペアのコーナー・ペアのエッジ・クロスのエッジ 1 つを揃える最短手数」の表
 // （揃った形から幅優先で作る）の大きい方。4 組のペアのうち、いちばん短く済むものを返す。
+import { dot3 as dot } from "../lib/util";
 import { type CubeState, MOVE_DEST, NORMAL, NUM_MOVES, OPPOSITE, faceletGeometry, moveFace } from "./model";
 import { PARTNERS, stickerIdAt } from "./stickers";
 
@@ -29,7 +30,6 @@ for (let m = 0; m < NUM_MOVES; m++)
     CMOVE[m * 24 + k] = CIDX[MOVE_DEST[m][CORNER_F[k]]];
   }
 
-const dot = (a: number[], b: number[]) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 
 // 面 c のクロスのエッジ（面 c の上のステッカー）と、4 組のペア（面 c の上のコーナーのステッカー・ペアのエッジのステッカー）
 function piecesOf(c: number): { cross: number[]; pairs: { corner: number; edge: number }[] } {

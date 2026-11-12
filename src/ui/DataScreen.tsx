@@ -2,6 +2,7 @@
 import { useState } from "preact/hooks";
 import { type Solve, averageOf, effectiveTime, formatTime } from "../app/storage";
 import { useStore } from "../app/store";
+import { downloadText } from "../lib/util";
 import { replaceSolves, timerStore } from "../app/timer";
 import { CHART_KINDS, Chart, type ChartKind } from "./charts";
 import { AnalysisBadge, openSolve } from "./solveUi";
@@ -42,14 +43,6 @@ function ChartCard({ slot, fallback, solves }: { slot: number; fallback: ChartKi
       <Chart kind={kind} solves={solves} />
     </section>
   );
-}
-
-function download(name: string, text: string, type: string) {
-  const a = document.createElement("a");
-  a.href = URL.createObjectURL(new Blob([text], { type }));
-  a.download = name;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 }
 
 export function DataScreen() {
@@ -114,10 +107,10 @@ export function DataScreen() {
           <p class="muted card-body">まだ記録がありません。プレイ画面のタイマーで計測すると、ここにたまります。</p>
         )}
         <div class="btn-row card-body">
-          <button class="btn small" onClick={() => download("cubevision-solves.json", JSON.stringify(solves, null, 1), "application/json")} disabled={!solves.length}>
+          <button class="btn small" onClick={() => downloadText("cubevision-solves.json", JSON.stringify(solves, null, 1), "application/json")} disabled={!solves.length}>
             JSON で書き出す
           </button>
-          <button class="btn small" onClick={() => download("cubevision-solves.csv", csv(), "text/csv")} disabled={!solves.length}>
+          <button class="btn small" onClick={() => downloadText("cubevision-solves.csv", csv(), "text/csv")} disabled={!solves.length}>
             CSV で書き出す
           </button>
           <button class="btn small" onClick={importJson}>

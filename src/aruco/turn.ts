@@ -7,6 +7,7 @@
 //    マーカーの中心と法線が合うか。いちばん合う層と θ を選ぶ（粗く探してから細かく）
 // 形だけからは 90° ごとの区別がつかない（θ は -45°〜45°）。フレームをまたいで θ をつなぐと（unwrapTurn）、回した向きと量が分かる。
 // DOM もカメラも知らない
+import { dot3 as dot } from "../lib/util";
 import { NORMAL, type Vec3 } from "../cube/model";
 import { type Mat3, type Pt, cornerCenter, cornerPoints, fitHomography } from "../vision/homography";
 import { type Pose, defaultFocal, estimatePose, latticePoint } from "../vision/pose";
@@ -40,7 +41,6 @@ export interface TurnResult {
 }
 
 type V = number[];
-const dot = (a: V, b: V) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 const rotate = (R: number[], v: V): Vec3 => [R[0] * v[0] + R[1] * v[1] + R[2] * v[2], R[3] * v[0] + R[4] * v[1] + R[5] * v[2], R[6] * v[0] + R[7] * v[1] + R[8] * v[2]];
 const rotateT = (R: number[], v: V): Vec3 => [R[0] * v[0] + R[3] * v[1] + R[6] * v[2], R[1] * v[0] + R[4] * v[1] + R[7] * v[2], R[2] * v[0] + R[5] * v[1] + R[8] * v[2]];
 

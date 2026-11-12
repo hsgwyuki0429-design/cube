@@ -13,20 +13,11 @@ import type { FromArucoWorker, VideoInfo } from "./protocol";
 import { type FrameRecord, SPEED_LABELS, type Summary, colorLabel, summarize, toCsv, toMarkdown } from "./stats";
 import { SHEETS } from "./stickers";
 import { Viewer } from "./viewer";
-import { errorMessage } from "../lib/util";
+import { downloadText, errorMessage } from "../lib/util";
 
 type Mode = "cube" | "sheet";
 
 const PASS_RATE = 0.9;
-
-function download(name: string, text: string, type: string) {
-  const url = URL.createObjectURL(new Blob([text], { type }));
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = name;
-  a.click();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
-}
 
 const pct = (v: number) => `${(v * 100).toFixed(1)}%`;
 const rateClass = (v: number) => (v >= PASS_RATE ? "ok" : v >= 0.7 ? "warn" : "bad");
@@ -321,10 +312,10 @@ function Results({ summary, sheet, configs, meta }: { summary: Summary; sheet: (
       <div class="card-head">
         2. 結果
         <span class="spacer" />
-        <button class="btn small" onClick={() => download("aruco-result.csv", toCsv(summary, meta()), "text/csv")}>
+        <button class="btn small" onClick={() => downloadText("aruco-result.csv", toCsv(summary, meta()), "text/csv")}>
           CSV
         </button>
-        <button class="btn small" onClick={() => download("aruco-result.md", toMarkdown(summary, sheet, meta()), "text/markdown")}>
+        <button class="btn small" onClick={() => downloadText("aruco-result.md", toMarkdown(summary, sheet, meta()), "text/markdown")}>
           Markdown
         </button>
       </div>

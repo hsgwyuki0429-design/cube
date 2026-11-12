@@ -87,7 +87,6 @@ export const NAMED_COLORS = [
   { id: "B", name: "青", lab: [38, 12, -58] as Lab, display: "#1157d6" },
   { id: "G", name: "緑", lab: [58, -58, 34] as Lab, display: "#00a651" },
 ] as const;
-export type NamedColorId = (typeof NAMED_COLORS)[number]["id"];
 
 export function nearestNamed(lab: Lab): number {
   let best = 0;

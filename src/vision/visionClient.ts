@@ -2,7 +2,6 @@
 import { markerSize, stickerScheme } from "../aruco/codes";
 import { STICKERS, designOf } from "../aruco/design";
 import type { EngineOptions, TrackUpdate } from "../track/engine";
-import type { DecodedMove } from "../track/types";
 import type { Lab } from "./color";
 import type { PipelineConfig } from "./pipeline";
 import type { FrameMessage, FromWorker, StreamPartial, ToWorker, VideoRefineOptions } from "./protocol";
@@ -135,11 +134,6 @@ export class VisionClient {
 
   stopTracking(): void {
     this.post({ type: "track-stop" });
-  }
-
-  // 精密解析が解き直した結果に乗り換える（t より後の観測は Worker の中でもう一度通す）
-  rebase(state: ArrayLike<number>, orient: number, moves: DecodedMove[], t: number, keep: number): void {
-    this.post({ type: "track-rebase", state: Array.from(state), orient, moves, t, keep });
   }
 
   // 観測を待たずに、今の追跡結果（各手の時刻はその時点までのフレームから）をもらう
@@ -284,11 +278,6 @@ export class RefineClient {
       this.jobs.set(id, { resolve, reject, progress });
       this.worker.postMessage({ type: "stream-end", id, to, target: target ? Array.from(target) : null } satisfies ToWorker);
     });
-  }
-
-  // フリーで完成した: 時刻 t までを、終わりを target として前後から解き直させる（結果は途中結果として届く）
-  anchorStream(id: number, t: number, target: ArrayLike<number>): void {
-    this.worker?.postMessage({ type: "stream-anchor", id, t, target: Array.from(target) } satisfies ToWorker);
   }
 
   cancelStream(id: number): void {

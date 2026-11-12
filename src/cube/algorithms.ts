@@ -3,7 +3,7 @@
 //
 // 手順は持ち替え（x y z）・ワイドムーブ（r Rw）・中層（M E S）を含む書き方のまま置き、センター基準の 18 手に直して使う
 // （このアプリの状態はセンター基準なので、r は L と持ち替え x、M は R L' と x' と同じ）。
-import { FACES, MOVE_NAMES, moveIndex } from "./model";
+import { FACES } from "./model";
 
 export const PLL = [
   "R U R' U' R' F R2 U' R' U' R U R' F'", // T
@@ -146,7 +146,5 @@ export function toCenterMoves(alg: string): number[] {
   return out;
 }
 
-export const moveNames = (moves: number[]) => moves.map((m) => MOVE_NAMES[m]).join(" ");
-export const parseCenterMoves = (s: string) => s.trim().split(/\s+/).filter(Boolean).map(moveIndex);
 
 export const ALL_ALGORITHMS = [...PLL, ...OLL, ...F2L, ...TRIGGERS];

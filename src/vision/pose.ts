@@ -7,6 +7,7 @@
 // 面の格子の各点（角・辺の中点・中心）の 3D 座標は既知（キューブの大きさ 3）なので、PnP 問題として
 // 正面の面の射影変換から初期値を作り、見えている全部の面の点で再投影誤差を最小化する（ガウス・ニュートン）。
 // 焦点距離は分からないので、スマホやPCのカメラの典型的な画角から仮定する（多少ずれても回転はほぼ合う）。
+import { dot3 } from "../lib/util";
 import { COLDIR, F, NORMAL, ROWDIR, type Vec3 } from "../cube/model";
 import { type Mat3, type Pt, fitHomography } from "./homography";
 import { slotPoint } from "./layout";
@@ -83,8 +84,6 @@ const norm3 = (v: number[]) => {
   return [v[0] / l, v[1] / l, v[2] / l];
 };
 const cross3 = (a: number[], b: number[]) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
-const dot3 = (a: number[], b: number[]) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
-
 // 6x6 の連立一次方程式（ガウスの消去法）
 function solve(A: number[][], b: number[]): number[] | null {
   const n = b.length;

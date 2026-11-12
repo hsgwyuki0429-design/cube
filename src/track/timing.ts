@@ -6,6 +6,7 @@
 //   終了 = 回転後に再び止まった最初のフレームと、その前のフレームの中間
 // とする（誤差はフレーム間隔の半分程度）。「止まっている」= 層のセルがすべて読めて、セル内の色のばらつきが小さい
 // （回転中はサンプル点がステッカーの隙間にかかり、ばらつきが急に大きくなる）。手で隠れたセルは使わない。
+import { dot3 as dot } from "../lib/util";
 import { NORMAL, VIEW, faceletGeometry, moveFace } from "../cube/model";
 import type { Lab } from "../vision/color";
 import type { DecodedMove } from "./types";
@@ -58,10 +59,9 @@ function shiftMoved(a: Shift, ref: Shift, opts: TimingOptions, gapMs: number): b
   return Math.hypot(a[0] - ref[0], a[1] - ref[1]) >= shiftLimit(gapMs, opts);
 }
 
-const dot = (a: number[], b: number[]) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
 
 // キューブの色らしいか（指や手が乗ったセルは、どの色からも遠い）
-function cubeLike(lab: Lab, refs?: Lab[]): boolean {
+export function cubeLike(lab: Lab, refs?: Lab[]): boolean {
   if (!refs) return true;
   let best = Infinity;
   for (const r of refs) best = Math.min(best, Math.hypot((lab[0] - r[0]) / 2, lab[1] - r[1], lab[2] - r[2]));

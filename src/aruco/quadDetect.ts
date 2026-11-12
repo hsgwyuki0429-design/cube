@@ -9,7 +9,7 @@
 // 角の座標の決め方（成分の縁の画素の中心）は OpenCV の輪郭と同じなので、後段（面の組み立て・手の時刻）はそのまま使える
 import { type Pt, cornerPoints } from "../vision/homography";
 import { THRESH_WASM } from "./threshWasm";
-import { type StickerScheme, codesOf, markerBits } from "./codes";
+import { type StickerScheme, codesOf, markerBits, rotCode } from "./codes";
 import { type DetectResult, type ImageLike, type Marker, type MarkerDetector, type Region, halveRegionInto, measureCells } from "./detect";
 
 export interface QuadOptions {
@@ -29,12 +29,6 @@ export interface QuadOptions {
 export const DEFAULT_QUAD: QuadOptions = { windows: [11, 5, 15], c: 7, minSide: 9, maxSide: 160, minFit: 0.85, borderErrors: 2 };
 
 // 符号（回した 4 通り）→ ID と回した回数
-function rotCode(code: number): number {
-  let out = 0;
-  for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) if ((code >> (r * 3 + c)) & 1) out |= 1 << (c * 3 + (2 - r));
-  return out;
-}
-
 const SIB_TOL = 0.4;
 const SHARP = 0.4; // 辺の境目の 1 画素あたりの明るさの変化（マーカーの明暗の差に対して）がこれ未満なら、ぶれている
 const SURE_FIT = 0.97; // これ以上の割合で符号どおりに読めたマーカーは、ほかの窓で読み直さない
@@ -87,7 +81,7 @@ export class QuadDetector {
     if (this.options.forceJs) this.thresh = makeThresholder(true);
     codesOf(scheme).forEach((code, id) => {
       let x = code;
-      for (let rot = 0; rot < 4; rot++, x = rotCode(x)) if (!this.table.has(x)) this.table.set(x, { id, rot });
+      for (let rot = 0; rot < 4; rot++, x = rotCode(x, 3)) if (!this.table.has(x)) this.table.set(x, { id, rot });
     });
   }
 
