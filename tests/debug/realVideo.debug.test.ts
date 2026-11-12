@@ -14,6 +14,8 @@
 //   REAL_READINGS=ファイル（ライブが処理したフレームの読みを書き出す: liveReplay.debug.test.ts で追跡だけを測る）
 //   REAL_NOLIVE=1（ライブを省く）・REAL_STILL=1（精密解析で止まっているフレームを飛ばす。本体の録画の解析と同じ）・
 //   REAL_ENDS=1（精密解析の最初・最後の手の時刻の詳しい内容）
+//   REAL_START_FILE=ファイル（始まりの状態: JSON の startState か start）
+//   REAL_RREADINGS=ファイル（精密解析が精密に処理したフレームの読み: betweenMoves.debug.test.ts）
 //   REAL_OBS=ファイル（精密解析の観測を書き出す: obsReplay.debug.test.ts で解き直しだけを測る）
 //   REAL_REF=ファイル（精密解析の結果を書き出す。REAL_REFINE=0 なら読み込んで、ライブの一致だけ測る: ライブを直して何度も測るとき）
 // 精密解析の追跡の設定は本体と同じ（controller.engineOptions: ARUCO_OBSERVER・候補 32・3 手）。
@@ -115,7 +117,11 @@ it("実際のプレイ動画", async () => {
   const out: string[] = [];
 
   let start = solvedState();
-  if (process.env.REAL_START === "scan") {
+  // REAL_START_FILE=ファイル: 始まりの状態（JSON の startState か start。精密解析の結果・REAL_READINGS の書き出しをそのまま使える）
+  if (process.env.REAL_START_FILE) {
+    const j = JSON.parse(readFileSync(process.env.REAL_START_FILE, "utf8")) as { startState?: number[]; start?: number[] };
+    start = Uint8Array.from((j.startState ?? j.start)!);
+  } else if (process.env.REAL_START === "scan") {
     // 回し始める前のフレームで読んだステッカーの ID を、センターの ID から決めた姿勢で facelet ごとに数える
     const votes = Array.from({ length: 54 }, () => new Map<number, number>());
     const mem = {};
@@ -190,8 +196,11 @@ it("実際のプレイ動画", async () => {
   // REAL_RFRAMES=22.1-23.0: 精密解析が精密に処理したフレームの面
   // 精密解析が精密に処理したフレームの読み（ID が読めたマスの数。認識の良し悪し）
   const rstat = { frames: 0, faces: 0, ids: 0, empty: 0 };
+  // REAL_RREADINGS=ファイル: 精密解析が精密に処理したフレームの読み（面と ID だけ）を書き出す（betweenMoves.debug.test.ts で、手と手の間の状態がどれだけ読めたかを測る）
+  const rreadings: { t: number; faces: { slot: number; ids: number[] }[] }[] = [];
   if (refiner && !process.env.REAL_RFRAMES)
     refiner.onFrame = (_t, r: FrameResult) => {
+      if (process.env.REAL_RREADINGS) rreadings.push({ t: _t, faces: r.faces.map((f) => ({ slot: f.slot, ids: Array.from(f.ids ?? new Array(9).fill(-1)) })) });
       rstat.frames++;
       rstat.faces += r.faces.length;
       if (!r.faces.length) rstat.empty++;
@@ -318,6 +327,7 @@ it("実際のプレイ動画", async () => {
     console.log(summarize(nodes, interval, picked.length, 30));
   }
   if (process.env.REAL_READINGS) writeFileSync(process.env.REAL_READINGS, JSON.stringify({ start: Array.from(start), readings }));
+  if (process.env.REAL_RREADINGS) writeFileSync(process.env.REAL_RREADINGS, JSON.stringify({ start: Array.from(start), readings: rreadings }));
   const liveMoves = simplifyMoves(live.decoder.bestMoves()).map((m) => MOVE_NAMES[m.move]).join(" ");
   const shown = live.view?.state ?? live.decoder.best().state;
   out.push(`動画 ${file}: ${sw}×${sh} → ${W}×${H}・${frames} フレーム（ライブが処理したのは ${processed}・1 秒 ${((processed / (frames || 1)) * 60).toFixed(1)} 枚相当）`);
