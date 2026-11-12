@@ -8,38 +8,9 @@ import { readFileSync } from "node:fs";
 import { it } from "vitest";
 import { type CubeState, MOVE_NAMES, VIEW, applyMove, moveFace, statesEqual } from "../../src/cube/model";
 import { stickerIds } from "../../src/cube/stickers";
-import { type RescoreFrame, type RescoreMove, rescore } from "../../src/track/rescore";
+import { type RescoreFrame, type RescoreMove, canonical, rescore } from "../../src/track/rescore";
 
-// 同じ面の手をまとめ、隣り合う反対の面の手（同時に回すと順番が決まらない: 中層回し）は面の番号の順に並べる
-function normalize(ms: number[]): number[] {
-  let cur = merge(ms);
-  for (let changed = true; changed; ) {
-    changed = false;
-    for (let i = 0; i + 1 < cur.length; i++) {
-      const a = moveFace(cur[i]);
-      const b = moveFace(cur[i + 1]);
-      if (a !== b && a % 3 === b % 3 && a > b) {
-        [cur[i], cur[i + 1]] = [cur[i + 1], cur[i]];
-        changed = true;
-      }
-    }
-    if (changed) cur = merge(cur);
-  }
-  return cur;
-}
-
-function merge(ms: number[]): number[] {
-  const out: number[] = [];
-  for (const m of ms) {
-    const last = out[out.length - 1];
-    if (last !== undefined && moveFace(last) === moveFace(m)) {
-      out.pop();
-      const amt = ((last % 3) + 1 + (m % 3) + 1) % 4;
-      if (amt) out.push(moveFace(m) * 3 + amt - 1);
-    } else out.push(m);
-  }
-  return out;
-}
+const normalize = canonical;
 
 function editDistance(a: number[], b: number[]): number {
   const d = Array.from({ length: a.length + 1 }, (_, i) => [i, ...new Array(b.length).fill(0)]);

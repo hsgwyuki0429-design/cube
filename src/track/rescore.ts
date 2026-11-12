@@ -238,6 +238,36 @@ function score(frs: Compact[], idsList: Int16Array[], seq: number[], o: RescoreO
   return { cost: dp[(F - 1) * P + end] + o.moveCost * m, starts, ends };
 }
 
+// 同じ面の手をまとめ（U U' → なし・U U → U2）、隣り合う反対の面の手を面の番号の順に並べる（同時に回すと順番は決まらない）
+export function canonical(ms: number[]): number[] {
+  const merge = (xs: number[]) => {
+    const out: number[] = [];
+    for (const m of xs) {
+      const last = out[out.length - 1];
+      if (last !== undefined && moveFace(last) === moveFace(m)) {
+        out.pop();
+        const amt = ((last % 3) + 1 + (m % 3) + 1) % 4;
+        if (amt) out.push(moveFace(m) * 3 + amt - 1);
+      } else out.push(m);
+    }
+    return out;
+  };
+  let cur = merge(ms);
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (let i = 0; i + 1 < cur.length; i++) {
+      const a = moveFace(cur[i]);
+      const b = moveFace(cur[i + 1]);
+      if (a !== b && a % 3 === b % 3 && a > b) {
+        [cur[i], cur[i + 1]] = [cur[i + 1], cur[i]];
+        changed = true;
+      }
+    }
+    if (changed) cur = merge(cur);
+  }
+  return cur;
+}
+
 export function rescore(frames: RescoreFrame[], start: CubeState, moves: RescoreMove[], options: Partial<RescoreOptions> = {}): { moves: RescoreMove[]; changes: RescoreChange[] } {
   const o = { ...DEFAULT_RESCORE, ...options };
   const frs = compact(frames.slice().sort((a, b) => a.t - b.t)).filter((f) => f.pos.length > 0);
@@ -294,6 +324,8 @@ export function rescore(frames: RescoreFrame[], start: CubeState, moves: Rescore
       }
       if (!best || best.r.cost > base.cost - o.minGain) continue;
       if (best.seq.join() === win.map((m) => m.move).join()) continue;
+      // 同じ面の手をまとめ、反対の面の手の順番をそろえると同じ並び（中層回しの分け方が違うだけ）なら置き換えない（手が増えるだけ）
+      if (canonical(best.seq).join() === canonical(win.map((m) => m.move)).join()) continue;
       const b0 = bucket(win[0].start);
       if ((touched.get(b0) ?? 0) >= 2) continue;
       touched.set(b0, (touched.get(b0) ?? 0) + 1);

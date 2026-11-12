@@ -16,7 +16,7 @@
 //   REAL_ENDS=1（精密解析の最初・最後の手の時刻の詳しい内容）
 //   REAL_START_FILE=ファイル（始まりの状態: JSON の startState か start）
 //   REAL_RREADINGS=ファイル（精密解析が精密に処理したフレームの読み: betweenMoves.debug.test.ts）
-//   REAL_OBS=ファイル（精密解析の観測を書き出す: obsReplay.debug.test.ts で解き直しだけを測る）
+//   REAL_OBS=ファイル（精密解析の観測を書き出す: obsReplay.debug.test.ts で解き直しだけを測る）・REAL_OBS_ONLY=1（書き出したら解き直さない）
 //   REAL_REF=ファイル（精密解析の結果を書き出す。REAL_REFINE=0 なら読み込んで、ライブの一致だけ測る: ライブを直して何度も測るとき）
 // 精密解析の追跡の設定は本体と同じ（controller.engineOptions: ARUCO_OBSERVER・候補 32・3 手）。
 // 精密解析が完成までつながったら、その手順と時刻を本当の動きとみなして、ライブが 3D に出した状態が本当の状態と同じだった時間の割合を出す
@@ -197,10 +197,10 @@ it("実際のプレイ動画", async () => {
   // 精密解析が精密に処理したフレームの読み（ID が読めたマスの数。認識の良し悪し）
   const rstat = { frames: 0, faces: 0, ids: 0, empty: 0 };
   // REAL_RREADINGS=ファイル: 精密解析が精密に処理したフレームの読み（面と ID だけ）を書き出す（betweenMoves.debug.test.ts で、手と手の間の状態がどれだけ読めたかを測る）
-  const rreadings: { t: number; faces: { slot: number; ids: number[] }[] }[] = [];
+  const rreadings: { t: number; faces: { slot: number; ids: number[]; w: number[] }[] }[] = [];
   if (refiner && !process.env.REAL_RFRAMES)
     refiner.onFrame = (_t, r: FrameResult) => {
-      if (process.env.REAL_RREADINGS) rreadings.push({ t: _t, faces: r.faces.map((f) => ({ slot: f.slot, ids: Array.from(f.ids ?? new Array(9).fill(-1)) })) });
+      if (process.env.REAL_RREADINGS) rreadings.push({ t: _t, faces: r.faces.map((f) => ({ slot: f.slot, ids: Array.from(f.ids ?? new Array(9).fill(-1)), w: f.weight.map((x) => Math.round(x * 100) / 100) })) });
       rstat.frames++;
       rstat.faces += r.faces.length;
       if (!r.faces.length) rstat.empty++;
@@ -357,6 +357,11 @@ it("実際のプレイ動画", async () => {
     if (refiner && process.env.REAL_OBS) {
       const arr = (a?: ArrayLike<number>) => (a ? Array.from(a) : undefined);
       writeFileSync(process.env.REAL_OBS, JSON.stringify({ start: Array.from(start), end: end ? Array.from(end) : null, lastT: refiner.lastT, obs: refiner.engine.observationLog.map((o) => ({ ...o, faces: o.faces.map((f) => ({ slot: f.slot, cost: arr(f.cost), labels: arr(f.labels), ids: arr(f.ids), idCost: arr(f.idCost) })) })) }));
+    }
+    // REAL_OBS_ONLY=1: 観測と読みを書き出したら、解き直しはしない（解き直しは obsReplay で繰り返す）
+    if (process.env.REAL_OBS_ONLY) {
+      console.log(out.join("\n"));
+      return;
     }
     const res = cached ?? refiner!.result(end);
     if (refiner && refFile) writeFileSync(refFile, JSON.stringify(res));
