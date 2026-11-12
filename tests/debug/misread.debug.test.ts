@@ -27,6 +27,8 @@ it("ステッカーの読み違いの割合", () => {
   const prevStill = new Map<string, number>();
   for (const f of readdirSync(dir).filter((x) => x.endsWith(".read.json"))) {
     const name = f.replace(".read.json", "");
+    // MR_ONLY=IMG_497[01]: その動画だけ（正規表現）
+    if (process.env.MR_ONLY && !new RegExp(process.env.MR_ONLY).test(name)) continue;
     const b = name.slice(0, 8);
     const refF = readdirSync(refDir).find((x) => x === `${b}.MOV.ref.json` || x === `${b}.mov.ref.json`);
     if (!refF) continue;
