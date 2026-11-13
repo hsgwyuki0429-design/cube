@@ -181,14 +181,13 @@ function TopBar() {
   );
 }
 
-// ---- カメラの上: 追跡の様子 ----
+// ---- カメラの上: 追跡の様子（キューブが映っていないことは CameraView の案内が出すので、ここでは出さない） ----
 
 function TrackBadge() {
   const t = useStore(controller.store, (s) => ({ status: s.track?.status, faces: s.stats.faces, cube: !!s.cube, camera: s.camera }));
   if (t.camera !== "on" || !t.cube) return null;
   if (t.status === "lost") return <div class="cam-badge glass bad">見失いました。キューブを止めて 2 面を見せてください</div>;
   if (t.status === "uncertain") return <div class="cam-badge glass warn">確認中… 一瞬止めてください</div>;
-  if (!t.faces) return <div class="cam-badge glass warn">キューブを映してください</div>;
   return null;
 }
 

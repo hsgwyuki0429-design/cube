@@ -33,3 +33,15 @@ export const BackIcon = () => (
     <path d="M15 18l-6-6 6-6" />
   </svg>
 );
+
+export const ChevronIcon = () => (
+  <svg {...base} class="chevron">
+    <path d="M9 6l6 6-6 6" />
+  </svg>
+);
+
+export const ShareIcon = () => (
+  <svg {...base}>
+    <path d="M12 15V3M7 8l5-5 5 5M5 13v6a2 2 0 002 2h10a2 2 0 002-2v-6" />
+  </svg>
+);

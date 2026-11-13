@@ -1,5 +1,5 @@
-// 記録の詳しい画面: スクランブル・分割タイム・3D キューブ（自分の解き方を再生。手や分割タイムを押すとそこへ）・手順・
-// X クロスの最短（自分がクロスを作った色。押すと 3D でその解き方を再生）・ペナルティと削除
+// 記録の詳しい画面: 大きなタイム・3D キューブ（自分の解き方を再生。手や分割タイムを押すとそこから）・分割タイム・手順・スクランブル・
+// X クロスの最短（自分がクロスを作った色。押すと 3D でその解き方を再生）・ペナルティと削除・共有
 import { useEffect, useState } from "preact/hooks";
 import { controller } from "../app/controller";
 import { settingsStore } from "../app/settings";
@@ -14,8 +14,9 @@ import { optimalXCross } from "../cube/solver";
 import type { XCrossResult } from "../cube/xcross";
 import { Cube3D } from "./Cube3D";
 import { type ReplayMove, ReplayCube } from "./ReplayCube";
-import { BackIcon } from "./icons";
-import { AnalysisBadge, PenaltyRow } from "./solveUi";
+import { BackIcon, ShareIcon } from "./icons";
+import { shareSolve } from "./shareCard";
+import { AnalysisBadge, PenaltyRow, bestGain } from "./solveUi";
 
 const FACE_COLOR = ["白", "赤", "緑", "黄", "橙", "青"];
 
@@ -45,7 +46,8 @@ function replayMoves(moves: SolveMove[], ms: number[]): ReplayMove[] {
 
 export function SolveDetail() {
   const id = useStore(controller.store, (s) => s.solveId);
-  const solve = useStore(timerStore, (t) => t.solves.find((s) => s.id === id) ?? null);
+  const solves = useStore(timerStore, (t) => t.solves);
+  const solve = solves.find((s) => s.id === id) ?? null;
   const notation = useStore(settingsStore, (s) => s.notation);
   // 3D で見せるもの: 自分の解き方の k 手目から / X クロスの最短
   const [view, setView] = useState<{ mode: "mine"; at: number } | { mode: "xcross" }>({ mode: "mine", at: 0 });
@@ -81,9 +83,11 @@ export function SolveDetail() {
   if (!solve) {
     return (
       <div class="page solve-detail">
-        <button class="btn ghost back" onClick={back}>
-          <BackIcon /> データ
-        </button>
+        <div class="detail-nav">
+          <button class="icon-btn" onClick={back} aria-label="データに戻る">
+            <BackIcon />
+          </button>
+        </div>
         <p class="muted">この記録は見つかりませんでした（削除されたかもしれません）。</p>
       </div>
     );
@@ -104,53 +108,40 @@ export function SolveDetail() {
   const splits = solve.splits ?? [];
   const at = view.mode === "mine" ? view.at : -1;
 
+  const n = solves.length - solves.findIndex((s) => s.id === solve.id);
+  const pb = bestGain(solves, solve) !== null || (solves.length === 1 && Number.isFinite(effectiveTime(solve)));
+  const splitSpan = splits.length ? splits[splits.length - 1].t : 0;
+
   return (
     <div class="page solve-detail">
-      <div class="detail-head">
-        <button class="btn ghost back" onClick={back} aria-label="データに戻る">
+      <div class="detail-nav">
+        <button class="icon-btn" onClick={back} aria-label="データに戻る">
           <BackIcon />
         </button>
-        <div>
-          <div class="detail-time">
-            {formatTime(effectiveTime(solve))}
-            {solve.penalty === "+2" && <small> (+2)</small>}
-          </div>
-          <div class="muted small">
-            {new Date(solve.date).toLocaleString()}・{solve.moves.length} 手・{solve.tps.toFixed(2)} TPS {!solve.tracked && "・手動停止"}
-          </div>
-        </div>
+        <span class="nav-title">{n} 回目</span>
         <span class="spacer" />
-        <AnalysisBadge solve={solve} />
+        <button class="btn small" onClick={() => shareSolve(solve, solves)}>
+          <ShareIcon />
+          共有
+        </button>
       </div>
 
-      <section class="card detail-block">
-        <div class="block-title">スクランブル</div>
-        <div class="mono scramble-text">{solve.scramble || "—"}</div>
-      </section>
+      <header class="detail-hero">
+        <div class="detail-date">{new Date(solve.date).toLocaleString()}</div>
+        <div class="detail-time">
+          {formatTime(effectiveTime(solve))}
+          {solve.penalty === "+2" && <small> +2</small>}
+        </div>
+        <div class="detail-meta">
+          {solve.moves.length} 手・{solve.tps.toFixed(2)} TPS{!solve.tracked && "・手動停止"}
+        </div>
+        <div class="detail-badges">
+          {pb && <span class="pb-badge">自己ベスト</span>}
+          <AnalysisBadge solve={solve} />
+        </div>
+      </header>
 
       <div class="detail-grid">
-        <section class="card detail-block">
-          <div class="block-title">分割タイム</div>
-          {splits.length ? (
-            <table class="split-table">
-              <tbody>
-                {splits.map((s, i) => {
-                  const prev = i ? splits[i - 1] : { t: 0, moves: 0 };
-                  const from = prev.moves;
-                  return (
-                    <tr key={s.name} class={view.mode === "mine" && at >= from && at < s.moves ? "on" : ""} onClick={() => setView({ mode: "mine", at: from })}>
-                      <td>{s.name}</td>
-                      <td>{formatTime(s.t - prev.t)}</td>
-                      <td class="muted">{s.moves - prev.moves} 手</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          ) : (
-            <p class="muted small">手順が完成までつながらなかったので、区切れませんでした。</p>
-          )}
-        </section>
         <section class="card detail-block cube-block">
           <div class="block-title">
             3D キューブ
@@ -164,6 +155,43 @@ export function SolveDetail() {
             )
           ) : (
             <p class="muted small">スクランブルがない記録です。</p>
+          )}
+        </section>
+        <section class="card detail-block">
+          <div class="block-title">
+            分割タイム
+            <span class="muted small">押すとそこから 3D で</span>
+          </div>
+          {splits.length ? (
+            <>
+              <div class="split-bar" aria-hidden="true">
+                {splits.map((s, i) => {
+                  const prev = i ? splits[i - 1] : { t: 0, moves: 0 };
+                  const on = view.mode === "mine" && at >= prev.moves && at < s.moves;
+                  return <span key={s.name} class={`seg s${i % 4}${on ? " on" : ""}`} style={{ flexGrow: Math.max(1, s.t - prev.t) / Math.max(1, splitSpan) }} />;
+                })}
+              </div>
+              <table class="split-table">
+                <tbody>
+                  {splits.map((s, i) => {
+                    const prev = i ? splits[i - 1] : { t: 0, moves: 0 };
+                    const from = prev.moves;
+                    return (
+                      <tr key={s.name} class={view.mode === "mine" && at >= from && at < s.moves ? "on" : ""} onClick={() => setView({ mode: "mine", at: from })}>
+                        <td>
+                          <span class={`dot s${i % 4}`} />
+                          {s.name}
+                        </td>
+                        <td>{formatTime(s.t - prev.t)}</td>
+                        <td class="muted">{s.moves - prev.moves} 手</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </>
+          ) : (
+            <p class="muted small">手順が完成までつながらなかったので、区切れませんでした。</p>
           )}
         </section>
       </div>
@@ -187,6 +215,11 @@ export function SolveDetail() {
       </section>
 
       <section class="card detail-block">
+        <div class="block-title">スクランブル</div>
+        <div class="scramble-text">{solve.scramble || "—"}</div>
+      </section>
+
+      <section class="card detail-block">
         <div class="block-title">
           X クロスの最短
           <span class="muted small">{FACE_COLOR[face]}クロス{crossFace < 0 ? "（クロスの色が分からないので白）" : ""}・{FACE_COLOR[face]}を下</span>
@@ -197,7 +230,7 @@ export function SolveDetail() {
           <p class="muted small">求められませんでした。</p>
         ) : (
           <button class={`xcross-row${view.mode === "xcross" ? " on" : ""}`} onClick={() => setView(view.mode === "xcross" ? { mode: "mine", at: 0 } : { mode: "xcross" })}>
-            <span class="mono">{held(xcross.result.moves) || "（もう揃っています）"}</span>
+            <span class="xcross-moves">{held(xcross.result.moves) || "（もう揃っています）"}</span>
             <span class="muted small">{xcross.result.moves.length} 手・{view.mode === "xcross" ? "自分の解き方に戻す" : "押すと 3D で"}</span>
           </button>
         )}
