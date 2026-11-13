@@ -1,6 +1,7 @@
 import { Component, type ComponentChildren, render } from "preact";
 import { controller } from "./app/controller";
 import { PHASE_LABEL, checkLastRun, markPhase } from "./app/crashGuard";
+import { lowerRecordBitrate } from "./vision/recorder";
 import { timerStore } from "./app/timer";
 import "./styles.css";
 import { App } from "./ui/App";
@@ -47,7 +48,9 @@ try {
 }
 
 // 前回は解析の途中で落ちた（iPhone でメモリが足りずにタブごと読み込み直された）: どこで落ちたかを出す
+// 録画の画質も 1 段下げる（落ちた原因がメモリなら、録画を残す量が減る: src/vision/recorder.ts の「端末に合わせる」）
 const crashed = checkLastRun();
+if (crashed) lowerRecordBitrate();
 if (crashed)
   setTimeout(
     () =>

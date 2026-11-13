@@ -119,14 +119,6 @@ export function SettingsPage() {
         </div>
       </div>
 
-      <div class="card" style={{ marginTop: 12 }}>
-        <div class="card-head">試験中</div>
-        <div class="card-body form">
-          <Field label="ピースの時刻表で解き直す" desc="止めた後の精密解析で、新しい解き直しを先に試します（完成までつながらなければ、これまでの解き直し）。使われたときは「回した手」に出ます">
-            <Toggle k="piecesDecode" />
-          </Field>
-        </div>
-      </div>
       <details class="help-details" id="help">
         <summary>使い方</summary>
         <HelpPage />

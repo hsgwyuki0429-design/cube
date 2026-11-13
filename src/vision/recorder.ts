@@ -30,8 +30,48 @@ const CODECS: { codec: string; hw: HardwareAcceleration }[] = [
 
 // 圧縮の強さ（ビット/秒）。2.5Mbps では、実物のソルブ（マーカーの辺 19〜31 画素）で 1 フレームに ID が読めるマスが元の画質の 8 割
 // （7.6〜8.0 → 6.1〜6.6）に減り、精密解析が完成までつながらない・解き直しが 16 秒かかることがあった。5Mbps で 7.1〜7.4 に戻り、
-// どちらも 1 秒ほどで完成までつながった（8Mbps でも大差ない）。タイマーの録画は 150 秒まで残すので、最大 94MB ほど
-const BITRATE = 5_000_000;
+// どちらも 1 秒ほどで完成までつながった。8Mbps は 5Mbps よりさらに元の画質に近い（実物のソルブ 5 本で 1 本あたり +0.1〜0.6 マス、
+// 精密解析はどちらも 5 本とも正しい手順）ので 8Mbps から始め、端末に合わせて下げる（下の「端末に合わせる」）
+export const BITRATES = [8_000_000, 5_000_000];
+// 端末に合わせる: 録画の圧縮が追いつかずに間引いたフレームが多かった（DROP_RATE より多い）・解析中にタブごと落ちた（メモリ: 下の
+// MAX_BYTES）ときは、次の録画から 1 段下げて端末に覚える。下げた後も、問題なく録画できた回が RAISE_AFTER 回続いたら 1 段戻して試す
+const LEVEL_KEY = "cubevision.recordBitrate";
+const DROP_RATE = 0.03;
+const DROP_MIN_FRAMES = 120; // これより短い録画では決めない
+const RAISE_AFTER = 30;
+// 録画を残す量の上限（バイト）。タイマーの録画は 150 秒まで残すので、8Mbps では 150MB になる。iPhone はメモリが足りないとタブごと
+// 落ちるので、以前（5Mbps × 150 秒 ≒ 94MB）と同じくらいまでにする（古い方から捨てる。解析はソルブ中から少しずつ渡しているので、
+// 捨てた所が要るのは 100 秒を超えるソルブで解析をやり直したときだけ）
+const MAX_BYTES = 100_000_000;
+
+interface LevelState {
+  level: number; // BITRATES の番号
+  clean: number; // 下げた後、問題なく録画できた回数
+}
+
+function readLevel(): LevelState {
+  try {
+    const v = JSON.parse(localStorage.getItem(LEVEL_KEY) ?? "null") as LevelState | null;
+    if (v && Number.isInteger(v.level) && v.level >= 0 && v.level < BITRATES.length) return { level: v.level, clean: v.clean | 0 };
+  } catch {
+    // 読めなければ最初の段
+  }
+  return { level: 0, clean: 0 };
+}
+
+function writeLevel(s: LevelState): void {
+  try {
+    localStorage.setItem(LEVEL_KEY, JSON.stringify(s));
+  } catch {
+    // 保存できなくても録画は続ける
+  }
+}
+
+// 解析中に落ちた（src/app/crashGuard.ts の checkLastRun で分かった）: 録画の画質を 1 段下げる
+export function lowerRecordBitrate(): void {
+  const s = readLevel();
+  writeLevel({ level: Math.min(BITRATES.length - 1, s.level + 1), clean: 0 });
+}
 
 export class FrameRecorder {
   private encoder: VideoEncoder | null = null;
@@ -44,6 +84,8 @@ export class FrameRecorder {
   recording = false;
   dropped = 0;
   frames = 0;
+  bitrate = 0; // いまの録画の圧縮の強さ（調査用）
+  private bytes = 0; // 残している録画の大きさ
   width = 0;
   height = 0;
 
@@ -60,13 +102,16 @@ export class FrameRecorder {
     const s = Math.min(1, size / Math.max(video.videoWidth, video.videoHeight));
     const w = Math.round(video.videoWidth * s) & ~1;
     const h = Math.round(video.videoHeight * s) & ~1;
-    for (const { codec, hw } of CODECS) {
+    // 端末に覚えた段から。その段の圧縮の強さに対応していなければ、形式ごとに下の段も試す
+    const from = readLevel().level;
+    const tries = CODECS.flatMap((c) => BITRATES.slice(from).map((bitrate) => ({ ...c, bitrate })));
+    for (const { codec, hw, bitrate } of tries) {
       // realtime: ソフトウェアの圧縮でも速い設定（quality は数倍遅い）。それでも詰まったら add() で間引く
       const config: VideoEncoderConfig = {
         codec,
         width: w,
         height: h,
-        bitrate: BITRATE,
+        bitrate,
         framerate: 60,
         latencyMode: "realtime",
         hardwareAcceleration: hw,
@@ -77,12 +122,14 @@ export class FrameRecorder {
         const dec = await VideoDecoder.isConfigSupported({ codec, codedWidth: w, codedHeight: h });
         if (!enc.supported || !dec.supported) continue;
         this.codec = codec;
+        this.bitrate = bitrate;
         this.encoder = new VideoEncoder({
           output: (chunk, meta) => {
             if (meta?.decoderConfig) this.decoderConfig = { ...meta.decoderConfig };
             const data = new ArrayBuffer(chunk.byteLength);
             chunk.copyTo(data);
             this.chunks.push({ type: chunk.type, timestamp: chunk.timestamp, duration: chunk.duration ?? 0, data });
+            this.bytes += data.byteLength;
             this.trim();
           },
           error: (e) => console.warn("recorder:", e),
@@ -100,6 +147,7 @@ export class FrameRecorder {
     this.ctx = this.canvas.getContext("2d");
     this.recording = true;
     this.chunks = [];
+    this.bytes = 0;
     this.takenUs = -Infinity;
     this.frames = 0;
     this.dropped = 0;
@@ -117,11 +165,19 @@ export class FrameRecorder {
     if (!last) return;
     const limit = last.timestamp - this.keepMs * 1000;
     let cut = 0;
+    let bytes = this.bytes;
     for (let i = 0; i < this.chunks.length; i++) {
-      if (this.chunks[i].timestamp >= limit) break;
-      if (this.chunks[i].type === "key") cut = i;
+      if (this.chunks[i].timestamp >= limit && bytes <= MAX_BYTES) break;
+      if (this.chunks[i].type === "key" && i > 0) {
+        cut = i;
+        if (this.chunks[i].timestamp >= limit && bytes <= MAX_BYTES) break;
+      }
+      bytes -= this.chunks[i].data.byteLength;
     }
-    if (cut > 0) this.chunks.splice(0, cut);
+    if (cut > 0) {
+      for (let i = 0; i < cut; i++) this.bytes -= this.chunks[i].data.byteLength;
+      this.chunks.splice(0, cut);
+    }
   }
 
   // カメラの1フレームを足す（t: ms、performance.now() の時間軸）
@@ -200,6 +256,7 @@ export class FrameRecorder {
   }
 
   stop(): void {
+    if (this.recording) this.judge();
     this.recording = false;
     try {
       if (this.encoder && this.encoder.state !== "closed") this.encoder.close();
@@ -209,9 +266,25 @@ export class FrameRecorder {
     this.encoder = null;
   }
 
+  // 録画を終えたとき: 圧縮が追いつかずに間引いたフレームが多ければ次から 1 段下げ、問題なければ数える（下げた段から戻すため）
+  private judge(): void {
+    const total = this.frames + this.dropped;
+    if (total < DROP_MIN_FRAMES) return;
+    const s = readLevel();
+    const at = BITRATES.indexOf(this.bitrate);
+    if (at < 0) return;
+    if (this.dropped / total > DROP_RATE) {
+      if (at >= s.level && at < BITRATES.length - 1) writeLevel({ level: at + 1, clean: 0 });
+    } else if (s.level > 0 && at === s.level) {
+      const clean = s.clean + 1;
+      writeLevel(clean >= RAISE_AFTER ? { level: s.level - 1, clean: 0 } : { level: s.level, clean });
+    }
+  }
+
   clear(): void {
     this.stop();
     this.chunks = [];
+    this.bytes = 0;
     this.takenUs = -Infinity;
     this.decoderConfig = null;
   }
