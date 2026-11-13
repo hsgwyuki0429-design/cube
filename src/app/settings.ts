@@ -19,6 +19,8 @@ export interface Settings {
   stableMs: number;
   cameraFps: number;
   rotationCost: number;
+  // 試験中: 精密解析の解き直しを、先にピースの時刻表（src/track/pieces）で試す。つながらなければこれまでの解き直し
+  piecesDecode: boolean;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -39,6 +41,7 @@ export const DEFAULT_SETTINGS: Settings = {
   stableMs: 33,
   cameraFps: 60,
   rotationCost: 1.5,
+  piecesDecode: false,
 };
 
 const KEY = "cubevision.settings.v1";
