@@ -3,6 +3,7 @@
 //
 //   npm run build && npm run e2e            # 既定: 2面が見える位置・2TPS・30手
 //   E2E_VIEW=corner E2E_TPS=3 npm run e2e
+//   E2E_PIECES=1（設定の「ピースの時刻表で解き直す」をオン）
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { chromium } from "playwright-core";
@@ -82,6 +83,8 @@ try {
     page.on("console", (m) => logs.push(`[${m.type()}] ${m.text()}`));
     page.on("pageerror", (e) => logs.push(`[pageerror] ${e.message}`));
     const t0 = Date.now();
+    // E2E_PIECES=1: 設定の「ピースの時刻表で解き直す」をオンにして動かす
+    if (process.env.E2E_PIECES) await page.addInitScript(() => localStorage.setItem("cubevision.settings.v1", JSON.stringify({ piecesDecode: true })));
     await page.goto(`http://localhost:${PORT}/?demo=e2e&seed=${seed}&moves=${MOVES}&tps=${TPS}&view=${VIEW}${MODE === "timer" ? "&timer=1" : ""}`);
     if (MODE === "timer") {
       try {
@@ -118,7 +121,7 @@ try {
       const ok = r.result && r.result.tracked && r.solved && r.result.timeMs > 0 && n > 5;
       const analysisOk = r.result?.analysis === "done" || process.env.E2E_ALLOW_NO_ANALYSIS;
       console.log(
-        `seed ${seed} timer: ${ok ? "OK" : "NG"} live ${(live?.timeMs / 1000).toFixed(3)}s → ${r.result?.analysis} ${(r.result?.timeMs / 1000).toFixed(3)}s (truth ≈ ${(truthMs / 1000).toFixed(3)}s, ${sol.length} moves) moves ${n} tps ${r.result?.tps.toFixed(2)} splits ${JSON.stringify(r.result?.splits?.map((x) => [x.name, x.moves]))} analysis-wait ${((Date.now() - waitFrom) / 1000).toFixed(1)}s ${logs.filter((l) => l.includes("[analysis]")).map((l) => l.replace(/^.*\[analysis\] /, "")).join(" / ")}`,
+        `seed ${seed} timer: ${ok ? "OK" : "NG"} live ${(live?.timeMs / 1000).toFixed(3)}s → ${r.result?.analysis}${r.result?.refineMethod ? `(${r.result.refineMethod})` : ""} ${(r.result?.timeMs / 1000).toFixed(3)}s (truth ≈ ${(truthMs / 1000).toFixed(3)}s, ${sol.length} moves) moves ${n}${r.result?.moves.some((m) => m.inferred) ? ` 推定 ${r.result.moves.map((m, i) => (m.inferred ? i : -1)).filter((i) => i >= 0).join(",")}` : ""} tps ${r.result?.tps.toFixed(2)} splits ${JSON.stringify(r.result?.splits?.map((x) => [x.name, x.moves]))} analysis-wait ${((Date.now() - waitFrom) / 1000).toFixed(1)}s ${logs.filter((l) => l.includes("[analysis]")).map((l) => l.replace(/^.*\[analysis\] /, "")).join(" / ")}`,
       );
       if (!ok || process.env.E2E_TRACK) {
         // NG のとき: 終わった後のライブの追跡の様子（揃っていると見ているか・作り変えたか）

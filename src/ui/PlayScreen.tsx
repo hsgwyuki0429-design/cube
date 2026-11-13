@@ -295,6 +295,7 @@ function TimerStrip() {
             <span>回した手</span>
             <span class="muted small">
               {r.moves.length} 手・{r.tps.toFixed(2)} TPS
+              {r.refineMethod === "pieces" ? "・ピースの時刻表" : ""}
             </span>
             <span class="spacer" />
             <button class="btn small ghost" onClick={() => openSolve(r.id)}>

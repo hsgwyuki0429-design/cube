@@ -27,6 +27,7 @@ export interface Solve {
   analysis?: "pending" | "done" | "partial" | "failed";
   provisionalMs?: number; // 解析前の速報値
   video?: boolean; // 動画ファイル（スロー撮影など）を読み込んで解析した記録
+  refineMethod?: string; // 精密解析の解き直しの方法（pieces = ピースの時刻表。試験中の比較用）
 }
 
 const SOLVES_KEY = "cubevision.solves.v1";

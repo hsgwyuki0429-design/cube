@@ -393,6 +393,7 @@ async function analyzeRecordingInner(live: LiveSpan, endT: number): Promise<void
     timeMs,
     ...solveFields(from, result.moves, begin, timeMs),
     ...(scramble !== undefined ? { scramble } : {}),
+    ...(result.method ? { refineMethod: result.method } : {}),
     tracked: true,
   });
 }
@@ -417,6 +418,7 @@ export function addVideoSolve(result: RefineResult, scramble: number[]): { solve
     tracked: true,
     analysis: "done",
     video: true,
+    ...(result.method ? { refineMethod: result.method } : {}),
   };
   const solves = [solve, ...timerStore.get().solves];
   saveSolves(solves);
