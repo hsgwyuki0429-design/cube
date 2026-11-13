@@ -11,6 +11,8 @@ import { type EngineOptions, TrackerEngine } from "../../src/track/engine";
 import { simplifyMoves } from "../../src/track/merge";
 import { ARUCO_OBSERVER, type FrameReading, LIVE_OBSERVER } from "../../src/track/observer";
 import type { RefineResult } from "../../src/vision/refine";
+import type { SightFrame } from "../../src/track/pieces/frame";
+import { slotsPlausible } from "../../src/track/pieces/slotCheck";
 
 const LAGS = [150, 300, 600];
 
@@ -37,6 +39,7 @@ it("書き出したライブの読みの追跡", () => {
   const dir = process.env.LIVE_DIR ?? ".";
   const over = JSON.parse(process.env.LIVE_ENGINE ?? "{}") as Partial<EngineOptions>;
   const totals = LAGS.map(() => ({ same: 0, counted: 0 }));
+  let meanSum = 0;
   const lines: string[] = [];
   for (const set of sets) {
     const [rd, rf] = set.split(":");
@@ -52,8 +55,25 @@ it("書き出したライブの読みの追跡", () => {
     let obs = 0;
     let snaps = 0;
     let lastBase = 0;
+    let dropped = 0;
     for (let i = 0; i < readings.length; i++) {
-      const r = readings[i];
+      let r = readings[i];
+      // LIVE_SLOTCHECK=1: スロットがありえないフレームの面を捨てる（src/track/pieces/slotCheck.ts）
+      const sight = (r as FrameReading & { sight?: SightFrame }).sight;
+      if (process.env.LIVE_SLOTCHECK && sight && r.faces.length && !slotsPlausible(sight)) {
+        r = { ...r, faces: [] };
+        dropped++;
+      }
+      // LIVE_FRAG=3: センターが読めず、ID が読めたマスがこれ以下の面（欠片）を捨てる
+      const frag = Number(process.env.LIVE_FRAG ?? 0);
+      if (frag && r.faces.length) {
+        const faces = r.faces.filter((f) => {
+          const ids = f.ids ?? [];
+          if (ids[4] >= 0 && ids[4] % 9 === 4 && f.valid[4]) return true;
+          return ids.filter((x, c) => x >= 0 && f.valid[c]).length > frag;
+        });
+        if (faces.length !== r.faces.length) r = { ...r, faces };
+      }
       const a = performance.now();
       const u = engine.push(r);
       ms += performance.now() - a;
@@ -77,6 +97,7 @@ it("書き出したライブの読みの追跡", () => {
         if (matches(st0, res, r.t, lag, shown)) acc[k].same += dt;
       });
     }
+    meanSum += acc[1].same / Math.max(1, acc[1].counted);
     LAGS.forEach((_, k) => {
       totals[k].same += acc[k].same;
       totals[k].counted += acc[k].counted;
@@ -88,9 +109,10 @@ it("書き出したライブの読みの追跡", () => {
     let same = 0;
     while (same < moves.length && same < res.moves.length && moves[same].move === res.moves[same].move) same++;
     lines.push(
-      `${rd.padEnd(13)} 一致 ${LAGS.map((lag, k) => `${lag}ms ${((acc[k].same / Math.max(1, acc[k].counted)) * 100).toFixed(1).padStart(5)}%`).join("・")} | 手順 ${got === truth ? "同じ" : `頭から ${same}/${res.moves.length} 手`}・作り変え ${snaps}・${engine.decoder.status} | 追跡 ${(ms / readings.length).toFixed(2)}ms/フレーム・観測 ${obs}・評価 ${(evals / Math.max(1, obs)).toFixed(0)}/観測`,
+      `${rd.padEnd(13)} 一致 ${LAGS.map((lag, k) => `${lag}ms ${((acc[k].same / Math.max(1, acc[k].counted)) * 100).toFixed(1).padStart(5)}%`).join("・")} | 手順 ${got === truth ? "同じ" : `頭から ${same}/${res.moves.length} 手`}・作り変え ${snaps}・${engine.decoder.status}${dropped ? `・捨てた ${dropped}` : ""} | 追跡 ${(ms / readings.length).toFixed(2)}ms/フレーム・観測 ${obs}・評価 ${(evals / Math.max(1, obs)).toFixed(0)}/観測`,
     );
   }
   lines.push(`合計          一致 ${LAGS.map((lag, k) => `${lag}ms ${((totals[k].same / Math.max(1, totals[k].counted)) * 100).toFixed(1).padStart(5)}%`).join("・")}`);
+  lines.push(`平均（1 本ずつの 300ms の一致の平均） ${((meanSum / Math.max(1, sets.length)) * 100).toFixed(1)}%`);
   console.log(lines.join("\n"));
 }, 3600000);

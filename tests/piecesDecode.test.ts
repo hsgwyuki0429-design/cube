@@ -129,3 +129,25 @@ describe("ピースの時刻表で解く", () => {
     expect(r.moves.map((m) => m.move)).toEqual(solve);
   });
 });
+
+import { slotsPlausible } from "../src/track/pieces/slotCheck";
+describe("スロットがありえるか（ライブの観測の掃除）", () => {
+  const sc = scramble(41, 12);
+  const state = sc.reduce((s, m) => applyMove(s, m), solvedState());
+  it("正面・上・右が見えた普通のフレームは通す", () => {
+    expect(slotsPlausible(frame(0, state, [0, 0, 0, 0, 0, 0]))).toBe(true);
+  });
+  it("上と下が同時に見えたことになるフレームは捨てる", () => {
+    const fr = frame(0, state, [0, 0, 0, 0, 0, 0]);
+    fr.faces[2].slot = 3; // 右の面を「下」に入れた
+    fr.faces[1].slot = 0;
+    expect(slotsPlausible(fr)).toBe(false);
+  });
+  it("面の接し方とセンターに合わないスロットは捨てる", () => {
+    const fr = frame(0, state, [0, 0, 0, 0, 0, 0]);
+    // 上の面と右の面のスロットを入れ替える（中身と外枠はそのまま）
+    fr.faces[1].slot = 1;
+    fr.faces[2].slot = 0;
+    expect(slotsPlausible(fr)).toBe(false);
+  });
+});

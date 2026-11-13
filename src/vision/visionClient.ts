@@ -13,6 +13,12 @@ import type { VideoFileInfo } from "./videoFile";
 // （src/vision/vision.worker.ts の pickFrame）。処理が速ければ待つフレームはほとんどない
 const MAX_INFLIGHT = 3;
 
+// 認識を Worker 2 つで交互に処理する（src/vision/vision.worker.ts の「認識を Worker 2 つで」）: ライブは処理できる枚数がそのまま
+// 正確さになる（実物の 7 本の平均で、1 秒 10 枚 69.0%・20 枚 80.9%）。補助の Worker は認識だけをし、追跡は主の Worker が送った順に入れる。
+// コアが少ない端末では作らない。補助の Worker が落ちたら主の Worker だけで続ける
+const HELPER_MIN_CORES = 4;
+const MAX_INFLIGHT_EACH = 2; // Worker 2 つのとき、それぞれに送って結果がまだ来ていないフレームの上限
+
 // 本体のステッカー（3×3 の符号を 4 個）は専用の検出（src/aruco/quadDetect.ts）で読むので、認識の Worker は OpenCV を読み込まない
 // （約 4MB の読み込みと、Worker 1 個あたり 134MB のヒープがいらない。src/vision/arucoFrame.ts の usesQuad と同じ条件）
 const NEEDS_OPENCV = !(markerSize(stickerScheme(STICKERS.stickers)) === 3 && designOf(STICKERS.arucoDesign).at.length === 4);
@@ -23,6 +29,14 @@ export class VisionClient {
   // 1 枚ずつだと、結果が返ってから次のカメラのフレームが来て画像にして送るまで（平均で半フレーム + 数 ms）Worker が空いていた
   private inflight = 0;
   private nextId = 1;
+  // 補助の Worker（認識だけ）
+  private helper: Worker | null = null;
+  private helperReady = false;
+  private helperInflight = 0;
+  private nextSeq = 1;
+  helperFrames = 0; // 補助の Worker が認識したフレームの数（調査用）
+  // 補助の Worker に送ってよいか（録画の圧縮が詰まっている間は休ませる: 精密解析の録画の方が大事。controller が決める）
+  useHelper = true;
   private listeners = new Set<(m: FrameMessage) => void>();
   private procTimes: number[] = [];
   private fallbackCanvas: OffscreenCanvas | HTMLCanvasElement | null = null;
@@ -55,7 +69,8 @@ export class VisionClient {
           this.inflight = Math.max(0, this.inflight - 1);
           this.skipped++;
         } else if (m.type === "frame") {
-          this.inflight = Math.max(0, this.inflight - 1);
+          if (m.foreign) this.helperFrames++;
+          else this.inflight = Math.max(0, this.inflight - 1);
           this.processed++;
           this.lastProcMs = m.procMs;
           const now = performance.now();
@@ -76,6 +91,45 @@ export class VisionClient {
       };
     });
     this.post({ type: "init", opencv: NEEDS_OPENCV });
+    this.startHelper();
+  }
+
+  private startHelper(): void {
+    const cores = typeof navigator !== "undefined" ? navigator.hardwareConcurrency || 0 : 0;
+    if (cores < HELPER_MIN_CORES) return;
+    try {
+      const w = new Worker(new URL("./vision.worker.ts", import.meta.url), { type: "module" });
+      this.helper = w;
+      w.onmessage = (e: MessageEvent<FromWorker>) => {
+        const m = e.data;
+        if (m.type === "ready") this.helperReady = true;
+        else if (m.type === "recognized") {
+          this.helperInflight = Math.max(0, this.helperInflight - 1);
+          this.worker.postMessage({ type: "foreign", id: m.id, seq: m.seq, t: m.t, width: m.width, height: m.height, result: m.result, procMs: m.procMs } satisfies ToWorker);
+        } else if (m.type === "frame-skipped") {
+          this.helperInflight = Math.max(0, this.helperInflight - 1);
+          this.skipped++;
+          if (m.seq !== undefined) this.worker.postMessage({ type: "foreign-skip", seq: m.seq } satisfies ToWorker);
+        } else if (m.type === "error") this.dropHelper(m.message);
+      };
+      w.onerror = (e) => this.dropHelper(e.message);
+      w.postMessage({ type: "init", opencv: NEEDS_OPENCV } satisfies ToWorker);
+    } catch (e) {
+      this.dropHelper(String(e));
+    }
+  }
+
+  // 補助の Worker が使えない: 主の Worker だけで続ける（送ってあったフレームは、主の Worker が待ちきれずに飛ばす）
+  private dropHelper(message: string): void {
+    console.warn("vision helper:", message);
+    this.helperReady = false;
+    this.helperInflight = 0;
+    try {
+      this.helper?.terminate();
+    } catch {
+      // 無視
+    }
+    this.helper = null;
   }
 
   private post(msg: ToWorker, transfer: Transferable[] = []): void {
@@ -88,8 +142,14 @@ export class VisionClient {
   }
 
   async submit(video: HTMLVideoElement, t: number): Promise<boolean> {
-    if (!this.isReady || this.inflight >= MAX_INFLIGHT || !video.videoWidth) return false;
-    this.inflight++;
+    if (!this.isReady || !video.videoWidth) return false;
+    // 送り先: 補助の Worker があれば、送って結果の来ていない数の少ない方（同じなら主）
+    const both = this.helperReady && !!this.helper && this.useHelper;
+    const toHelper = both && this.helperInflight < this.inflight && this.helperInflight < MAX_INFLIGHT_EACH;
+    if (!toHelper && this.inflight >= (both ? MAX_INFLIGHT_EACH : MAX_INFLIGHT)) return false;
+    if (toHelper) this.helperInflight++;
+    else this.inflight++;
+    const seq = this.nextSeq++;
     try {
       // 長辺を workWidth に（縦向きの映像で幅を基準にすると画素が 3 倍になり、認識が追いつかない）
       const s = Math.min(1, this.workWidth / Math.max(video.videoWidth, video.videoHeight));
@@ -107,10 +167,14 @@ export class VisionClient {
         ctx.drawImage(video, 0, 0, w, h);
         bitmap = await createImageBitmap(this.fallbackCanvas);
       }
-      this.post({ type: "frame", id: this.nextId++, t, bitmap }, [bitmap]);
+      if (toHelper && this.helper) this.helper.postMessage({ type: "recognize", id: this.nextId++, t, bitmap, seq } satisfies ToWorker, [bitmap]);
+      else this.post({ type: "frame", id: this.nextId++, t, bitmap, seq }, [bitmap]);
       return true;
     } catch (e) {
-      this.inflight = Math.max(0, this.inflight - 1);
+      if (toHelper) {
+        this.helperInflight = Math.max(0, this.helperInflight - 1);
+        this.worker.postMessage({ type: "foreign-skip", seq } satisfies ToWorker);
+      } else this.inflight = Math.max(0, this.inflight - 1);
       this.lastError = String(e);
       return false;
     }
@@ -118,6 +182,7 @@ export class VisionClient {
 
   setConfig(config: Partial<PipelineConfig>): void {
     this.post({ type: "config", config });
+    this.helper?.postMessage({ type: "config", config } satisfies ToWorker);
   }
 
   startTracking(state: ArrayLike<number>, refs: Lab[], options: Partial<EngineOptions>, orients?: number[]): void {
