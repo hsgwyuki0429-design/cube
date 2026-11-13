@@ -24,16 +24,26 @@ export interface DecodeOptions {
   endWeight: number; // 終わりの状態と違うピース 1 個のコスト
   endMoves: number; // 最後の見え方から終わりまでに足してよい手
   keep: number; // つなぐために、見え方ごとに覚えておく仮説の数
+  afterMeet: number; // 後ろ向きは、前向きとつながってからこれだけ見え方を進めたらやめる
   // センターが 1 つだけのフレームだけでできた見え方は、その面のまわりの 4 通りの置き方のどれでもよい。表が選んだもの（向きの続くもの）と
   // 違う置き方のコスト（1 手より高く: 1 面だけ見えていてその面を回したのと区別できないときは、手とみる。2 手より安く）
   twistCost: number;
   minPieces: number; // これより少ないピースしか見えなかった見え方は使わない（合わせる短い手順がいくらでもあり、本当の手順を落とす）
   deepHyps: number; // 4 手以上の手順を試すのは、コストの小さい方からこれだけの仮説
+  // 空白を越える探索: ふつうの探索で、いちばんよい仮説でもこの見え方と stuck 以上食い違い、見えたピースが bridgePieces 個以上あるとき、
+  // 上位 bridgeHyps 個の仮説から、見えたピースが全部合う手順を bridgeMoves 手まで探す（前から半分・後ろから半分を突き合わせる）
+  stuck: number;
+  bridgePieces: number;
+  bridgeHyps: number;
+  bridgeMoves: number;
+  // 見失った: いちばんよい仮説の食い違い（コスト − 手の数）が、直近 lostSteps 個の見え方で lostCost 以上増えたら、その向きの探索をやめる
+  lostSteps: number;
+  lostCost: number;
   nodeCap: number; // 1 つの見え方で試す候補の上限（見失った仮説が探索を膨らませないように）
   onStep?: (info: { back: boolean; step: number; t: number; pieces: number; depth: number; hyps: number; best: number; expanded: number; moves: number[] }) => void; // 調査用
 }
 
-export const DEFAULT_DECODE: DecodeOptions = { beam: 96, margin: 4, maxMoves: 5, minMoves: 3, msPerMove: 150, payback: 1, frameWeight: 0.5, cellCap: 1.5, centerWeight: 0.5, splitMs: 100, endWeight: 10, endMoves: 4, keep: 64, twistCost: 1.3, minPieces: 4, deepHyps: 12, nodeCap: 400000 };
+export const DEFAULT_DECODE: DecodeOptions = { beam: 96, margin: 4, maxMoves: 5, minMoves: 3, msPerMove: 150, payback: 1, frameWeight: 0.5, cellCap: 1.5, centerWeight: 0.5, splitMs: 100, endWeight: 10, endMoves: 4, keep: 64, afterMeet: 3, twistCost: 1.3, minPieces: 4, deepHyps: 4, lostSteps: 4, lostCost: 14, stuck: 2, bridgePieces: 5, bridgeHyps: 4, bridgeMoves: 8, nodeCap: 400000 };
 
 // 見え方: 見えたピース（センターは 20 + 面、位置は回した回数）と重み
 export interface Sight {
@@ -147,7 +157,8 @@ function hashOf(s: Uint8Array, len: number): number {
   return (a >>> 0) * 0x200000 + ((b >>> 0) & 0x1fffff);
 }
 
-function pass(sights: Sight[], start: Uint8Array, end: Uint8Array | null, opt: DecodeOptions): Pass {
+// stop: 見え方 step を処理した後に呼ぶ。true を返したらやめる（後ろ向き: 前向きとつながった）
+function pass(sights: Sight[], start: Uint8Array, end: Uint8Array | null, opt: DecodeOptions, stop?: (step: number, set: Map<number, { cost: number; path: number }>) => boolean): Pass {
   let pathParent = new Int32Array(4096);
   let pathInfo = new Int32Array(4096);
   let paths = 0;
@@ -211,7 +222,7 @@ function pass(sights: Sight[], start: Uint8Array, end: Uint8Array | null, opt: D
   let best = Infinity;
   let mine = Infinity; // いま展開している仮説の、いちばんよい子（手を入れないものも含む）のコスト
   let step = 0;
-  const stack = new Uint8Array(8);
+  const stack = new Uint8Array(16);
   const bufs = Array.from({ length: 8 }, () => new Uint8Array(SIZE));
   // 残すコストの上限: 全体のいちばんから margin まで、かつ、その仮説のいちばんよい子から payback まで
   // （手は、その分だけ食い違いを減らすこと。読めたピースの少ない見え方のために 1 手ぶんは許す）
@@ -258,7 +269,121 @@ function pass(sights: Sight[], start: Uint8Array, end: Uint8Array | null, opt: D
       }
     }
   };
+  // 空白を越える探索。しっかり見えたピース（2 枚以上見えたもの: 重み 2 枚ぶん以上）の位置だけを追う。後ろ側は「見え方に合う状態」から
+  // 逆向きに広げて表にし（見え方ごとに 1 回）、前側は仮説の状態から広げて、同じ位置の組になった所でつなぐ。いちばん短い手順だけ返す
+  let bIdx: number[] = []; // 追うピース（P の中の番号）
+  let bPos = new Uint8Array(0); // 後ろ側の節点の位置の組（m バイトずつ）
+  let bParent = new Int32Array(0);
+  let bMove = new Int8Array(0);
+  let bDepth = new Uint8Array(0);
+  let bCount = 0;
+  let bTable = new Map<number, number>();
+  let fPos = new Uint8Array(0);
+  let fParent = new Int32Array(0);
+  let fMove = new Int8Array(0);
+  let fDepth = new Uint8Array(0);
+  const hashAt = (buf: Uint8Array, off: number, m: number): number => {
+    let x = 0x811c9dc5;
+    let y = 0x1b873593;
+    for (let i = 0; i < m; i++) {
+      const v = buf[off + i];
+      x = Math.imul(x ^ v, 0x01000193);
+      y = Math.imul(y + v, 0x85ebca6b) ^ (y >>> 13);
+    }
+    return (x >>> 0) * 0x200000 + ((y >>> 0) & 0x1fffff);
+  };
+  const CAP = 70000;
+  const buildBack = (half: number): boolean => {
+    bIdx = [];
+    for (let i = 0; i < nP; i++) if (W[i] >= opt.frameWeight * 2) bIdx.push(i);
+    const m = bIdx.length;
+    if (m < opt.bridgePieces) return false;
+    if (bPos.length < CAP * m) {
+      bPos = new Uint8Array(CAP * 20);
+      bParent = new Int32Array(CAP);
+      bMove = new Int8Array(CAP);
+      bDepth = new Uint8Array(CAP);
+      fPos = new Uint8Array(CAP * 20);
+      fParent = new Int32Array(CAP);
+      fMove = new Int8Array(CAP);
+      fDepth = new Uint8Array(CAP);
+    }
+    bTable = new Map();
+    for (let k = 0; k < m; k++) bPos[k] = A[bIdx[k]];
+    bParent[0] = -1;
+    bMove[0] = -1;
+    bDepth[0] = 0;
+    bCount = 1;
+    bTable.set(hashAt(bPos, 0, m), 0);
+    for (let i = 0; i < bCount && bDepth[i] < half; i++) {
+      const last = bMove[i] < 0 ? -1 : (bMove[i] / 3) | 0;
+      for (let mv = 0; mv < 18 && bCount < CAP; mv++) {
+        const x = (mv / 3) | 0;
+        if (x === last || (last >= 0 && OPPOSITE[x] === last && x > last)) continue;
+        const Q = PERM[inverseMove(mv)];
+        const o = bCount * m;
+        for (let k = 0; k < m; k++) bPos[o + k] = Q[bPos[i * m + k]];
+        const key = hashAt(bPos, o, m);
+        if (bTable.has(key)) continue;
+        bTable.set(key, bCount);
+        bParent[bCount] = i;
+        bMove[bCount] = mv;
+        bDepth[bCount] = bDepth[i] + 1;
+        bCount++;
+      }
+    }
+    expanded += bCount;
+    return true;
+  };
+  const bridge = (from: Uint8Array, minLen: number, half: number): number[][] => {
+    const m = bIdx.length;
+    const out: number[][] = [];
+    let bestLen = Infinity;
+    for (let k = 0; k < m; k++) fPos[k] = from[P[bIdx[k]]];
+    fParent[0] = -1;
+    fMove[0] = -1;
+    fDepth[0] = 0;
+    let count = 1;
+    const seen = new Set<number>([hashAt(fPos, 0, m)]);
+    for (let i = 0; i < count; i++) {
+      if (fDepth[i] >= bestLen) break;
+      const hit = bTable.get(hashAt(fPos, i * m, m));
+      if (hit !== undefined) {
+        const len = fDepth[i] + bDepth[hit];
+        if (len >= minLen && len <= bestLen) {
+          if (len < bestLen) {
+            bestLen = len;
+            out.length = 0;
+          }
+          const seq: number[] = [];
+          for (let p = i; fParent[p] >= 0; p = fParent[p]) seq.push(fMove[p]);
+          seq.reverse();
+          for (let p = hit; bParent[p] >= 0; p = bParent[p]) seq.push(bMove[p]);
+          if (out.length < 32) out.push(seq);
+        }
+      }
+      if (fDepth[i] >= half) continue;
+      const last = fMove[i] < 0 ? -1 : (fMove[i] / 3) | 0;
+      for (let mv = 0; mv < 18 && count < CAP; mv++) {
+        const x = (mv / 3) | 0;
+        if (x === last || (last >= 0 && OPPOSITE[x] === last && x < last)) continue;
+        const Q = PERM[mv];
+        const o = count * m;
+        for (let k = 0; k < m; k++) fPos[o + k] = Q[fPos[i * m + k]];
+        const key = hashAt(fPos, o, m);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        fParent[count] = i;
+        fMove[count] = mv;
+        fDepth[count] = fDepth[i] + 1;
+        count++;
+      }
+    }
+    expanded += count;
+    return out;
+  };
   let final: Hyp | null = null;
+  const health: number[] = [];
   for (step = 0; step < steps; step++) {
     const last = step === sights.length;
     let maxDepth: number;
@@ -302,6 +427,29 @@ function pass(sights: Sight[], start: Uint8Array, end: Uint8Array | null, opt: D
         dfs(h.s, h.cost, 0, L, -1, h.path);
       }
     }
+    // ふつうの探索で説明がつかなかった: 空白を越える探索
+    if (!last && opt.bridgeMoves > maxDepth) {
+      let top: Hyp | null = null;
+      for (const h of pool.values()) if (!top || h.cost < top.cost) top = h;
+      const half = Math.ceil(opt.bridgeMoves / 2);
+      if (top && mismatch(top.s) >= opt.stuck && buildBack(opt.bridgeMoves - half)) {
+        for (let oi = 0; oi < Math.min(order.length, opt.bridgeHyps); oi++) {
+          const h = cur[order[oi]];
+          for (const seq of bridge(h.s, maxDepth + 1, half)) {
+            const t = h.s.slice();
+            for (const mv of seq) {
+              const Q = PERM[mv];
+              for (let k = 0; k < NUM_PIECES; k++) t[k] = Q[t[k]];
+              const x = (mv / 3) | 0;
+              t[TURNS + x] = (t[TURNS + x] + (mv % 3) + 1) & 3;
+            }
+            for (let i = 0; i < seq.length; i++) stack[i] = seq[i];
+            mine = Infinity;
+            offer(t, h.cost + seq.length, seq.length, h.path);
+          }
+        }
+      }
+    }
     let all = [...pool.values()].filter((h) => h.cost <= best + opt.margin);
     if (all.length > opt.beam) {
       all.sort((a, b) => a.cost - b.cost);
@@ -327,6 +475,14 @@ function pass(sights: Sight[], start: Uint8Array, end: Uint8Array | null, opt: D
       if (!o || o.cost > h.cost) set.set(k, { cost: h.cost, path: h.path });
     }
     sets.push(set);
+    // 見失ったらやめる
+    let bestH = cur[0];
+    for (const h of cur) if (h.cost < bestH.cost) bestH = h;
+    let len = 0;
+    for (let p = bestH ? bestH.path : -1; p >= 0; p = pathParent[p]) len++;
+    health.push(bestH ? bestH.cost - len : Infinity);
+    if (health.length > opt.lostSteps && health[health.length - 1] - health[health.length - 1 - opt.lostSteps] >= opt.lostCost) break;
+    if (stop?.(step, set)) break;
   }
   const moves = (path: number) => {
     const out: { move: number; sight: number }[] = [];
@@ -344,9 +500,14 @@ export function decodePieces(table: PieceTable, start: CubeState, end: CubeState
   const a = fromCubeState(start).pos;
   const b = fromCubeState(end).pos;
   const fw = pass(sights, a, b, opt);
-  // 後ろ向き: 見え方を逆順に（時刻の向きも逆）、終わりの状態から
+  // 後ろ向き: 見え方を逆順に（時刻の向きも逆）、終わりの状態から。前向きとつながったら、もう少し（より安いつなぎ目があるか）進めてやめる
   const rev = sights.map((s) => ({ ...s, t0: -s.t1, t1: -s.t0 })).reverse();
-  const bw = pass(rev, b, a, opt);
+  let metAt = -1;
+  const bw = pass(rev, b, a, opt, (step, set) => {
+    const F = fw.sets[n - 1 - step];
+    if (metAt < 0 && F) for (const k of set.keys()) if (F.has(k)) metAt = step;
+    return metAt >= 0 && step >= metAt + opt.afterMeet;
+  });
   const timed = (m: { move: number; sight: number }): DecodedPieceMove => {
     const i = m.sight;
     const before = i > 0 ? sights[Math.min(i, n) - 1].t1 : (sights[0]?.t0 ?? 0);
