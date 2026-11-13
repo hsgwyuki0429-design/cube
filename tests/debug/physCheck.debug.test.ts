@@ -71,12 +71,13 @@ it("物理の決まりで誤読を見つける", () => {
     const b = name.slice(0, 8);
     const refF = readdirSync(refDir).find((x) => x.startsWith(b));
     if (!refF) continue;
-    const ref = JSON.parse(readFileSync(`${refDir}/${refF}`, "utf8")) as { moves: { move: number; start: number; end: number }[]; startState?: number[] };
+    // solveStart があれば buildTruth.debug.test.ts で作った正解（ソルブの部分だけ）
+    const ref = JSON.parse(readFileSync(`${refDir}/${refF}`, "utf8")) as { moves: { move: number; start: number; end: number }[]; startState?: number[]; solveStart?: number };
     const rd = JSON.parse(readFileSync(`${dir}/${f}`, "utf8")) as { start: number[]; readings: { t: number; faces: { slot: number; ids: number[]; w?: number[] }[] }[] };
     const states: CubeState[] = [Uint8Array.from(ref.startState ?? rd.start)];
     for (const m of ref.moves) states.push(applyMove(states[states.length - 1], m.move));
     const ids = states.map((s) => stickerIds(s));
-    const t0 = ref.moves[SOLVE_START[b] ?? 0].start - 300;
+    const t0 = ref.solveStart !== undefined ? ref.solveStart - 300 : ref.moves[SOLVE_START[b] ?? 0].start - 300;
     const t1 = ref.moves[ref.moves.length - 1].end + 300;
     // 種類（直接・引き継ぎ × 面の大きさ）ごとに: 読み・誤り・誤りのうち見つけた・正しいのに捨てた
     const agg = new Map<string, { n: number; bad: number; caught: number; lost: number }>();

@@ -38,6 +38,7 @@ export interface ExactOptions {
   minIds: number; // アンカーにする、2 枚続けて読めたステッカー（センター以外）の数
   pairMs: number; // アンカーのフレームの間
   anchorFrames: number; // アンカーにする、続けて同じに読めたフレームの数
+  hardFrames: number; // これだけ続けて同じに読めた読みは、アンカーでなくても絶対の条件にする（0 = しない。正解づくり用）
   lockMs: number; // 回っていないとみなすのに、フレームの間がこれ以下であること
   msPerMove: number; // 間の時間から手の数の上限を決める（間 / msPerMove + 1 手まで）
   maxDepth: number; // アンカーの間の手の数の上限
@@ -70,6 +71,7 @@ export const DEFAULT_EXACT: ExactOptions = {
   minIds: 5,
   pairMs: 260,
   anchorFrames: 2,
+  hardFrames: 0,
   lockMs: 40,
   msPerMove: 45,
   maxDepth: 8,
@@ -141,6 +143,7 @@ interface Frame {
   t: number;
   pos: Uint8Array; // カメラのマス（面 * 9 + セル）
   id: Int8Array;
+  hard: Uint8Array; // 絶対の条件にする読み（hardFrames 枚続けて同じマスに同じステッカー。破る候補は落とす）
   wt: Float32Array; // 食い違ったときの重み: 同じマスに同じ読みが続いた枚数の逆数（続いた読みは 1 つの証拠。読み違いも続く）
   ors: Uint8Array; // 読めたセンターに合う姿勢（センターが読めなければ 24 通り）
 }
@@ -181,8 +184,8 @@ function toFrames(sightings: Sighting[], o: ExactOptions): Frame[] {
     const fi = id.filter((_, i) => keep[i]);
     const ors = orientsOf(fp, fi);
     // センターの読みがどの姿勢とも合わないフレームは、読みなしとして残す（時刻の並びは保つ）
-    if (!ors || !ors.length) out.push({ t: s.t, pos: new Uint8Array(0), id: new Int8Array(0), wt: new Float32Array(0), ors: ALL_ORIENTS });
-    else out.push({ t: s.t, pos: Uint8Array.from(fp), id: Int8Array.from(fi), wt: new Float32Array(fp.length).fill(1), ors });
+    if (!ors || !ors.length) out.push({ t: s.t, pos: new Uint8Array(0), id: new Int8Array(0), hard: new Uint8Array(0), wt: new Float32Array(0), ors: ALL_ORIENTS });
+    else out.push({ t: s.t, pos: Uint8Array.from(fp), id: Int8Array.from(fi), hard: new Uint8Array(fp.length), wt: new Float32Array(fp.length).fill(1), ors });
   }
   out.sort((a, b) => a.t - b.t);
   // 同じマスに同じ読みが続いた（間が RUN_GAP_MS まで）まとまりごとに、重みを 1 / 枚数にする
@@ -205,9 +208,25 @@ function toFrames(sightings: Sighting[], o: ExactOptions): Frame[] {
     }
   }
   for (const g of open.values()) flush(g);
+  // 絶対の条件: 前後 h 枚（並んだフレーム。読めなかったフレームも数える）のどれでも同じマスに同じステッカーが読めた
+  if (o.hardFrames > 1) {
+    const h = Math.floor(o.hardFrames / 2);
+    const has = (f: number, p: number, x: number) => {
+      const fr = out[f];
+      for (let j = 0; j < fr.pos.length; j++) if (fr.pos[j] === p) return fr.id[j] === x;
+      return false;
+    };
+    for (let f = h; f + h < out.length; f++)
+      for (let i = 0; i < out[f].pos.length; i++) {
+        let ok = true;
+        for (let d = -h; d <= h && ok; d++) if (d && !has(f + d, out[f].pos[i], out[f].id[i])) ok = false;
+        if (ok) out[f].hard[i] = 1;
+      }
+  }
   return out;
 }
 const RUN_GAP_MS = 150;
+const HARD = 1e6;
 
 interface Anchor {
   f0: number; // 続いたフレーム f0〜f1
@@ -523,35 +542,30 @@ function scoreFrames(frames: Frame[], from: number, to: number, states: Int8Arra
   const P = 2 * n + 1;
   const F = to - from + 1;
   if (F <= 0) return { cost: 0, starts: new Array(n).fill(Number.NaN), ends: new Array(n).fill(Number.NaN) };
+  // 食い違い: ふつうの読みは重みの和（1 フレーム frameCap まで）、絶対の条件の読みは 1 つにつき HARD
   const cost = (fr: Frame, p: number): number => {
     const n = fr.pos.length;
     if (!n) return p % 2 === 0 ? 0 : o.turnFrameCost;
-    let best = o.frameCap;
-    if (p % 2 === 0) {
-      const C = states[p / 2];
-      for (const or of fr.ors) {
-        const v = or * 54;
-        let bad = 0;
-        for (let i = 0; i < n && bad < best; i++) if (C[VIEW[v + fr.pos[i]]] !== fr.id[i]) bad += fr.wt[i];
-        if (bad < best) best = bad;
-        if (!best) break;
-      }
-      return best;
-    }
-    const A = states[(p - 1) / 2];
-    const B = states[(p + 1) / 2];
+    let best = Infinity;
+    const still = p % 2 === 0;
+    const A = states[still ? p / 2 : (p - 1) / 2];
+    const B = still ? A : states[(p + 1) / 2];
     for (const or of fr.ors) {
       const v = or * 54;
-      let bad = 0;
-      // 回している途中: 動かないマスはそのまま、動くマスは回す前か後のどちらかに読めること
-      for (let i = 0; i < n && bad < best; i++) {
+      let soft = 0;
+      let hard = 0;
+      // 止まっている: 状態どおり。回している途中: 動かないマスはそのまま、動くマスは回す前か後のどちらかに読めること
+      for (let i = 0; i < n; i++) {
         const q = VIEW[v + fr.pos[i]];
-        if (A[q] !== fr.id[i] && B[q] !== fr.id[i]) bad += fr.wt[i];
+        if (A[q] === fr.id[i] || B[q] === fr.id[i]) continue;
+        if (fr.hard[i]) hard++;
+        else soft += fr.wt[i];
       }
-      if (bad < best) best = bad;
+      const c = Math.min(o.frameCap, soft) + hard * HARD;
+      if (c < best) best = c;
       if (!best) break;
     }
-    return best + o.turnFrameCost;
+    return still ? best : best + o.turnFrameCost;
   };
   const dp = new Float64Array(F * P).fill(Infinity);
   const back = new Int16Array(F * P);
@@ -747,6 +761,7 @@ function runPass(ctx: Ctx, starts: Hyp[]): Pass {
     if (!out.size && ctx.truth) explainLoss(ctx, i, hyps, [], out);
     if (!out.size) {
       // どの仮説もつながらない: 読み違いのアンカーとみて飛ばす（その読みは次のつなぎで確かめるフレームとして使う）
+      o.debug?.(`${ctx.backward ? "←" : "→"} アンカー ${i} t=${(Math.abs(ctx.frames[anchors[i].f0].t) / 1000).toFixed(2)} ステッカー ${anchors[i].n} を飛ばす（どの仮説もつながらない${blocked ? `・${blocked}` : ""}）`);
       sets.push(null);
       if (++skipped > o.maxSkip) return { sets, resolved: lastSet(sets), reason: blocked || "つなげない" };
       continue;

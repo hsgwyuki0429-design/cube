@@ -12,6 +12,8 @@ import { decodeAnchors } from "../../src/track/anchors";
 import { _verifyInternal, decodeExact, verifyMoves } from "../../src/track/exact";
 import { DEFAULT_OFFLINE, type OfflineResult, decodeOffline } from "../../src/track/offline";
 import { canonical } from "../../src/track/rescore";
+import { readingMismatch } from "./buildTruth.debug.test";
+import { simplifyMoves } from "../../src/track/merge";
 import type { Observation } from "../../src/track/types";
 
 type RawObs = Omit<Observation, "faces"> & { faces: { slot: number; cost: number[]; labels: number[]; ids?: number[]; idCost?: number[] }[] };
@@ -87,7 +89,8 @@ it("精密解析の解き直しを比べる", () => {
     const b = name.slice(0, 8);
     const refName = readdirSync(refDir).find((f) => f === `${b}.MOV.ref.json` || f === `${b}.mov.ref.json`);
     if (!refName || !existsSync(`${dir}/${name}.obs.json`)) continue;
-    const ref = JSON.parse(readFileSync(`${refDir}/${refName}`, "utf8")) as { moves: { move: number; start: number; end: number }[]; startState?: number[] };
+    // solveStart があれば buildTruth.debug.test.ts で作った正解（ソルブの部分だけ・startState はソルブの始まりの状態）
+    const ref = JSON.parse(readFileSync(`${refDir}/${refName}`, "utf8")) as { moves: { move: number; start: number; end: number; inferred?: boolean }[]; startState?: number[]; solveStart?: number };
     const rawObs = JSON.parse(readFileSync(`${dir}/${name}.obs.json`, "utf8")) as { start: number[]; lastT: number; obs: RawObs[] };
     const reads = JSON.parse(readFileSync(`${dir}/${name}.read.json`, "utf8")) as { readings: { t: number; faces: { slot: number; ids: number[] }[] }[] };
     const allObs: Observation[] = rawObs.obs.map((o) => ({
@@ -100,7 +103,10 @@ it("精密解析の解き直しを比べる", () => {
       let start: CubeState = Uint8Array.from(rawObs.start);
       let want = ref.moves.map((m) => m.move);
       let t0 = -Infinity;
-      if (mode === "app") {
+      if (mode === "app" && ref.solveStart !== undefined) {
+        start = refStart;
+        t0 = ref.solveStart - 1500;
+      } else if (mode === "app") {
         const k = SOLVE_START[b];
         let s: CubeState = refStart;
         for (let i = 0; i < k; i++) s = applyMove(s, ref.moves[i].move);
@@ -115,6 +121,7 @@ it("精密解析の解き直しを比べる", () => {
       for (const method of methods) {
         const a = performance.now();
         let moves: number[];
+        let lastTimed: { move: number; end: number }[] | null = null;
         let solved: boolean;
         let inferred = 0;
         let info = "";
@@ -130,6 +137,7 @@ it("精密解析の解き直しを比べる", () => {
           info = `${r.method}${wrongStart ? "・始まりが違う" : ""}・観測 ${fobs.length}（元 ${obs.length}）`;
         } else if (method === "beam") {
           const r = beamDecode(obs, start, end, rawObs.lastT);
+          lastTimed = r.moves.map((m) => ({ move: m.move, end: m.t }));
           const wrongStart = r.startState && !statesEqual(r.startState, start);
           moves = r.moves.map((m) => m.move);
           solved = r.reachedEnd && !wrongStart;
@@ -138,6 +146,7 @@ it("精密解析の解き直しを比べる", () => {
         } else if (method === "verify") {
           // 今の解き直し + 確認役（exact.ts の verifyMoves）。確定のまま間違った手（正解と合わない手で推定でないもの）を数える
           const r = beamDecode(obs, start, end, rawObs.lastT);
+          lastTimed = r.moves.map((m) => ({ move: m.move, end: m.t }));
           const wrongStart = r.startState && !statesEqual(r.startState, start);
           const ex = decodeExact(sights, start, end, JSON.parse(process.env.DB_EXACT ?? "{}"));
           const v = verifyMoves(r.moves, ex);
@@ -185,6 +194,15 @@ it("精密解析の解き直しを比べる", () => {
           info = `${r.method}${r.uncertain ? "・決まらない所あり" : ""}・アンカー ${r.anchors}・前向き〜${r.forwardTo === null || r.forwardTo === undefined ? "-" : (r.forwardTo / 1000).toFixed(1)}s ${r.reason ?? ""}`;
         }
         const ms = performance.now() - a;
+        // 正解に頼らない物差し: 出した手順が直接読んだマスとどれだけ食い違うか（原画質の読みで。時刻は手の終わり）
+        if (process.env.DB_READS && lastTimed) {
+          const origReads = JSON.parse(readFileSync(`${dir}/${b}_orig.read.json`, "utf8")).readings.filter((r: { t: number }) => r.t >= t0);
+          const rm = readingMismatch(start, lastTimed, origReads);
+          info += `・読みとの食い違い ${((100 * rm.bad) / Math.max(1, rm.n)).toFixed(2)}%`;
+          // 表示用にまとめた（同じ面の手を 1 手に: simplifyMoves）手順
+          const sm = readingMismatch(start, simplifyMoves(lastTimed.map((m) => ({ ...m, t: m.end, orient: 0 }))).map((m) => ({ move: m.move, end: m.t })), origReads);
+          info += `（まとめると ${((100 * sm.bad) / Math.max(1, sm.n)).toFixed(2)}%）`;
+        }
         const dist = editDistance(canonical(moves), wantC);
         const line = `${name.padEnd(20)} ${mode.padEnd(5)} ${method.padEnd(7)} ${solved ? "完成" : "未完"} 推定 ${String(inferred).padStart(2)} 距離 ${String(dist).padStart(3)}/${wantC.length} ${(ms / 1000).toFixed(1).padStart(5)}秒 ${info}`;
         out.push(line);
