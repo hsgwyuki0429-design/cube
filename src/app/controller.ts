@@ -222,6 +222,8 @@ class Controller {
       // 見え方とはっきり合わなければ、見えている色に合う状態にその場で作り変え、そこから追跡をやり直す（src/track/snap.ts）。
       // スクランブル中は使わない（setLiveSnap。手順を追って案内するので、見えていない面の分からない作り変えは道筋を乱す）
       snapToView: this.snapLive,
+      // 見失ったら、見失う前の確かな状態から後で読めたステッカーが全部合う手順を探して戻る（src/track/recover.ts）
+      recover: true,
     };
   }
 
