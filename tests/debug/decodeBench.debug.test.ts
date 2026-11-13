@@ -143,6 +143,18 @@ it("精密解析の解き直しを比べる", () => {
           solved = r.reachedEnd && !wrongStart;
           inferred = r.moves.filter((m) => m.inferred).length;
           info = `${r.method}${wrongStart ? "・始まりが違う" : ""}`;
+          // DB_SHOW=1: 正解と食い違う所（まとめた形で並べ、違う所の前後と、出した手の時刻）
+          if (process.env.DB_SHOW) {
+            const got = canonical(moves);
+            let i = 0;
+            while (i < got.length && i < wantC.length && got[i] === wantC[i]) i++;
+            let j = 0;
+            while (j < got.length - i && j < wantC.length - i && got[got.length - 1 - j] === wantC[wantC.length - 1 - j]) j++;
+            const name = (xs: number[]) => xs.map((m) => MOVE_NAMES[m]).join(" ");
+            process.stdout.write(`  ${i} 手目から違う: 出力 [${name(got.slice(Math.max(0, i - 3), got.length - j + 2))}] 正解 [${name(wantC.slice(Math.max(0, i - 3), wantC.length - j + 2))}]\n`);
+            process.stdout.write(`  出力の手と時刻: ${r.moves.map((m) => `${MOVE_NAMES[m.move]}${m.inferred ? "?" : ""}@${(m.t / 1000).toFixed(2)}`).join(" ")}\n`);
+            process.stdout.write(`  正解の手と時刻: ${ref.moves.map((m) => `${MOVE_NAMES[m.move]}@${(m.end / 1000).toFixed(2)}`).join(" ")}\n`);
+          }
         } else if (method === "verify") {
           // 今の解き直し + 確認役（exact.ts の verifyMoves）。確定のまま間違った手（正解と合わない手で推定でないもの）を数える
           const r = beamDecode(obs, start, end, rawObs.lastT);
@@ -198,7 +210,7 @@ it("精密解析の解き直しを比べる", () => {
         if (process.env.DB_READS && lastTimed) {
           const origReads = JSON.parse(readFileSync(`${dir}/${b}_orig.read.json`, "utf8")).readings.filter((r: { t: number }) => r.t >= t0);
           const rm = readingMismatch(start, lastTimed, origReads);
-          info += `・読みとの食い違い ${((100 * rm.bad) / Math.max(1, rm.n)).toFixed(2)}%`;
+          info += `・読みとの食い違い ${((100 * rm.bad) / Math.max(1, rm.n)).toFixed(2)}%・2 マス以上食い違うフレーム ${rm.badFrames.length}${rm.badFrames.length ? `（${rm.badFrames.slice(0, 8).map((t) => (t / 1000).toFixed(2)).join(" ")}）` : ""}`;
           // 表示用にまとめた（同じ面の手を 1 手に: simplifyMoves）手順
           const sm = readingMismatch(start, simplifyMoves(lastTimed.map((m) => ({ ...m, t: m.end, orient: 0 }))).map((m) => ({ move: m.move, end: m.t })), origReads);
           info += `（まとめると ${((100 * sm.bad) / Math.max(1, sm.n)).toFixed(2)}%）`;

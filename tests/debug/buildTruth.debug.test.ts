@@ -63,13 +63,14 @@ export function contradictions(start: CubeState, moves: { move: number; end: num
 }
 
 // 手順（時刻つき）が、直接読んだマス（4 マス以上の面）とどれだけ食い違うか（フレームごとに時刻の前後 near 手・24 姿勢で一番合う状態と）
-export function readingMismatch(start: CubeState, moves: { move: number; end: number }[], readings: { t: number; faces: { slot: number; ids: number[]; w?: number[] }[] }[], near = 2): { n: number; bad: number } {
+export function readingMismatch(start: CubeState, moves: { move: number; end: number }[], readings: { t: number; faces: { slot: number; ids: number[]; w?: number[] }[] }[], near = 2): { n: number; bad: number; badFrames: number[] } {
   const ids = [stickerIds(start)];
   let s = start;
   for (const m of moves) ids.push(stickerIds((s = applyMove(s, m.move))));
   let n = 0;
   let bad = 0;
   let k0 = 0;
+  const badFrames: number[] = [];
   for (const r of readings) {
     const cells: [number, number][] = [];
     for (const fc of r.faces) {
@@ -83,8 +84,9 @@ export function readingMismatch(start: CubeState, moves: { move: number; end: nu
       for (let o = 0; o < 24; o++) best = Math.min(best, cells.filter(([p, x]) => ids[k][VIEW[o * 54 + p]] !== x).length);
     n += cells.length;
     bad += best;
+    if (best >= 2) badFrames.push(r.t);
   }
-  return { n, bad };
+  return { n, bad, badFrames };
 }
 
 it("確かな読みに全部合う正解を作る", () => {
