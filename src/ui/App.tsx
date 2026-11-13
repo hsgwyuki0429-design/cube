@@ -1,4 +1,4 @@
-// 画面の骨組み: 下のバー（広い画面では左のサイドバー）で プレイ / データ / 解析 / 設定 を切り替える。
+// 画面の骨組み: 浮いたすりガラスの下のバー（広い画面・横持ちでは左に縦に並べる）で プレイ / データ / 解析 / 設定 を切り替える。
 // プレイ（カメラ・3D）と解析（動画の解析・ArUco の画面）は、他の画面に移っても残す（計測・解析を続け、結果も消えない）
 import { useEffect } from "preact/hooks";
 import { controller, type Screen } from "../app/controller";
@@ -6,7 +6,7 @@ import { useStore } from "../app/store";
 import { AnalyzeScreen } from "./AnalyzeScreen";
 import { DataScreen } from "./DataScreen";
 import { AnalyzeIcon, DataIcon, PlayIcon, SettingsIcon } from "./icons";
-import { PlayScreen } from "./PlayScreen";
+import { PlayScreen, useFocus } from "./PlayScreen";
 import { SettingsPage } from "./SettingsPage";
 import { SolveDetail } from "./SolveDetail";
 
@@ -28,11 +28,13 @@ export function App() {
     if (location.pathname + location.hash !== want) history.replaceState(null, "", want + location.search);
   }, [screen, tab]);
   const current = screen === "solve" ? "data" : screen;
+  // タイマーの計測中は下のバーを隠す（プレイ画面の focus）
+  const focus = useFocus() && screen === "play";
   return (
-    <div class="shell">
-      <nav class="appnav" aria-label="画面">
+    <div class={`shell${focus ? " focus" : ""}`} data-screen={screen}>
+      <nav class="appnav" aria-label="画面" aria-hidden={focus || undefined}>
         {NAV.map(({ id, label, icon: Icon }) => (
-          <button key={id} aria-current={current === id ? "page" : undefined} onClick={() => controller.store.set({ screen: id })}>
+          <button key={id} aria-label={label} tabIndex={focus ? -1 : undefined} aria-current={current === id ? "page" : undefined} onClick={() => controller.store.set({ screen: id })}>
             <Icon />
             <span>{label}</span>
           </button>

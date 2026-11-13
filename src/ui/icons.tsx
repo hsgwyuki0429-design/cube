@@ -1,5 +1,5 @@
-// 下のバー（広い画面では左のサイドバー）などのアイコン（線の SVG。色は文字色）
-const base = { width: 24, height: 24, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": 1.9, "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" } as const;
+// 下のバー（広い画面・横持ちでは左の縦の列）などのアイコン（線の SVG。色は文字色）
+const base = { width: 24, height: 24, viewBox: "0 0 24 24", fill: "none", stroke: "currentColor", "stroke-width": 1.7, "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true" } as const;
 
 export const PlayIcon = () => (
   <svg {...base}>
