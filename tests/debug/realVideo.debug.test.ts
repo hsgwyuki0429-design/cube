@@ -37,6 +37,7 @@ import { DEFAULT_OFFLINE, reversedObservations } from "../../src/track/offline";
 import { liveStats } from "../../src/vision/arucoFrame";
 import { type FrameResult, frameReading, processFrame } from "../../src/vision/pipeline";
 import { StillSkipper } from "../../src/vision/motion";
+import { sightFrame } from "../../src/track/pieces/frame";
 import { type RefineResult, Refiner } from "../../src/vision/refine";
 import { loadTestOpenCv } from "../cv";
 import { writePng } from "./png";
@@ -197,10 +198,14 @@ it("実際のプレイ動画", async () => {
   // 精密解析が精密に処理したフレームの読み（ID が読めたマスの数。認識の良し悪し）
   const rstat = { frames: 0, faces: 0, ids: 0, empty: 0 };
   // REAL_RREADINGS=ファイル: 精密解析が精密に処理したフレームの読み（面と ID だけ）を書き出す（betweenMoves.debug.test.ts で、手と手の間の状態がどれだけ読めたかを測る）
-  const rreadings: { t: number; faces: { slot: number; ids: number[]; w: number[] }[] }[] = [];
+  const rreadings: { t: number; faces: { slot: number; ids: number[]; w: number[]; rot?: number[]; held?: boolean; quad?: number[] }[] }[] = [];
   if (refiner && !process.env.REAL_RFRAMES)
     refiner.onFrame = (_t, r: FrameResult) => {
-      if (process.env.REAL_RREADINGS) rreadings.push({ t: _t, faces: r.faces.map((f) => ({ slot: f.slot, ids: Array.from(f.ids ?? new Array(9).fill(-1)), w: f.weight.map((x) => Math.round(x * 100) / 100) })) });
+      if (process.env.REAL_RREADINGS) {
+        // rot・held: ピースの時刻表（src/track/pieces）の材料（マーカーの向き・1 列だけの面）
+        const sf = new Map(sightFrame(_t, r).faces.map((f) => [f.slot, f]));
+        rreadings.push({ t: _t, faces: r.faces.map((f) => ({ slot: f.slot, ids: Array.from(f.ids ?? new Array(9).fill(-1)), w: f.weight.map((x) => Math.round(x * 100) / 100), rot: sf.get(f.slot)?.rot ?? new Array(9).fill(-1), quad: sf.get(f.slot)?.quad ?? [], ...(f.held ? { held: true } : {}) })) });
+      }
       rstat.frames++;
       rstat.faces += r.faces.length;
       if (!r.faces.length) rstat.empty++;
