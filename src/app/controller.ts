@@ -471,7 +471,6 @@ class Controller {
       to: Infinity,
       engine: this.engineOptions(),
       pipeline: this.pipelineConfig(),
-      ...(s.piecesDecode ? { pieces: true } : {}),
       ...(opts.timed ? {} : { keepPatchesMs: 3000 }),
     };
     const id = await this.refiner.startStream((p) => this.onAnalysisPartial(session, p));
@@ -605,7 +604,7 @@ class Controller {
     onInfo?: (info: VideoFileInfo, analyzedFrames: number) => void,
   ): { result: Promise<RefineResult>; cancel: () => void } {
     const s = settingsStore.get();
-    const input: RefineInput = { state: Array.from(opts.state), refs: ARUCO_REFS, from: 0, to: Infinity, engine: this.engineOptions(), pipeline: this.pipelineConfig(), ...(s.piecesDecode ? { pieces: true } : {}) };
+    const input: RefineInput = { state: Array.from(opts.state), refs: ARUCO_REFS, from: 0, to: Infinity, engine: this.engineOptions(), pipeline: this.pipelineConfig() };
     return this.videoRefiner.runVideo(file, input, opts.target, { maxSide: s.workWidth, captureFps: opts.captureFps, maxFps: opts.maxFps ?? VIDEO_MAX_FPS }, progress, onInfo);
   }
 

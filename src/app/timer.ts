@@ -336,7 +336,7 @@ async function analyzeRecordingInner(live: LiveSpan, endT: number): Promise<void
   // インスペクションから進めてきた解析に、止めた所までの録画を渡し切り、完成の状態で解き直す
   const pending = await controller.endAnalysis(to, solvedState(), (p) => timerStore.set({ analysisProgress: p }));
   // 調査用（E2E テストが読む）
-  const debug: { recording: unknown; result?: RefineResult } = { recording: { frames: rec.frames, dropped: rec.dropped } };
+  const debug: { recording: unknown; result?: RefineResult } = { recording: { frames: rec.frames, dropped: rec.dropped, bitrate: rec.bitrate } };
   (window as unknown as { __cubevisionAnalysis?: unknown }).__cubevisionAnalysis = debug;
   if (!pending) {
     updateSolve(id, { analysis: "failed" });
