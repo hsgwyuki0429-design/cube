@@ -18,8 +18,8 @@
 // - 始まりから前向き、終わり（完成）から後ろ向きに同じことをして、同じアンカーで同じ状態になる所でつなぐ。手の数 + 食い違いが
 //   一番小さい道を出し、それと altSlack 以内の別の道があれば、違う所の手は推定（inferred）にする（1 通りに決まっていない）。
 // - 前後が出会わなければ、両側の状態を一番短い手順でつないで推定にする。それもできなければ「届かない」。
-// 悪い画質（1.5Mbps 以下）では、2 枚続けて同じに読み違えたアンカーに間違った手順だけが合い、正解が候補から落ちる。今は本体の
-// 解き直し（offline.ts）の確認役（verifyMoves）として使い、手順を置き換えない。
+// 悪い画質（1.5Mbps 以下）では、2 枚続けて同じに読み違えたアンカーに間違った手順だけが合い、正解が候補から落ちる。本体からは
+// 使わない（確認役 verifyMoves は外した）。正解づくり（tests/debug/buildTruth.debug.test.ts）と比較のベンチで使う。
 //
 // カメラも DOM も知らない（Node で動く）。
 import { type CubeState, MOVE_DEST, NORMAL, NUM_MOVES, OPPOSITE, VIEW, faceletGeometry, inverseMove, moveFace } from "../cube/model";

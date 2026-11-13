@@ -4,7 +4,6 @@
 import { type CubeState, OPPOSITE, isSolved, moveFace, solvedState, statesEqual } from "../cube/model";
 import { type EngineOptions, TrackerEngine } from "../track/engine";
 import { mergeQuickRepeats, separateMotions, simplifyMoves } from "../track/merge";
-import { type Sighting, decodeExact, verifyMoves } from "../track/exact";
 import { DEFAULT_OFFLINE, OfflineForward, type OfflineOptions, decodeOffline, finishDeep } from "../track/offline";
 import type { DecodedMove, TrackStatus } from "../track/types";
 import type { Lab } from "./color";
@@ -33,14 +32,7 @@ export interface RefineInput {
   // 進める解析と同じく間引く（vision.worker.ts の INSPECT_EVERY_MS）。インスペクションで回して見せている間を全部処理すると、持ち替えを
   // 手と読み違えて完成までつながらないことがあった（録画の画質の実物のソルブ 2 本）
   inspectUntil?: number;
-  // 確認役（src/track/exact.ts）: 解き直した手順を、フレームの読み（どのステッカーがいつどのマスに見えたか）から確かな所を埋めた
-  // 手順と照らし、食い違う手・1 通りに決まらない手を推定にする（既定 true。終わりの状態が分かっているときだけ）
-  verify?: boolean;
 }
-
-// 確認役に使う時間の上限（ms）。実物のソルブで Node 1〜9 秒（原画質・5Mbps）。2.5Mbps 以下では 30〜60 秒かけても多くは確かめられない
-// （つながらない）ので、空回りを 15 秒で止める。超えたら確かめられなかったとして手順をそのまま残す
-const VERIFY_MS = 15000;
 
 // 軽い検査: 全フレームを精密に処理する代わりに、前に精密に処理したフレーム（基準）の面の格子で、各マスの真ん中あたりの色を数点だけ測り
 // （CHECK_POINTS × CHECK_POINTS 点の平均。1 フレーム 0.1ms 程度）、基準と同じなら飛ばす。層を回す・持ち替える・指が動く・キューブが
@@ -141,9 +133,6 @@ export interface RefineResult {
   startUncertain: boolean; // 最初の手が直接見えておらず、開始時刻をフレームから決められなかった
   endUncertain: boolean; // 最後の手が直接見えておらず、終了時刻をフレームから決められなかった
   raw?: { move: number; t0?: number; t: number; start: number; end: number; inferred?: boolean }[]; // まとめる前の手（調査用）
-  // 確認役: 同じ手順だった（true）・違った（false）・確かめられなかった（null）。verifyMarked: 確認役で推定にした手の数
-  verified?: boolean | null;
-  verifyMarked?: number;
 }
 
 const EDGE_NOISE_MAX = 8; // 最初・最後の「それだけで打ち消し合う手の並び」として除く長さの上限
@@ -207,8 +196,6 @@ export class Refiner {
   // 前向きの再構成を観測が出るたびに進めておく（result で後ろ向きとつなぐだけにする）
   private forward: OfflineForward | null;
   private fedObs = 0;
-  // 確認役に渡すフレームの読み（面ごとに 9 マスの ID と、マーカーを直接読んだか。1 フレーム数十バイト）
-  private sightings: Sighting[] = [];
 
   constructor(
     private cv: CV,
@@ -305,8 +292,6 @@ export class Refiner {
     const before = this.ref?.faces.length ?? 0;
     this.ref = signatureOf(latest, r.faces);
     if ((this.ref?.faces.length ?? 0) < before) this.tail = Math.max(this.tail, GATE_TAIL);
-    if (this.input.verify !== false)
-      this.sightings.push({ t, faces: r.faces.map((f) => ({ slot: f.slot, ids: Int8Array.from(f.ids ?? new Array(9).fill(-1)), w: Uint8Array.from(f.weight, (w) => (w >= 0.85 ? 1 : 0)) })) });
     const reading = frameReading(t, r);
     this.engine.push(reading);
     if (this.forward) {
@@ -377,17 +362,6 @@ export class Refiner {
           solved = isSolved(target);
         }
       }
-    }
-    // 確認役: 完成までつながった手順を、フレームの読みから確かな所を埋めた手順と照らす（食い違う手・決まらない手を推定に）
-    let verified: boolean | null | undefined;
-    let verifyMarked: number | undefined;
-    if (target && solved && this.input.verify !== false && this.sightings.length) {
-      const begin = off.startState ? Uint8Array.from(off.startState) : Uint8Array.from(this.input.state);
-      const ex = decodeExact(this.sightings, begin, target, { budgetMs: VERIFY_MS, tick });
-      const v = verifyMoves(moves, ex);
-      moves = v.moves;
-      verified = v.agreed;
-      verifyMarked = v.marked;
     }
     this.method = off.method;
     // 届かなかったとき、後ろ向きが終わりから追えていた最後の手（タイムの終わりに使う）
@@ -519,7 +493,6 @@ export class Refiner {
       startUncertain: !!first?.inferred || beforeWindow || !first?.exact || rawStartUnsure,
       endUncertain: gapEnd !== null ? !gapEndSure : endUncertain || (!!last && !last.inferred && !last.endExact) || rawEndUnsure,
       raw: timed.map((m) => ({ move: m.move, t0: m.t0, t: m.t, start: m.start, end: m.end, inferred: m.inferred })),
-      ...(verified !== undefined ? { verified, verifyMarked } : {}),
     };
   }
 }
