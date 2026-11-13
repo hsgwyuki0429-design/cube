@@ -7,6 +7,7 @@ import { mergeQuickRepeats, separateMotions, simplifyMoves } from "../track/merg
 import { DEFAULT_OFFLINE, OfflineForward, type OfflineOptions, type OfflineResult, decodeOffline, finishDeep } from "../track/offline";
 import { type DecodeOptions, decodePieces } from "../track/pieces/decode";
 import { type SightFrame, sightFrame } from "../track/pieces/frame";
+import { PERM, TOUCH, fromCubeState } from "../track/pieces/model";
 import { buildTable } from "../track/pieces/table";
 import type { DecodedMove, TrackStatus } from "../track/types";
 import type { Lab } from "./color";
@@ -356,14 +357,42 @@ export class Refiner {
         orient = table.orient[i];
         break;
       }
+    // 回し始めの手がかり（t0）: 見え方は 4 ピース以上・置き方の分かるフレームだけでできているので、見え方の境目は粗い（インスペクションの
+    // 最後の見え方の終わりが、回し始めより 1 秒以上前のこともあった）。回す層のピースが回す前の位置に最後に見えたフレームまで詰める
+    // （手の時刻の判定 timing.ts は t0 から遡って動き出しを探すので、t0 が早すぎると見つけられず、タイムの端が不確かになっていた）
+    let pos = fromCubeState(Uint8Array.from(this.input.state)).pos;
+    let prevT = -Infinity;
+    const t0s = r.moves.map((m) => {
+      const bit = 1 << m.move;
+      let t0 = m.t0;
+      for (let g = table.n - 1; g >= 0; g--) {
+        if (table.t[g] >= m.t) continue;
+        if (table.t[g] <= Math.max(m.t0, prevT)) break;
+        let seen = false;
+        for (let j = table.first[g]; j < table.first[g + 1] && !seen; j++) {
+          const k = table.piece[j];
+          if (k < 20 && table.solid[j] && TOUCH[pos[k]] & bit && table.at[j] === pos[k]) seen = true;
+        }
+        if (seen) {
+          t0 = table.t[g];
+          break;
+        }
+      }
+      const P = PERM[m.move];
+      pos = Uint8Array.from(pos, (x) => P[x]);
+      prevT = t0;
+      return t0;
+    });
+    let mi = 0;
     const moves: DecodedMove[] = r.moves.map((m) => {
+      const t0 = t0s[mi++];
       while (f < table.n && table.t[f] < m.t) f++;
       for (let i = f; i < table.n && table.t[i] - m.t <= 500; i++)
         if (table.orient[i] >= 0) {
           orient = table.orient[i];
           break;
         }
-      return { move: m.move, t0: m.t0, t: m.t, orient, ...(m.inferred ? { inferred: true } : {}) };
+      return { move: m.move, t0, t: m.t, orient, ...(m.inferred ? { inferred: true } : {}) };
     });
     return { moves, method: "meet", meetAt: -1, cost: r.cost, reachedEnd: true };
   }
