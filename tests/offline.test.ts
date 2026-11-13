@@ -96,7 +96,8 @@ describe("offline reconstruction (forward + backward meet)", () => {
   it("bridges a stretch hidden from both directions", () => {
     for (const seed of [20, 32]) {
       const s = hiddenStretch(seed, 20, 6 + (seed % 5), 8 + (seed % 5) + (seed % 3));
-      const off = decodeOffline(s.obs, s.start, solvedState(), s.lastT);
+      // 橋渡しを確かめるため 1 観測 3 手まで（既定の 4 手まででは、この長さの隠れた区間は前後から直接つながる）
+      const off = decodeOffline(s.obs, s.start, solvedState(), s.lastT, { ...DEFAULT_OFFLINE, decoder: { ...DEFAULT_OFFLINE.decoder, maxMovesPerStep: 3, deepHyps: Number.POSITIVE_INFINITY } });
       expect(off.method).toBe("bridge");
       expect(isSolved(applyMoves(s.start, off.moves.map((m) => m.move)))).toBe(true);
       expect(acc(off.moves.map((m) => m.move), s.truth)).toBe(1);

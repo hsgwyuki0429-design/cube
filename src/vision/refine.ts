@@ -174,7 +174,7 @@ const BACKWARD_MS = 30000;
 // 解き直す（観測は残っているのでフレームは処理し直さない）。録画の画質の実物のソルブで、1 回目は 6 手を推定でつなぐ・終わりを補うだけ
 // だったものが、どちらも推定 0 手で完成までつながった（88 手は正解と同じ）。4 手まででも候補 64 では前向きが見失って悪くなる。
 // Node で 15〜25 秒かかるので、1 回目でつながったときは使わない
-const DEEP_DECODER = { beamWidth: 256, maxMovesPerStep: 4 };
+const DEEP_DECODER = { beamWidth: 256, maxMovesPerStep: 4, deepHyps: Infinity };
 const DEEP_BACKWARD_MS = 60000;
 
 export class Refiner {

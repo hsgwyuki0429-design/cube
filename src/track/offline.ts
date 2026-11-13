@@ -24,8 +24,12 @@ export interface OfflineOptions {
 }
 
 export const DEFAULT_OFFLINE: OfflineOptions = {
-  // 見失いからの復帰探索はしない（前後からつなぐ・橋渡しで補う方が正確で速い）
-  decoder: { beamWidth: 64, maxMovesPerStep: 3, lostAfter: 1000 },
+  // 見失いからの復帰探索はしない（前後からつなぐ・橋渡しで補う方が正確で速い）。
+  // 1 観測に 4 手まで。速い所では観測の間に 4 手入る（実物のソルブ IMG_5049 の 5Mbps の最後の 2 秒: 3 手までだと正しい道を表せず、
+  // 読みと 5 マス食い違う別の手順（B' L' F L B …）で完成までつなぎ、6 手を確定のまま間違えた）。3 手より深く探すのは上位 16 仮説だけ
+  // （全部だと 2〜3 倍遅く、外れ値で 26 秒。8 では外れ値 25 秒）。実物 5 本 × 原画質・5Mbps・2.5Mbps（60・30fps）で、ほかの手順は
+  // 変わらず（読みとの食い違いは同じか少ない）、Node の解き直し 1.0〜2.6 → 1.4〜9.8 秒
+  decoder: { beamWidth: 64, maxMovesPerStep: 4, deepHyps: 16, lostAfter: 1000 },
 };
 
 export interface OfflineResult {
