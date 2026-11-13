@@ -1,7 +1,7 @@
 // 記録（ソルブ）まわりの共通の部品: 解析の印・ペナルティと削除のボタン・毎フレームの時計
 import { useEffect, useState } from "preact/hooks";
 import { controller } from "../app/controller";
-import { type Solve, formatTime } from "../app/storage";
+import { type Solve, effectiveTime, formatTime } from "../app/storage";
 import { deleteSolve, setPenalty } from "../app/timer";
 
 export function useTicker(active: boolean): number {
@@ -84,3 +84,12 @@ export function PenaltyRow({ solve, full = false, onDeleted }: { solve: Solve; f
 
 // 記録の詳しい画面を開く
 export const openSolve = (id: string) => controller.store.set({ screen: "solve", solveId: id });
+
+// 自己ベストを更新したら、前のベストとの差（ms）。初めての記録・更新していなければ null
+export function bestGain(solves: Solve[], solve: Solve): number | null {
+  const t = effectiveTime(solve);
+  const others = solves.filter((s) => s.id !== solve.id).map(effectiveTime).filter(Number.isFinite);
+  if (!Number.isFinite(t) || !others.length) return null;
+  const prev = Math.min(...others);
+  return t < prev ? prev - t : null;
+}

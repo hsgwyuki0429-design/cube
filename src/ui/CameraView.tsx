@@ -34,6 +34,9 @@ function classifyColor(lab: Lab, refs: Lab[] | null, display: string[] | null): 
   return NAMED_COLORS[nearestNamed(lab)].display;
 }
 
+// 画面いっぱいに広げたときに映す範囲の下限（映像の縦・横の割合）
+const COVER_MIN = 0.62;
+
 export function CameraView() {
   const app = useStore(controller.store, (s) => ({ camera: s.camera, error: s.cameraError, demo: s.demo, scanning: !!s.scan && !s.scan.result, vision: s.vision }));
   const mirrored = useStore(controller.store, (s) => s.mirror);
@@ -67,8 +70,12 @@ export function CameraView() {
       const ctx = c.getContext("2d")!;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
       ctx.clearRect(0, 0, W, H);
-      // object-fit: contain の表示領域
-      const s = Math.min(W / m.width, H / m.height);
+      // 映像の表示: 画面いっぱいに広げる（はみ出す分を切る）。ただし縦・横とも映像の COVER_MIN 以上は映す（縦持ちのスマホに
+      // 横長の映像のとき、画面いっぱいではキューブが画面の外に出る）。video は CSS の --zoom で同じだけ拡大し、重ねる絵も合わせる
+      const contain = Math.min(W / m.width, H / m.height);
+      const s = Math.min(Math.max(W / m.width, H / m.height), contain / COVER_MIN);
+      const zoom = (s / contain).toFixed(3);
+      if (host.current && host.current.style.getPropertyValue("--zoom") !== zoom) host.current.style.setProperty("--zoom", zoom);
       const ox = (W - m.width * s) / 2;
       const oy = (H - m.height * s) / 2;
       const mirror = controller.store.get().mirror && !controller.store.get().demo;
