@@ -657,10 +657,10 @@ input[type="range"] {
   z-index: 30;
   left: 50%;
   bottom: calc(14px + env(safe-area-inset-bottom));
-  width: min(340px, calc(100% - 32px));
+  width: min(270px, calc(100% - 32px));
   transform: translateX(-50%);
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 2px;
   padding: 5px;
   border-radius: 999px;
@@ -2650,4 +2650,79 @@ button.mv {
   padding: 0;
   font-size: 12px;
   color: rgba(235, 235, 245, 0.5);
+}
+
+/* 記録の 3D の見え方（カメラと同じ・クロス面下・定点）とスイッチ */
+.replay-views {
+  display: flex;
+  gap: 2px;
+  padding: 3px;
+  margin-top: 10px;
+  border-radius: 999px;
+  background: var(--card-2);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.replay-views .seg-btn {
+  flex: 1;
+  min-width: max-content;
+  border: 0;
+  background: none;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 7px 12px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition:
+    background 0.25s,
+    color 0.25s;
+}
+.replay-views .seg-btn[aria-checked="true"] {
+  background: var(--text);
+  color: var(--bg);
+}
+.replay-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin-top: 8px;
+}
+.switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  cursor: pointer;
+  min-height: 36px;
+}
+.switch input {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 40px;
+  height: 24px;
+  border-radius: 999px;
+  background: var(--card-2);
+  position: relative;
+  margin: 0;
+  cursor: pointer;
+  transition: background 0.25s;
+}
+.switch input::after {
+  content: "";
+  position: absolute;
+  left: 2px;
+  top: 2px;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  transition: transform 0.25s var(--ease-out);
+}
+.switch input:checked {
+  background: #34c759;
+}
+.switch input:checked::after {
+  transform: translateX(16px);
 }

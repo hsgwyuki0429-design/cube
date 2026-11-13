@@ -1,11 +1,12 @@
-// 画面の骨組み: 浮いたすりガラスの下のバー（広い画面・横持ちでは左に縦に並べる）で プレイ / データ / 解析 / 設定 を切り替える。
-// プレイ（カメラ・3D）と解析（動画の解析・ArUco の画面）は、他の画面に移っても残す（計測・解析を続け、結果も消えない）
+// 画面の骨組み: 浮いたすりガラスの下のバー（広い画面・横持ちでは左に縦に並べる）で プレイ / データ / 設定 を切り替える。
+// 解析の画面（スロー動画から記録・動画を解析・ArUco）はバーから外した（2026-11）。開発用に #aruco・aruco.html・store の screen: "analyze"
+// からは開ける（scripts/video-e2e.mjs）。プレイと解析は他の画面に移っても残す（計測・解析を続け、結果も消えない）
 import { useEffect } from "preact/hooks";
 import { controller, type Screen } from "../app/controller";
 import { useStore } from "../app/store";
 import { AnalyzeScreen } from "./AnalyzeScreen";
 import { DataScreen } from "./DataScreen";
-import { AnalyzeIcon, DataIcon, PlayIcon, SettingsIcon } from "./icons";
+import { DataIcon, PlayIcon, SettingsIcon } from "./icons";
 import { PlayScreen, useFocus } from "./PlayScreen";
 import { SettingsPage } from "./SettingsPage";
 import { SolveDetail } from "./SolveDetail";
@@ -13,7 +14,6 @@ import { SolveDetail } from "./SolveDetail";
 const NAV: { id: Screen; label: string; icon: () => preact.JSX.Element }[] = [
   { id: "play", label: "プレイ", icon: PlayIcon },
   { id: "data", label: "データ", icon: DataIcon },
-  { id: "analyze", label: "解析", icon: AnalyzeIcon },
   { id: "settings", label: "設定", icon: SettingsIcon },
 ];
 
