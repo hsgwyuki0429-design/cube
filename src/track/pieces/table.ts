@@ -48,11 +48,11 @@ export interface PieceTable {
   stats: { frames: number; used: number; sure: number; chained: number; free: number; noCenter: number; blind: number; clash: number; dropped: number; sightings: number };
 }
 
-const isCenter = (id: number) => id % 9 === 4;
+export const isCenter = (id: number) => id % 9 === 4;
 type Pt = [number, number];
 
 // 面 a の辺 i と面 b の辺 j が重なっているか（外枠は左上から時計回り。接する辺は逆向きに重なる）。重なりの悪さ（辺の長さに対する割合）
-function touching(a: number[], b: number[], i: number, j: number): number {
+export function touching(a: number[], b: number[], i: number, j: number): number {
   const p = (q: number[], k: number): Pt => [q[(k & 3) * 2], q[(k & 3) * 2 + 1]];
   const d = (u: Pt, v: Pt) => Math.hypot(u[0] - v[0], u[1] - v[1]);
   const a0 = p(a, i);
@@ -92,9 +92,37 @@ function faceUp(fs: SightFace[], links: number[][], i: number, r: number): numbe
   return sx || sy ? Math.atan2(sy, sx) : upAngle(q, r);
 }
 
-interface Placed {
+export interface Placed {
   face: number; // キューブの面
   r: number; // 面の決まった並びの上の辺が、格子のどの辺にあるか
+}
+
+// 面 fs を、基準の面 root を (face0, r0) に置いたときの置き方（つながらない面は null）。センターが食い違えば null を返す
+export function placeAll(fs: SightFace[], links: number[][], root: number, face0: number, r0: number): (Placed | null)[] | null {
+  const out: (Placed | null)[] = fs.map(() => null);
+  out[root] = { face: face0, r: r0 };
+  const queue = [root];
+  while (queue.length) {
+    const a = queue.pop()!;
+    const pa = out[a]!;
+    for (const [x, y, i, j] of links) {
+      if (x !== a && y !== a) continue;
+      const b = x === a ? y : x;
+      const sa = x === a ? i : j;
+      const sb = x === a ? j : i;
+      const nb = NEIGHBOR[pa.face * 4 + ((sa - pa.r + 4) & 3)];
+      const pb = { face: nb >> 2, r: (sb - (nb & 3) + 4) & 3 };
+      const c = fs[b].ids[4];
+      if (c >= 0 && fs[b].rot[4] >= 0 && isCenter(c) && Math.floor(c / 9) !== pb.face) return null;
+      if (out[b]) {
+        if (out[b]!.face !== pb.face || out[b]!.r !== pb.r) return null;
+        continue;
+      }
+      out[b] = pb;
+      queue.push(b);
+    }
+  }
+  return out;
 }
 
 export function buildTable(frames: SightFrame[], options: Partial<TableOptions> = {}): PieceTable {
@@ -108,33 +136,6 @@ export function buildTable(frames: SightFrame[], options: Partial<TableOptions> 
   const piece: number[] = [];
   const at: number[] = [];
 
-  // 面 fs を、基準の面 root を (face0, r0) に置いたときの置き方（つながらない面は null）。センターが食い違えば null を返す
-  const placeAll = (fs: SightFace[], links: number[][], root: number, face0: number, r0: number): (Placed | null)[] | null => {
-    const out: (Placed | null)[] = fs.map(() => null);
-    out[root] = { face: face0, r: r0 };
-    const queue = [root];
-    while (queue.length) {
-      const a = queue.pop()!;
-      const pa = out[a]!;
-      for (const [x, y, i, j] of links) {
-        if (x !== a && y !== a) continue;
-        const b = x === a ? y : x;
-        const sa = x === a ? i : j;
-        const sb = x === a ? j : i;
-        const nb = NEIGHBOR[pa.face * 4 + ((sa - pa.r + 4) & 3)];
-        const pb = { face: nb >> 2, r: (sb - (nb & 3) + 4) & 3 };
-        const c = fs[b].ids[4];
-        if (c >= 0 && fs[b].rot[4] >= 0 && isCenter(c) && Math.floor(c / 9) !== pb.face) return null;
-        if (out[b]) {
-          if (out[b]!.face !== pb.face || out[b]!.r !== pb.r) return null;
-          continue;
-        }
-        out[b] = pb;
-        queue.push(b);
-      }
-    }
-    return out;
-  };
   // 置き方 → 読み（ピース, 位置, 欠片か）。同じピースが 2 か所に読めたら、どちらも使わない
   const tmpP: number[] = [];
   const tmpA: number[] = [];

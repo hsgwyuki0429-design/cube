@@ -14,7 +14,13 @@ import type { VideoFileInfo } from "./videoFile";
 export type ToWorker =
   | { type: "init"; opencv?: boolean } // opencv: false なら OpenCV を読み込まない（専用の検出だけを使う。本体のステッカー）
   | { type: "config"; config: Partial<PipelineConfig> }
-  | { type: "frame"; id: number; t: number; bitmap: ImageBitmap }
+  // seq: 送った順の通し番号（認識を Worker 2 つで交互に処理するとき、追跡はこの順に入れる）
+  | { type: "frame"; id: number; t: number; bitmap: ImageBitmap; seq?: number }
+  // 補助の Worker: 認識だけして結果を返す（追跡はしない）
+  | { type: "recognize"; id: number; t: number; bitmap: ImageBitmap; seq: number }
+  // 主の Worker へ: 補助の Worker の認識結果（seq の順に追跡に入れる）・補助が処理しなかったフレーム
+  | { type: "foreign"; id: number; seq: number; t: number; width: number; height: number; result: RecognizedFrame; procMs: number }
+  | { type: "foreign-skip"; seq: number }
   | { type: "track-start"; state: number[]; refs: Lab[]; options: Partial<EngineOptions>; orients?: number[] }
   | { type: "track-options"; options: Partial<EngineOptions> }
   | { type: "track-reset"; state: number[]; orients?: number[] }
@@ -42,6 +48,13 @@ export interface VideoRefineOptions {
   maxFps: number; // 解析するフレームの間隔の上限（実際の時間で）
 }
 
+// 補助の Worker の認識結果（FrameResult と同じ形）
+export interface RecognizedFrame {
+  faces: DetectedFace[];
+  quads: Pt[][];
+  turn?: import("../track/types").TurnSnapshot;
+}
+
 export interface FrameMessage {
   type: "frame";
   id: number;
@@ -56,6 +69,7 @@ export interface FrameMessage {
   // キューブの連続的な姿勢: R = カメラフレームに揃ったキューブ → 実際、orient = このフレームの離散的な姿勢。
   // キューブ固定フレーム → カメラの回転は R · ORIENTATIONS[orient]
   pose?: { R: number[]; err: number; orient: number };
+  foreign?: boolean; // 補助の Worker が認識したフレーム（主の Worker が追跡して送った）
 }
 
 export type FromWorker =
@@ -71,7 +85,9 @@ export type FromWorker =
   | { type: "video-info"; id: number; info: VideoFileInfo; analyzedFrames: number }
   | { type: "detected"; id: number; markers: Marker[] }
   // 待っている間に、より動きの小さいフレームを選んだので処理しなかったフレーム（送った枚数を数え直すため）
-  | { type: "frame-skipped"; id: number };
+  | { type: "frame-skipped"; id: number; seq?: number }
+  // 補助の Worker の認識結果
+  | { type: "recognized"; id: number; seq: number; t: number; width: number; height: number; result: RecognizedFrame; procMs: number };
 
 // ソルブ中の精密解析の途中結果（前向きに t まで解いたもの）
 export interface StreamPartial {

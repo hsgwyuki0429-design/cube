@@ -39,6 +39,7 @@ const LEVEL_KEY = "cubevision.recordBitrate";
 const DROP_RATE = 0.03;
 const DROP_MIN_FRAMES = 120; // これより短い録画では決めない
 const RAISE_AFTER = 30;
+const CONGESTED_MS = 2000;
 // 録画を残す量の上限（バイト）。タイマーの録画は 150 秒まで残すので、8Mbps では 150MB になる。iPhone はメモリが足りないとタブごと
 // 落ちるので、以前（5Mbps × 150 秒 ≒ 94MB）と同じくらいまでにする（古い方から捨てる。解析はソルブ中から少しずつ渡しているので、
 // 捨てた所が要るのは 100 秒を超えるソルブで解析をやり直したときだけ）
@@ -85,6 +86,11 @@ export class FrameRecorder {
   dropped = 0;
   frames = 0;
   bitrate = 0; // いまの録画の圧縮の強さ（調査用）
+  private lastDrop = -Infinity;
+  // 圧縮が詰まっている（最近 CONGESTED_MS の間に、間引いた・待ちが溜まり始めた）: 認識の補助の Worker を休ませる（controller）
+  congested(t: number): boolean {
+    return this.recording && t - this.lastDrop < CONGESTED_MS;
+  }
   private bytes = 0; // 残している録画の大きさ
   width = 0;
   height = 0;
@@ -185,8 +191,10 @@ export class FrameRecorder {
     if (!this.recording || !this.encoder || !this.ctx || this.encoder.state !== "configured") return;
     if (this.encoder.encodeQueueSize > 6) {
       this.dropped++; // 圧縮が追いつかない端末では間引く
+      this.lastDrop = t;
       return;
     }
+    if (this.encoder.encodeQueueSize > 3) this.lastDrop = t; // 詰まり始めた
     this.ctx.drawImage(video, 0, 0, this.width, this.height);
     const frame = new VideoFrame(this.canvas!, { timestamp: Math.round(t * 1000) });
     const keyFrame = t - this.lastKey > 1000;

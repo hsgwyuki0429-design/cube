@@ -1,5 +1,7 @@
 // 認識 Worker: OpenCV.js（約13MB）の読み込み、1フレームの処理、追跡エンジンの実行。
 // メインスレッドは描画と UI だけを受け持つ。
+import { sightFrame } from "../track/pieces/frame";
+import { slotsPlausible } from "../track/pieces/slotCheck";
 import { type Mat3, ORIENTATIONS, mul } from "../cube/model";
 import { TrackerEngine, focusCells } from "../track/engine";
 import { StreamDecoder, decodeRecording } from "./decode";
@@ -10,7 +12,7 @@ import { type RefineInput, Refiner } from "./refine";
 import { DetectPool, ParallelFeeder, poolSize } from "./detectPool";
 import { stickerScheme } from "../aruco/codes";
 import { detectWithHint, detectorFor } from "./arucoFrame";
-import { DEFAULT_PIPELINE, type PipelineConfig, frameReading, processFrame } from "./pipeline";
+import { DEFAULT_PIPELINE, type FrameResult, type PipelineConfig, frameReading, processFrame } from "./pipeline";
 import type { FrameMessage, FromWorker, StreamPartial, ToWorker } from "./protocol";
 import type { CV, PixelSource } from "./image";
 import { loadOpenCv } from "./opencv";
@@ -149,6 +151,8 @@ interface QueuedFrame {
   t: number;
   bitmap: ImageBitmap;
   motion?: number;
+  seq?: number; // 送った順の通し番号（下の「認識を Worker 2 つで」）
+  helper?: boolean; // 補助の Worker として受けた（認識だけして返す）
 }
 const queue: QueuedFrame[] = [];
 let scheduled = false;
@@ -205,9 +209,68 @@ function pickFrame(): QueuedFrame | null {
   for (const f of queue.splice(0)) {
     if (f === best) continue;
     f.bitmap.close();
-    post({ type: "frame-skipped", id: f.id });
+    post({ type: "frame-skipped", id: f.id, seq: f.seq });
+    if (!f.helper && f.seq !== undefined) skipSeq(f.seq);
   }
   return best;
+}
+
+// 認識を Worker 2 つで（src/vision/visionClient.ts）: フレームを送った順の通し番号（seq）で、主の Worker（追跡をする）と補助の Worker
+// （認識だけ）に交互に送る。追跡は通し番号の順に入れる: 補助の結果はメイン経由で届く（foreign）ので、届くまで後のフレームの追跡を待つ。
+// SEQ_WAIT_MS 待っても届かなければ飛ばす。実物の 7 本で、1 秒 20 枚を Worker 2 つで交互に処理したときのライブの一致は、1 つで 20 枚
+// 処理したときとほぼ同じ（80.9 → 79.7%。各 Worker は 1 枚おきにしか見ないので、前のフレームの格子を引き継ぐ効き目が少し落ちる）
+const SEQ_WAIT_MS = 300;
+interface Recognized {
+  id: number;
+  t: number;
+  width: number;
+  height: number;
+  result: FrameResult;
+  procMs: number;
+  foreign: boolean;
+}
+const ready = new Map<number, Recognized | null>(); // 通し番号 → 認識結果（null = 処理しなかった）
+let nextSeq = -1; // 次に追跡に入れる通し番号（-1 = まだ）
+let waitTimer = 0;
+
+function skipSeq(seq: number): void {
+  if (nextSeq >= 0 && seq < nextSeq) return;
+  ready.set(seq, null);
+  drain();
+}
+
+function deliver(seq: number | undefined, r: Recognized): void {
+  if (seq === undefined) {
+    track(r);
+    return;
+  }
+  if (nextSeq >= 0 && seq < nextSeq) return; // 待ちきれずに飛ばした後に届いた
+  ready.set(seq, r);
+  drain();
+}
+
+function drain(): void {
+  if (nextSeq < 0 && ready.size) nextSeq = Math.min(...ready.keys());
+  while (ready.has(nextSeq)) {
+    const r = ready.get(nextSeq)!;
+    ready.delete(nextSeq);
+    nextSeq++;
+    if (r) {
+      try {
+        track(r);
+      } catch (e) {
+        post({ type: "error", message: e instanceof Error ? `${e.message}\n${e.stack}` : String(e) });
+      }
+    }
+  }
+  clearTimeout(waitTimer);
+  if (ready.size)
+    waitTimer = setTimeout(() => {
+      // 待っている通し番号が届かない: 届いている中でいちばん前まで飛ばす
+      if (!ready.size) return;
+      nextSeq = Math.min(...ready.keys());
+      drain();
+    }, SEQ_WAIT_MS) as unknown as number;
 }
 
 function processLiveFrame(msg: QueuedFrame): void {
@@ -219,8 +282,24 @@ function processLiveFrame(msg: QueuedFrame): void {
   ctx!.drawImage(bitmap, 0, 0);
   bitmap.close();
   const img = ctx!.getImageData(0, 0, w, h);
-  const result = cv || !wantCv ? processFrame(cv as CV, img, msg.t, focus?.length ? { ...config, focus } : config, memory) : { faces: [], quads: [] };
-  const reading = frameReading(msg.t, result);
+  const result: FrameResult = cv || !wantCv ? processFrame(cv as CV, img, msg.t, focus?.length ? { ...config, focus } : config, memory) : { faces: [], quads: [] };
+  const procMs = performance.now() - t0;
+  if (msg.helper) {
+    post({ type: "recognized", id: msg.id, seq: msg.seq!, t: msg.t, width: w, height: h, result: { faces: result.faces, quads: result.quads, turn: result.turn }, procMs });
+    return;
+  }
+  deliver(msg.seq, { id: msg.id, t: msg.t, width: w, height: h, result, procMs, foreign: false });
+}
+
+// 認識した結果を追跡に入れ、画面に送る
+function track(r: Recognized): void {
+  const { result } = r;
+  const w = r.width;
+  const h = r.height;
+  // スロットがありえないフレーム（正面・上・下が同時に見えた・センターと面の接し方に合わない）は、追跡には何も見えなかったとして渡す
+  // （src/track/pieces/slotCheck.ts。実物の 7 本 × 3〜5 通りの fps で、ライブの 3D の一致が 1 本ずつの平均で 75.2 → 77.1%）
+  const read0 = frameReading(r.t, result);
+  const reading = read0.faces.length && !slotsPlausible(sightFrame(r.t, result)) ? { ...read0, faces: [] } : read0;
   const track = engine?.push(reading) ?? undefined;
   if (track) focus = focusCells(track.cells, track.orient);
   let looksSolved: boolean | undefined;
@@ -231,13 +310,13 @@ function processLiveFrame(msg: QueuedFrame): void {
     const p = focal.estimate(result.faces, w, h);
     if (p && p.err < Math.max(4, w / 100)) {
       // 直前の 3D の向き（キューブ固定 → カメラ）に近い姿勢を優先する（見え方で区別できないときに跳ねない）
-      const prev = lastPose && msg.t - lastPose.t < 1500 ? lastPose.M : null;
+      const prev = lastPose && r.t - lastPose.t < 1500 ? lastPose.M : null;
       const orient = engine.frameOrient(reading, labels, prev ? (o) => (0.9 * rotationAngle([...mul(p.R as Mat3, ORIENTATIONS[o])], [...prev])) / Math.PI : undefined);
-      lastPose = { t: msg.t, M: mul(p.R as Mat3, ORIENTATIONS[orient]) };
+      lastPose = { t: r.t, M: mul(p.R as Mat3, ORIENTATIONS[orient]) };
       pose = { R: p.R, err: p.err, orient };
     }
   }
-  post({ type: "frame", id: msg.id, t: msg.t, width: w, height: h, faces: result.faces, quads: result.quads, procMs: performance.now() - t0, track, looksSolved, pose });
+  post({ type: "frame", id: r.id, t: r.t, width: w, height: h, faces: result.faces, quads: result.quads, procMs: r.procMs, track, looksSolved, pose, ...(r.foreign ? { foreign: true } : {}) });
 }
 
 self.onmessage = async (event: MessageEvent<ToWorker>) => {
@@ -420,10 +499,21 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
         return;
       }
       case "frame": {
-        queue.push({ id: msg.id, t: msg.t, bitmap: msg.bitmap });
+        queue.push({ id: msg.id, t: msg.t, bitmap: msg.bitmap, seq: msg.seq });
         scheduleFrames();
         return;
       }
+      case "recognize": {
+        queue.push({ id: msg.id, t: msg.t, bitmap: msg.bitmap, seq: msg.seq, helper: true });
+        scheduleFrames();
+        return;
+      }
+      case "foreign":
+        deliver(msg.seq, { id: msg.id, t: msg.t, width: msg.width, height: msg.height, result: msg.result, procMs: msg.procMs, foreign: true });
+        return;
+      case "foreign-skip":
+        skipSeq(msg.seq);
+        return;
     }
   } catch (e) {
     post({ type: "error", message: e instanceof Error ? `${e.message}\n${e.stack}` : String(e) });

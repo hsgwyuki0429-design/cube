@@ -193,7 +193,9 @@ it("実際のプレイ動画", async () => {
   // REAL_LIVE_OBS='{"idBoost":1}' など: ライブの観測器の設定を上書き
   const liveObs = { ...ARUCO_OBSERVER, ...LIVE_OBSERVER, ...JSON.parse(process.env.REAL_LIVE_OBS ?? "{}") };
   const live = new TrackerEngine(start, ARUCO_REFS, { observer: liveObs, decoder: liveDec, snapToView: true });
-  const liveMemory = {};
+  // REAL_LIVE_WORKERS=2: ライブの認識を Worker 2 つで交互に処理したとき（フレームの間で引き継ぐものは Worker ごと）
+  const liveMemories = Array.from({ length: Number(process.env.REAL_LIVE_WORKERS ?? 1) }, () => ({}));
+  let liveTurn = 0;
   const refiner = process.env.REAL_REFINE === "0" ? null : new Refiner(cv as never, { state: Array.from(start), refs: ARUCO_REFS, from: from * 1000, to: to * 1000, ...(process.env.REAL_REFINE_GATE === "0" ? { gate: false } : {}), ...(process.env.REAL_PIECES === "1" ? { pieces: true } : {}), engine: { observer: ARUCO_OBSERVER, ...JSON.parse(process.env.REAL_REFINE_ENGINE ?? "{}"), decoder: { beamWidth: 32, maxMovesPerStep: 3, rotationCost: 1.5, ...JSON.parse(process.env.REAL_REFINE_ENGINE ?? "{}").decoder } }, pipeline: { ...STICKERS, ...JSON.parse(process.env.REAL_REFINE_CFG ?? "{}") } });
   // REAL_RFRAMES=22.1-23.0: 精密解析が精密に処理したフレームの面
   // 精密解析が精密に処理したフレームの読み（ID が読めたマスの数。認識の良し悪し）
@@ -249,10 +251,11 @@ it("実際のプレイ動画", async () => {
   const liveFrame = (img: Img, t: number) => {
     if (process.env.REAL_PROFILE && picked.length < 120) picked.push({ img, t });
     const a = performance.now();
-    const r = processFrame(cv as never, img, t, liveCfg, liveMemory);
+    const r = processFrame(cv as never, img, t, liveCfg, liveMemories[liveTurn++ % liveMemories.length]);
     const a2 = performance.now();
     const reading = frameReading(t, r);
-    if (process.env.REAL_READINGS) readings.push(reading);
+    // sight: 面の外枠・マーカーの向き（src/track/pieces/frame.ts。スロットに頼らない位置の決め方を試すため）
+    if (process.env.REAL_READINGS) readings.push({ ...reading, sight: sightFrame(t, r) } as FrameReading);
     const u = live.push(reading);
     trackMs += performance.now() - a2;
     if (u) {

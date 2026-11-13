@@ -156,6 +156,8 @@ class Controller {
     this.camera.onFrame((t) => {
       // 止めた後の残りの解析の間は、ライブの認識を休む（1 秒に何枚も作る画像でメモリの山が高くなり、iPhone で落ちる元になる。
       // 休んでいる間に回した手は、再開したときに見えている色への作り変えで追いつく）
+      // 録画の圧縮が詰まっている間は、認識の補助の Worker を休ませる（CPU を圧縮に回す。録画を間引くと精密解析が悪くなる）
+      if (this.vision) this.vision.useHelper = !this.recorder.congested(t);
       if (!this.liveResting) this.vision?.submit(this.camera.video, t);
       if (this.recorder.recording) this.recorder.add(this.camera.video, t);
     });
