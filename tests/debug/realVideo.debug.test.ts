@@ -17,6 +17,7 @@
 //   REAL_START_FILE=ファイル（始まりの状態: JSON の startState か start）
 //   REAL_RREADINGS=ファイル（精密解析が精密に処理したフレームの読み: betweenMoves.debug.test.ts）
 //   REAL_OBS=ファイル（精密解析の観測を書き出す: obsReplay.debug.test.ts で解き直しだけを測る）・REAL_OBS_ONLY=1（書き出したら解き直さない）
+//   REAL_PIECES=1（精密解析の解き直しを、先にピースの時刻表: src/track/pieces で試す。RREADINGS には、その材料の rot・quad・held も入る）
 //   REAL_REF=ファイル（精密解析の結果を書き出す。REAL_REFINE=0 なら読み込んで、ライブの一致だけ測る: ライブを直して何度も測るとき）
 // 精密解析の追跡の設定は本体と同じ（controller.engineOptions: ARUCO_OBSERVER・候補 32・3 手）。
 // 精密解析が完成までつながったら、その手順と時刻を本当の動きとみなして、ライブが 3D に出した状態が本当の状態と同じだった時間の割合を出す
@@ -193,7 +194,7 @@ it("実際のプレイ動画", async () => {
   const liveObs = { ...ARUCO_OBSERVER, ...LIVE_OBSERVER, ...JSON.parse(process.env.REAL_LIVE_OBS ?? "{}") };
   const live = new TrackerEngine(start, ARUCO_REFS, { observer: liveObs, decoder: liveDec, snapToView: true });
   const liveMemory = {};
-  const refiner = process.env.REAL_REFINE === "0" ? null : new Refiner(cv as never, { state: Array.from(start), refs: ARUCO_REFS, from: from * 1000, to: to * 1000, ...(process.env.REAL_REFINE_GATE === "0" ? { gate: false } : {}), ...(process.env.REAL_PIECES === "0" ? { pieces: false } : {}), engine: { observer: ARUCO_OBSERVER, ...JSON.parse(process.env.REAL_REFINE_ENGINE ?? "{}"), decoder: { beamWidth: 32, maxMovesPerStep: 3, rotationCost: 1.5, ...JSON.parse(process.env.REAL_REFINE_ENGINE ?? "{}").decoder } }, pipeline: { ...STICKERS, ...JSON.parse(process.env.REAL_REFINE_CFG ?? "{}") } });
+  const refiner = process.env.REAL_REFINE === "0" ? null : new Refiner(cv as never, { state: Array.from(start), refs: ARUCO_REFS, from: from * 1000, to: to * 1000, ...(process.env.REAL_REFINE_GATE === "0" ? { gate: false } : {}), ...(process.env.REAL_PIECES === "1" ? { pieces: true } : {}), engine: { observer: ARUCO_OBSERVER, ...JSON.parse(process.env.REAL_REFINE_ENGINE ?? "{}"), decoder: { beamWidth: 32, maxMovesPerStep: 3, rotationCost: 1.5, ...JSON.parse(process.env.REAL_REFINE_ENGINE ?? "{}").decoder } }, pipeline: { ...STICKERS, ...JSON.parse(process.env.REAL_REFINE_CFG ?? "{}") } });
   // REAL_RFRAMES=22.1-23.0: 精密解析が精密に処理したフレームの面
   // 精密解析が精密に処理したフレームの読み（ID が読めたマスの数。認識の良し悪し）
   const rstat = { frames: 0, faces: 0, ids: 0, empty: 0 };

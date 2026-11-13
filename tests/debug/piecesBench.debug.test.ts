@@ -40,7 +40,8 @@ it("ピースの時刻表で解き直す", () => {
     const rd = JSON.parse(readFileSync(`${dir}/${file}`, "utf8")) as { start: number[]; readings: SightFrame[] };
     let start: CubeState;
     let moves: RefMove[];
-    if (existsSync(`${refDir}/${name}.ref.json`)) {
+    // PB_SOLVE=1: ソルブの部分だけの正解（<動画>.start.json）を先に
+    if (existsSync(`${refDir}/${name}.ref.json`) && !(process.env.PB_SOLVE && existsSync(`${refDir}/${b}.start.json`))) {
       const ref = JSON.parse(readFileSync(`${refDir}/${name}.ref.json`, "utf8")) as { moves: RefMove[]; startState?: number[] };
       start = Uint8Array.from(ref.startState ?? rd.start);
       moves = ref.moves;
@@ -99,7 +100,7 @@ it("ピースの時刻表で解き直す", () => {
       const theirs = readingMismatch(start, moves, readings as never);
       out.push(`  読みとの食い違い: 出力 ${((100 * mine.bad) / mine.n).toFixed(2)}%（${mine.bad}/${mine.n}）・正解 ${((100 * theirs.bad) / theirs.n).toFixed(2)}%`);
     }
-    if (process.env.PB_SHOW && dist) {
+    if (process.env.PB_SHOW && (dist || process.env.PB_SHOW === "2")) {
       out.push(`  出力 ${d.moves.map((m) => `${MOVE_NAMES[m.move]}${m.inferred ? "?" : ""}@${(m.t / 1000).toFixed(2)}`).join(" ")}`);
       out.push(`  正解 ${moves.map((m) => `${MOVE_NAMES[m.move]}@${(m.end / 1000).toFixed(2)}`).join(" ")}`);
     }

@@ -193,3 +193,24 @@ for (let x = 0; x < 6; x++) {
     m = mul(FACE_TURN[x], m);
   }
 }
+
+// ROT24[r * 54 + p]: キューブ全体の回転 24 通り（r = 0 は回さない）で facelet p が移る先。
+// センターが 1 つも読めないフレームは、キューブのどの面かが分からない: ピースの位置をこれで移した 24 通りの置き方のどれか
+export const ROT24: Uint8Array = (() => {
+  const key = (a: Uint8Array) => a.join();
+  const id = Uint8Array.from({ length: 54 }, (_, i) => i);
+  const found = [id];
+  const seen = new Set([key(id)]);
+  for (let i = 0; i < found.length; i++)
+    for (const x of [0, 1, 2]) {
+      const g = WHOLE.subarray((x * 4 + 1) * 54, (x * 4 + 2) * 54);
+      const c = Uint8Array.from(found[i], (v) => g[v]);
+      if (!seen.has(key(c))) {
+        seen.add(key(c));
+        found.push(c);
+      }
+    }
+  const out = new Uint8Array(24 * 54);
+  found.forEach((a, r) => out.set(a, r * 54));
+  return out;
+})();

@@ -35,7 +35,8 @@ export interface RefineInput {
   // 進める解析と同じく間引く（vision.worker.ts の INSPECT_EVERY_MS）。インスペクションで回して見せている間を全部処理すると、持ち替えを
   // 手と読み違えて完成までつながらないことがあった（録画の画質の実物のソルブ 2 本）
   inspectUntil?: number;
-  // ピースの時刻表（src/track/pieces）で解き直す（既定 true）。完成までつながらなければ、これまでの解き直し（decodeOffline）に戻す
+  // ピースの時刻表（src/track/pieces）で先に解き直す（試作。既定 false）。完成までつながらなければ、これまでの解き直し（decodeOffline）に戻す。
+  // 原画質では実物 7 本ともこれまでと同じ手順になるが、録画の画質を落とすとこれまでの解き直しの方がつながる（CLAUDE.md）ので、まだ既定にしない
   pieces?: boolean;
   piecesOptions?: Partial<DecodeOptions>;
 }
@@ -294,7 +295,7 @@ export class Refiner {
   full(img: PixelSource, t: number, detected?: Marker[]): void {
     const r = processFrame(this.cv, img, t, this.config, this.memory, detected);
     this.onFrame?.(t, r);
-    if (this.input.pieces !== false && r.faces.length) this.sights.push(sightFrame(t, r));
+    if (this.input.pieces && r.faces.length) this.sights.push(sightFrame(t, r));
     // 基準: この格子で、処理に回したいちばん新しいフレームの色（1 か所で処理するときは、このフレーム）
     const latest = this.picked && this.picked.t > t ? this.picked.img : img;
     // 見えている面が減ったフレーム（回している途中・指）の後は、続けて精密に処理する: 残った面だけを基準にすると、回している面
@@ -375,8 +376,8 @@ export class Refiner {
     const dec = this.engine.decoder;
     const tick = onPhase ? () => onPhase("decode") : undefined;
     // 前向き（スクランブル後から）と後ろ向き（完成から）の両方で解き直し、辻褄の合う所でつなぐ
-    // まずピースの時刻表で解く（数十〜数百 ms）。完成までつながらなければ、これまでの解き直しに戻す
-    const pieces = target && this.input.pieces !== false ? this.decodeByPieces(target) : null;
+    // ピースの時刻表（試作。RefineInput.pieces）: 完成までつながらなければ、これまでの解き直しに戻す
+    const pieces = target && this.input.pieces ? this.decodeByPieces(target) : null;
     let off: OfflineResult = pieces ?? decodeOffline(this.engine.observationLog, Uint8Array.from(this.input.state), target, this.lastT, { ...this.offlineOptions(), tick }, this.forward ?? undefined);
     if (!pieces && target && off.method !== "meet" && off.method !== "backward") {
       const base = this.offlineOptions();

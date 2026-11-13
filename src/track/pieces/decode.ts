@@ -7,8 +7,8 @@
 // 認識のスロット・姿勢は使わない（表がキューブ固定の位置になっている）ので、仮説に姿勢がなく、持ち替えを探す枝もない。
 // DOM もカメラも知らない
 import { type CubeState, OPPOSITE, inverseMove } from "../../cube/model";
-import { DIST, NUM_PIECES, PERM, WHOLE, fromCubeState } from "./model";
-import { KIND_CHAINED, KIND_FREE, type PieceTable } from "./table";
+import { DIST, NUM_PIECES, PERM, ROT24, WHOLE, fromCubeState } from "./model";
+import { KIND_BLIND, KIND_CHAINED, KIND_FREE, type PieceTable } from "./table";
 
 export interface DecodeOptions {
   beam: number; // 見え方ごとに残す仮説の数
@@ -28,6 +28,7 @@ export interface DecodeOptions {
   // センターが 1 つだけのフレームだけでできた見え方は、その面のまわりの 4 通りの置き方のどれでもよい。表が選んだもの（向きの続くもの）と
   // 違う置き方のコスト（1 手より高く: 1 面だけ見えていてその面を回したのと区別できないときは、手とみる。2 手より安く）
   twistCost: number;
+  blindCost: number; // センターが 1 つも読めないフレームだけでできた見え方で、仮の置き方と違う置き方（24 通り）を選ぶコスト
   minPieces: number; // これより少ないピースしか見えなかった見え方は使わない（合わせる短い手順がいくらでもあり、本当の手順を落とす）
   deepHyps: number; // 4 手以上の手順を試すのは、コストの小さい方からこれだけの仮説
   // 空白を越える探索: ふつうの探索で、いちばんよい仮説でもこの見え方と stuck 以上食い違い、見えたピースが bridgePieces 個以上あるとき、
@@ -43,7 +44,7 @@ export interface DecodeOptions {
   onStep?: (info: { back: boolean; step: number; t: number; pieces: number; depth: number; hyps: number; best: number; expanded: number; moves: number[] }) => void; // 調査用
 }
 
-export const DEFAULT_DECODE: DecodeOptions = { beam: 96, margin: 4, maxMoves: 5, minMoves: 3, msPerMove: 150, payback: 1, frameWeight: 0.5, cellCap: 1.5, centerWeight: 0.5, splitMs: 100, endWeight: 10, endMoves: 4, keep: 64, afterMeet: 3, twistCost: 1.3, minPieces: 4, deepHyps: 4, lostSteps: 4, lostCost: 14, stuck: 2, bridgePieces: 5, bridgeHyps: 4, bridgeMoves: 8, nodeCap: 400000 };
+export const DEFAULT_DECODE: DecodeOptions = { beam: 96, margin: 4, maxMoves: 5, minMoves: 3, msPerMove: 150, payback: 1, frameWeight: 0.5, cellCap: 1.5, centerWeight: 0.5, splitMs: 100, endWeight: 10, endMoves: 4, keep: 64, afterMeet: 3, twistCost: 1.3, blindCost: 0.5, minPieces: 4, deepHyps: 4, lostSteps: 4, lostCost: 14, stuck: 2, bridgePieces: 5, bridgeHyps: 4, bridgeMoves: 8, nodeCap: 400000 };
 
 // 見え方: 見えたピース（センターは 20 + 面、位置は回した回数）と重み
 export interface Sight {
@@ -54,8 +55,9 @@ export interface Sight {
   piece: Uint8Array;
   at: Uint8Array;
   w: Float32Array;
-  root: number; // センターが 1 つだけのフレームだけでできた見え方: その面（ほかの置き方はこの面のまわり）。そうでなければ -1
-  alt?: Uint8Array[]; // ほかの置き方（1〜3）でのピースの位置
+  root: number; // センターが 1 つだけのフレームだけでできた見え方: その面（ほかの置き方はこの面のまわり）。センターなしは 6。そうでなければ -1
+  alt?: Uint8Array[]; // ほかの置き方でのピースの位置（センター 1 つ: 3 通り、センターなし: 23 通り）
+  altCost?: number; // ほかの置き方を選ぶコスト
 }
 
 export function buildSights(tb: PieceTable, options: Partial<DecodeOptions> = {}): Sight[] {
@@ -74,7 +76,11 @@ export function buildSights(tb: PieceTable, options: Partial<DecodeOptions> = {}
       const at = Uint8Array.from(ps, (p) => snap[p]);
       out.push({
         root: root < 0 ? -1 : root,
-        ...(root >= 0 ? { alt: [1, 2, 3].map((d) => Uint8Array.from(ps, (p, i) => (p < NUM_PIECES ? WHOLE[(root * 4 + d) * 54 + at[i]] : at[i]))) } : {}),
+        ...(root === 6
+          ? { alt: Array.from({ length: 23 }, (_, r) => Uint8Array.from(ps, (p, i) => (p < NUM_PIECES ? ROT24[(r + 1) * 54 + at[i]] : at[i]))), altCost: opt.blindCost }
+          : root >= 0
+            ? { alt: [1, 2, 3].map((d) => Uint8Array.from(ps, (p, i) => (p < NUM_PIECES ? WHOLE[(root * 4 + d) * 54 + at[i]] : at[i]))), altCost: opt.twistCost }
+            : {}),
         t0: tb.t[f0],
         t1: tb.t[f1],
         frame0: f0,
@@ -102,7 +108,8 @@ export function buildSights(tb: PieceTable, options: Partial<DecodeOptions> = {}
       any = true;
     }
     if (!any) continue;
-    const r = tb.kind[f] === KIND_CHAINED ? tb.root[f] : -1;
+    const r = tb.kind[f] === KIND_CHAINED ? tb.root[f] : tb.kind[f] === KIND_BLIND ? 6 : -1;
+    // 置き方の決まったフレームと食い違わずに続いたフレームは、決まったものとして扱う
     root = root === -2 ? r : root === r ? r : -1;
     if (f0 < 0) f0 = f;
     f1 = f;
@@ -142,7 +149,7 @@ interface Hyp {
 interface Pass {
   sets: Map<number, { cost: number; path: number }>[]; // 見え方ごとの仮説（位置のハッシュ → コスト・手の木の節点）
   final: Hyp | null; // 終わりの状態にたどり着いた仮説
-  moves: (path: number) => { move: number; sight: number }[];
+  moves: (path: number) => { move: number; sight: number; guess: boolean }[];
   expanded: number;
 }
 
@@ -172,7 +179,7 @@ function pass(sights: Sight[], start: Uint8Array, end: Uint8Array | null, opt: D
       pathInfo = b;
     }
     pathParent[paths] = parent;
-    pathInfo[paths] = move + sight * 32;
+    pathInfo[paths] = move + sight * 64;
     return paths++;
   };
   const s0 = new Uint8Array(SIZE);
@@ -190,7 +197,8 @@ function pass(sights: Sight[], start: Uint8Array, end: Uint8Array | null, opt: D
   const endP = Uint8Array.from({ length: NUM_PIECES }, (_, k) => k);
   const endW = new Float32Array(NUM_PIECES).fill(opt.endWeight);
   // 食い違いのコスト（センターは、基準が決まっているものだけ）
-  let ALT: Uint8Array[] | null = null; // ほかの置き方（センターが 1 つだけの見え方）
+  let ALT: Uint8Array[] | null = null; // ほかの置き方（センターが 1 つだけ・1 つもない見え方）
+  let altCost = 0;
   const mismatch = (s: Uint8Array): number => {
     let c = 0;
     for (let i = 0; i < nP; i++) if (s[P[i]] !== A[i]) c += W[i];
@@ -198,9 +206,9 @@ function pass(sights: Sight[], start: Uint8Array, end: Uint8Array | null, opt: D
       const x = P[i] - NUM_PIECES;
       if (s[OFF + x] !== 4 && ((s[TURNS + x] + s[OFF + x]) & 3) !== A[i]) c += W[i];
     }
-    if (ALT && c > opt.twistCost)
+    if (ALT && c > altCost)
       for (const B of ALT) {
-        let e = opt.twistCost;
+        let e = altCost;
         for (let i = 0; i < nP && e < c; i++) if (s[P[i]] !== B[i]) e += W[i];
         if (e < c) c = e;
       }
@@ -210,9 +218,9 @@ function pass(sights: Sight[], start: Uint8Array, end: Uint8Array | null, opt: D
   const unreach = (s: Uint8Array, r: number): number => {
     let c = 0;
     for (let i = 0; i < nP; i++) if (DIST[s[P[i]] * 54 + A[i]] > r) c += W[i];
-    if (ALT && c > opt.twistCost)
+    if (ALT && c > altCost)
       for (const B of ALT) {
-        let e = opt.twistCost;
+        let e = altCost;
         for (let i = 0; i < nP && e < c; i++) if (DIST[s[P[i]] * 54 + B[i]] > r) e += W[i];
         if (e < c) c = e;
       }
@@ -220,6 +228,7 @@ function pass(sights: Sight[], start: Uint8Array, end: Uint8Array | null, opt: D
   };
   let pool = new Map<number, Hyp>();
   let best = Infinity;
+  let bridging = false; // 空白を越える探索で見つけた手順を入れている（その手は「推定」）
   let mine = Infinity; // いま展開している仮説の、いちばんよい子（手を入れないものも含む）のコスト
   let step = 0;
   const stack = new Uint8Array(16);
@@ -241,7 +250,7 @@ function pass(sights: Sight[], start: Uint8Array, end: Uint8Array | null, opt: D
       if (leaf[OFF + x] === 4) leaf[OFF + x] = (A[i] - leaf[TURNS + x] + 4) & 3;
     }
     let path = parent;
-    for (let i = 0; i < depth; i++) path = addPath(path, stack[i], step);
+    for (let i = 0; i < depth; i++) path = addPath(path, stack[i] + (bridging ? 32 : 0), step);
     pool.set(key, { s: leaf, cost: c, path });
     if (c < best) best = c;
   };
@@ -400,6 +409,7 @@ function pass(sights: Sight[], start: Uint8Array, end: Uint8Array | null, opt: D
       A = sg.at;
       W = sg.w;
       ALT = sg.alt ?? null;
+      altCost = sg.altCost ?? 0;
       nP = 0;
       while (nP < P.length && P[nP] < NUM_PIECES) nP++;
       const gap = step === 0 ? 0 : Math.abs(sg.t0 - sights[step - 1].t1);
@@ -445,7 +455,9 @@ function pass(sights: Sight[], start: Uint8Array, end: Uint8Array | null, opt: D
             }
             for (let i = 0; i < seq.length; i++) stack[i] = seq[i];
             mine = Infinity;
+            bridging = true;
             offer(t, h.cost + seq.length, seq.length, h.path);
+            bridging = false;
           }
         }
       }
@@ -485,8 +497,8 @@ function pass(sights: Sight[], start: Uint8Array, end: Uint8Array | null, opt: D
     if (stop?.(step, set)) break;
   }
   const moves = (path: number) => {
-    const out: { move: number; sight: number }[] = [];
-    for (let p = path; p >= 0; p = pathParent[p]) out.push({ move: pathInfo[p] & 31, sight: pathInfo[p] >> 5 });
+    const out: { move: number; sight: number; guess: boolean }[] = [];
+    for (let p = path; p >= 0; p = pathParent[p]) out.push({ move: pathInfo[p] & 31, sight: pathInfo[p] >> 6, guess: (pathInfo[p] & 32) !== 0 });
     return out.reverse();
   };
   return { sets, final, moves, expanded };
@@ -508,14 +520,14 @@ export function decodePieces(table: PieceTable, start: CubeState, end: CubeState
     if (metAt < 0 && F) for (const k of set.keys()) if (F.has(k)) metAt = step;
     return metAt >= 0 && step >= metAt + opt.afterMeet;
   });
-  const timed = (m: { move: number; sight: number }): DecodedPieceMove => {
+  const timed = (m: { move: number; sight: number; guess: boolean }): DecodedPieceMove => {
     const i = m.sight;
     const before = i > 0 ? sights[Math.min(i, n) - 1].t1 : (sights[0]?.t0 ?? 0);
     const after = i < n ? sights[i].t0 : (sights[n - 1]?.t1 ?? 0);
-    return { move: m.move, sight: i, t0: Math.min(before, after), t: after, ...(i >= n || i === 0 ? { inferred: true } : {}) };
+    return { move: m.move, sight: i, t0: Math.min(before, after), t: after, ...(i >= n || i === 0 || m.guess ? { inferred: true } : {}) };
   };
   // 後ろ向きの手: 逆順の見え方 j（= 元の n − 1 − j）の前の手は、元の見え方 n − j の前の手。逆向きにして順番も逆に
-  const back = (ms: { move: number; sight: number }[]) => ms.map((m) => timed({ move: inverseMove(m.move), sight: n - m.sight })).reverse();
+  const back = (ms: { move: number; sight: number; guess: boolean }[]) => ms.map((m) => timed({ move: inverseMove(m.move), sight: n - m.sight, guess: m.guess })).reverse();
   let best = Infinity;
   let at = -1;
   let fPath = -1;

@@ -17,7 +17,8 @@ export interface TableOptions {
   orientMs: number; // 面の向きを前のフレームから引き継ぐ時間
   centerMinRun: number; // センターの向きは、これだけ続けて同じに読めたものだけ使う
   touch: number; // 2 つの面の外枠の辺がこれ（辺の長さに対する割合）より近ければ、その辺で接している
-  // センターが 1 つも読めないフレーム（既定では使わない: blindMatch 99。持ち替えの途中で置き方を取り違え、実物のソルブ 1 本で終わりの手順を間違えた）:
+  // センターが 1 つも読めないフレーム（仮の置き方。置き方の決まったフレームとして使うと、持ち替えの途中で取り違えて、実物のソルブ 1 本で
+  // 終わりの手順を間違えた。解くときは 24 通りの置き方のどれでもよいことにする: decode.ts）:
   // いちばん読めた面のマスがこれ以上・前後 blindMs 以内に見えていたピースの位置と blindMatch 個以上合い、
   // 2 番目の置き方より blindMargin 個以上多く合うときだけ使う
   blindCells: number;
@@ -26,11 +27,12 @@ export interface TableOptions {
   blindMargin: number;
 }
 
-export const DEFAULT_TABLE: TableOptions = { orientMs: 1500, centerMinRun: 2, touch: 0.45, blindCells: 4, blindMs: 400, blindMatch: 99, blindMargin: 3 };
+export const DEFAULT_TABLE: TableOptions = { orientMs: 1500, centerMinRun: 2, touch: 0.45, blindCells: 4, blindMs: 400, blindMatch: 4, blindMargin: 3 };
 
 export const KIND_SURE = 0; // 置き方がセンターと面の接し方だけで決まった
 export const KIND_CHAINED = 1; // センターが 1 つ: 前のフレームから向きが続くものを仮に選んだ
 export const KIND_FREE = 2; // センターが 1 つで、続きも分からない（どの置き方もただ）
+export const KIND_BLIND = 3; // センターが 1 つも読めない: 前後のピースの位置といちばん合う置き方を仮に選んだ（24 通りのどれでもありうる）
 
 export interface PieceTable {
   n: number; // フレームの数
@@ -384,8 +386,7 @@ export function buildTable(frames: SightFrame[], options: Partial<TableOptions> 
         } else if (m > second) second = m;
       }
       if (bestRead && best >= opt.blindMatch && best >= second + opt.blindMargin) {
-        rows[pi] = { kind: KIND_SURE, ...bestRead, placed: p.options[bestK]! };
-        stats.blind++;
+        rows[pi] = { kind: KIND_BLIND, ...bestRead, placed: p.options[bestK]! };
       } else stats.noCenter++;
     }
   }
@@ -414,6 +415,7 @@ export function buildTable(frames: SightFrame[], options: Partial<TableOptions> 
     orients.push(o);
     first.push(piece.length);
     if (row.kind === KIND_SURE) stats.sure++;
+    else if (row.kind === KIND_BLIND) stats.blind++;
     else if (row.kind === KIND_CHAINED) stats.chained++;
     else stats.free++;
   }
