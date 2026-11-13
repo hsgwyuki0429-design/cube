@@ -192,7 +192,7 @@ it("実際のプレイ動画", async () => {
   const liveDec = { priorWeight: 0, confirmMargin: 1, deepHyps: 4, bridgeDepth: 5, ...JSON.parse(process.env.REAL_LIVE_DEC ?? "{}") };
   // REAL_LIVE_OBS='{"idBoost":1}' など: ライブの観測器の設定を上書き
   const liveObs = { ...ARUCO_OBSERVER, ...LIVE_OBSERVER, ...JSON.parse(process.env.REAL_LIVE_OBS ?? "{}") };
-  const live = new TrackerEngine(start, ARUCO_REFS, { observer: liveObs, decoder: liveDec, snapToView: true });
+  const live = new TrackerEngine(start, ARUCO_REFS, { observer: liveObs, decoder: liveDec, snapToView: true, recover: true });
   // REAL_LIVE_WORKERS=2: ライブの認識を Worker 2 つで交互に処理したとき（フレームの間で引き継ぐものは Worker ごと）
   const liveMemories = Array.from({ length: Number(process.env.REAL_LIVE_WORKERS ?? 1) }, () => ({}));
   let liveTurn = 0;
@@ -329,7 +329,7 @@ it("実際のプレイ動画", async () => {
   // REAL_PROFILE=1: ライブが処理したフレーム（120 枚まで）を、もう一度ライブの認識に通して関数ごとの時間を出す
   if (process.env.REAL_PROFILE && picked.length) {
     const mem = {};
-    const eng = new TrackerEngine(start, ARUCO_REFS, { observer: liveObs, decoder: liveDec, snapToView: true });
+    const eng = new TrackerEngine(start, ARUCO_REFS, { observer: liveObs, decoder: liveDec, snapToView: true, recover: true });
     const { nodes, interval } = await profile(() => {
       for (const p of picked) eng.push(frameReading(p.t, processFrame(cv as never, p.img, p.t, liveCfg, mem)));
     });

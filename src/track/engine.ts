@@ -1,10 +1,11 @@
 // 追跡エンジン: フレームの読み取り → 安定観測 → デコーダ → 結果。カメラも DOM も知らない。
 // Worker の中でもテストの中でも同じコードが動く。
+import { type RecoverOptions, orientsOf, recoverFrom } from "./recover";
 import { type CubeState, NORMAL, VIEW, applyMove, faceletGeometry, inverseMove, isSolved, moveFace, solvedState } from "../cube/model";
 import { stickerIdAt } from "../cube/stickers";
 import type { Lab } from "../vision/color";
 import { ColorModel, type ColorModelOptions } from "./colorModel";
-import { type DecoderOptions, MoveDecoder, observationCost } from "./decoder";
+import { type DecoderOptions, type Hypothesis, MoveDecoder, observationCost } from "./decoder";
 import { movePrior } from "./prior";
 import { snapToObservation } from "./snap";
 import { FaceObserver, type FrameReading, type ObserverOptions } from "./observer";
@@ -27,6 +28,8 @@ export interface EngineOptions {
   // ライブ: 一番合う仮説でも見え方とはっきり合わなければ、見えている色に合う状態にその場で作り変え、そこから追跡をやり直す
   // （src/track/snap.ts。3D を見えているキューブと同じ色の組み合わせに保つ。精密解析は使わない）
   snapToView?: boolean;
+  // 見失ったところからの復帰（ライブ）: 見失う直前の確かな状態から、後で読めたステッカーが全部合う手順を探して仮説に足す（src/track/recover.ts）
+  recover?: boolean | Partial<RecoverOptions>;
 }
 
 const TIMING_FINAL_MS = 1000; // 手の観測からこれだけたてば、その手の時刻はもう変わらない
@@ -41,6 +44,12 @@ const SNAP_NOW = 2.9;
 const SNAP_GAIN = 1.0;
 const OVERWRITE_STREAK = 2;
 const SOLVED_FACE_CELLS = 6; // 揃った状態の仮説を足すのに要る、1 面の読めたマスの数（2 面以上）
+// 見失ったところからの復帰（recover）: 錨にする仮説の観測のコストの上限・錨から探す時間の上限（8 手で届く間）・試す間隔・足した仮説を
+// 一番より安くする分
+const ANCHOR_COST = 0.5;
+const RECOVER_MS = 2500;
+const RECOVER_GAP_MS = 100;
+const RECOVER_BONUS = 0.3;
 const INJECT_COST = 0.5; // 作り変えた仮説を足すときの上乗せ（観測をよく説明する分 SNAP_GAIN より小さいので、足した時点では一番になる）
 const MAX_REPEATS = 2; // 同じ読みで出し直す回数の上限（指で隠れたままの誤読を重ねすぎない）
 
@@ -161,12 +170,22 @@ export class TrackerEngine {
     this.maxObservations = options.maxObservations ?? Infinity;
     this.repeatMs = options.repeatMs ?? 250;
     this.snapToView = !!options.snapToView;
+    this.recoverOpts = options.recover ? (options.recover === true ? {} : options.recover) : null;
     if (options.personal?.length && this.decoder.prior) this.decoder.prior = movePrior(options.personal);
   }
   private maxObservations: number;
   private repeatMs: number;
   private snapToView: boolean;
   private snapStreak = 0;
+  // 見失ったところからの復帰: 錨 = 最後に観測とよく合っていた仮説。trouble = 合わなくなった時刻（合っている間は null）
+  private recoverOpts: Partial<RecoverOptions> | null = null;
+  private anchor: { hyp: Hypothesis; t: number } | null = null;
+  private troubleT: number | null = null;
+  private lastTry = -Infinity;
+  recoveries = 0; // 復帰した回数（調査用）
+  recoverMs = 0; // 復帰の探索にかかった時間の合計（調査用）
+  recoverMax = 0; // 1 回の探索にかかった時間の最大（調査用）
+  recoverTries = 0; // 探索した回数（調査用）
   private snaps = 0; // 作り変えた仮説を足した回数
   // 一番合う仮説が作り変えで足した仮説（の続き）なら、その作り変え
   get base(): TrackUpdate["base"] {
@@ -241,7 +260,8 @@ export class TrackerEngine {
 
   observe(obs: Observation, frame?: FrameReading): TrackUpdate {
     this.decoder.observe(obs);
-    if (this.snapToView) {
+    const recovered = this.recoverOpts ? this.recover(obs) : false;
+    if (this.snapToView && !recovered) {
       this.snap(obs);
       this.preferSolved(obs);
     }
@@ -257,6 +277,57 @@ export class TrackerEngine {
       }
     }
     return this.snapshot(obs);
+  }
+
+  // 見失ったところからの復帰。錨は、観測とよく合っていて、錨の仮説と同じ流れ（間に作り変えがない）の仮説で更新する。合わなくなったら
+  // （SNAP_COST 以上）、それから RECOVER_MS の間、読めたステッカーの多い観測ごとに、錨から 8 手までで全部合う手順を探す
+  private recover(obs: Observation): boolean {
+    const best = this.decoder.best();
+    const good = best.obsCost < ANCHOR_COST && this.decoder.status === "tracking";
+    const sameFlow = !this.anchor || (best.origin ?? null) === (this.anchor.hyp.origin ?? null);
+    if (good && (this.troubleT === null || sameFlow)) {
+      this.anchor = this.trusted(best) ? { hyp: best, t: obs.t } : null;
+      this.troubleT = null;
+      return false;
+    }
+    if (this.troubleT === null) {
+      if (best.obsCost < SNAP_COST) return false;
+      this.troubleT = obs.t;
+    }
+    // 錨が古すぎる（8 手より多く回している）: あきらめて、いまの仮説を錨にする
+    if (!this.anchor || obs.t - this.anchor.t > RECOVER_MS) {
+      if (good) {
+        this.anchor = this.trusted(best) ? { hyp: best, t: obs.t } : null;
+        this.troubleT = null;
+      }
+      return false;
+    }
+    if (obs.t - this.lastTry < RECOVER_GAP_MS) return false;
+    const a = performance.now();
+    const found = recoverFrom(this.anchor.hyp.state, obs, orientsOf(obs, [best.orient, this.anchor.hyp.orient]), this.recoverOpts!);
+    const spent = performance.now() - a;
+    this.recoverMs += spent;
+    this.recoverMax = Math.max(this.recoverMax, spent);
+    if (found?.length !== 0) this.recoverTries++;
+    if (!found) {
+      this.lastTry = obs.t;
+      return false;
+    }
+    if (!found.length) return false; // 読めたステッカーが足りない: 次の観測で試す
+    this.lastTry = obs.t;
+    this.recoveries++;
+    this.decoder.injectPaths(this.anchor.hyp, found, this.anchor.t, obs.t, 0, -RECOVER_BONUS, this.anchor.hyp.origin);
+    this.view = null;
+    this.snapStreak = 0;
+    return true;
+  }
+
+  // 錨にしてよい仮説: 作り変えで足した仮説（の続き）は、見えていない面が推測なので、作り変えた後にどのステッカーも一度は見直してから
+  // （実物のソルブで、推測のままの状態を錨にして、そこから間違った手順に復帰していた）
+  private trusted(h: Hypothesis): boolean {
+    if (!h.origin) return true;
+    for (let s = 0; s < 54; s++) if (s % 9 !== 4 && this.lastSeen[s] < h.origin.t) return false;
+    return true;
   }
 
   // 作り変え（snapToView）: 一番合う仮説でもはっきり合わない見え方が続いたら、見えている色に合う状態を作る。

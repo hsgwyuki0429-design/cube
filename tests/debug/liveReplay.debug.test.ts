@@ -18,7 +18,7 @@ const LAGS = [150, 300, 600];
 
 export function liveEngineOptions(over: Partial<EngineOptions> = {}): Partial<EngineOptions> {
   // 本体のライブ（src/app/controller.ts の liveEngineOptions）
-  return { ...over, observer: { ...ARUCO_OBSERVER, ...LIVE_OBSERVER, ...over.observer }, decoder: { priorWeight: 0, confirmMargin: 1, deepHyps: 4, bridgeDepth: 5, ...over.decoder }, snapToView: over.snapToView ?? true };
+  return { ...over, observer: { ...ARUCO_OBSERVER, ...LIVE_OBSERVER, ...over.observer }, decoder: { priorWeight: 0, confirmMargin: 1, deepHyps: 4, bridgeDepth: 5, ...over.decoder }, snapToView: over.snapToView ?? true, recover: over.recover ?? true };
 }
 
 // 時刻 t に出した状態 shown が、t - lag〜t のどこかの本当の状態（回し始めた手は回し終えたとみなしてもよい）と同じか
@@ -40,6 +40,7 @@ it("書き出したライブの読みの追跡", () => {
   const over = JSON.parse(process.env.LIVE_ENGINE ?? "{}") as Partial<EngineOptions>;
   const totals = LAGS.map(() => ({ same: 0, counted: 0 }));
   let meanSum = 0;
+  const allRuns: number[] = [];
   const lines: string[] = [];
   for (const set of sets) {
     const [rd, rf] = set.split(":");
@@ -56,11 +57,13 @@ it("書き出したライブの読みの追跡", () => {
     let snaps = 0;
     let lastBase = 0;
     let dropped = 0;
+    let runStart: number | null = null;
+    const runs: number[] = [];
     for (let i = 0; i < readings.length; i++) {
       let r = readings[i];
-      // LIVE_SLOTCHECK=1: スロットがありえないフレームの面を捨てる（src/track/pieces/slotCheck.ts）
+      // スロットがありえないフレームの面を捨てる（本体と同じ: src/track/pieces/slotCheck.ts。LIVE_SLOTCHECK=0 で捨てない）
       const sight = (r as FrameReading & { sight?: SightFrame }).sight;
-      if (process.env.LIVE_SLOTCHECK && sight && r.faces.length && !slotsPlausible(sight)) {
+      if (process.env.LIVE_SLOTCHECK !== "0" && sight && r.faces.length && !slotsPlausible(sight)) {
         r = { ...r, faces: [] };
         dropped++;
       }
@@ -94,10 +97,22 @@ it("書き出したライブの読みの追跡", () => {
       const dt = (readings[i + 1]?.t ?? r.t) - r.t;
       LAGS.forEach((lag, k) => {
         acc[k].counted += dt;
-        if (matches(st0, res, r.t, lag, shown)) acc[k].same += dt;
+        const ok = matches(st0, res, r.t, lag, shown);
+        if (ok) acc[k].same += dt;
+        // 見失っている区間（300ms の遅れを許しても違う）: 始まりから戻るまでの長さ
+        if (k === 1) {
+          if (!ok && runStart === null) runStart = r.t;
+          if (ok && runStart !== null) {
+            runs.push(r.t - runStart);
+            runStart = null;
+          }
+        }
       });
     }
     meanSum += acc[1].same / Math.max(1, acc[1].counted);
+    if (runStart !== null) runs.push(s1 - runStart);
+    allRuns.push(...runs);
+    const long = runs.filter((x) => x >= 500);
     LAGS.forEach((_, k) => {
       totals[k].same += acc[k].same;
       totals[k].counted += acc[k].counted;
@@ -109,10 +124,15 @@ it("書き出したライブの読みの追跡", () => {
     let same = 0;
     while (same < moves.length && same < res.moves.length && moves[same].move === res.moves[same].move) same++;
     lines.push(
-      `${rd.padEnd(13)} 一致 ${LAGS.map((lag, k) => `${lag}ms ${((acc[k].same / Math.max(1, acc[k].counted)) * 100).toFixed(1).padStart(5)}%`).join("・")} | 手順 ${got === truth ? "同じ" : `頭から ${same}/${res.moves.length} 手`}・作り変え ${snaps}・${engine.decoder.status}${dropped ? `・捨てた ${dropped}` : ""} | 追跡 ${(ms / readings.length).toFixed(2)}ms/フレーム・観測 ${obs}・評価 ${(evals / Math.max(1, obs)).toFixed(0)}/観測`,
+      `${rd.padEnd(13)} 一致 ${LAGS.map((lag, k) => `${lag}ms ${((acc[k].same / Math.max(1, acc[k].counted)) * 100).toFixed(1).padStart(5)}%`).join("・")} | 手順 ${got === truth ? "同じ" : `頭から ${same}/${res.moves.length} 手`}・見失い 0.5 秒以上 ${long.length} 回 計 ${(long.reduce((a, b) => a + b, 0) / 1000).toFixed(1)} 秒 最長 ${(Math.max(0, ...runs) / 1000).toFixed(1)} 秒・作り変え ${snaps}${engine.recoveries ? `・復帰 ${engine.recoveries}/${engine.recoverTries}（最大 ${engine.recoverMax.toFixed(0)}ms）` : ""}・${engine.decoder.status}${dropped ? `・捨てた ${dropped}` : ""} | 追跡 ${(ms / readings.length).toFixed(2)}ms/フレーム・観測 ${obs}・評価 ${(evals / Math.max(1, obs)).toFixed(0)}/観測`,
     );
   }
   lines.push(`合計          一致 ${LAGS.map((lag, k) => `${lag}ms ${((totals[k].same / Math.max(1, totals[k].counted)) * 100).toFixed(1).padStart(5)}%`).join("・")}`);
+  {
+    const long = allRuns.filter((x) => x >= 500).sort((a, b) => a - b);
+    const sum = long.reduce((a, b) => a + b, 0);
+    lines.push(`見失い（300ms の遅れを許しても違う区間）0.5 秒以上: ${long.length} 回・計 ${(sum / 1000).toFixed(1)} 秒・中央 ${((long[long.length >> 1] ?? 0) / 1000).toFixed(2)} 秒・長い方から 1 割 ${((long[Math.floor(long.length * 0.9)] ?? 0) / 1000).toFixed(1)} 秒・0.5 秒未満 ${allRuns.length - long.length} 回`);
+  }
   lines.push(`平均（1 本ずつの 300ms の一致の平均） ${((meanSum / Math.max(1, sets.length)) * 100).toFixed(1)}%`);
   console.log(lines.join("\n"));
 }, 3600000);

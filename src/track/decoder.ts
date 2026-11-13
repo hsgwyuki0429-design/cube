@@ -986,6 +986,26 @@ export class MoveDecoder {
   // ライブの作り変え: 見えている色に合わせて作った状態を、今の最良の仮説と同じ手順の続きとして仮説に足す（今の仮説たちは残す）。
   // コストは最良の仮説のこの観測の前までのコスト + 作った状態の観測のコスト + extra。誤読が続かなければ、次の観測で元の仮説が
   // 勝ち直す（追跡ごと置き換えていた間は、一瞬の誤読で見えていない面まで作った状態になり、手順は正しいのに最後の状態が違った）
+  // 見失ったところからの復帰（src/track/recover.ts）: 仮説 from（見失う前の確かな仮説）に手順 seq を足した仮説たちを足す。
+  // 手は t0〜t1 に等分して置き、推定の印を付ける（直接は見ていない）。どれも一番より extra だけ安くする
+  injectPaths(from: Hypothesis, paths: { state: CubeState; orient: number; seq: number[] }[], t0: number, t1: number, obsCost: number, extra: number, origin: HypothesisOrigin | null | undefined): void {
+    const b = this.beam[0];
+    const added = paths.map((p) => {
+      let tail = from.tail;
+      p.seq.forEach((m, k) => {
+        const a = t0 + ((t1 - t0) * k) / p.seq.length;
+        const c = t0 + ((t1 - t0) * (k + 1)) / p.seq.length;
+        tail = { move: m, t0: a, t: c, orient: p.orient, inferred: true, prev: tail, len: (tail?.len ?? 0) + 1 };
+      });
+      return { state: new Uint8Array(p.state), orient: p.orient, cost: b.cost - b.obsCost + obsCost + extra, obsCost, tail, origin } satisfies Hypothesis;
+    });
+    this.beam = [...added, ...this.beam].sort((x, y) => x.cost - y.cost).slice(0, this.options.beamWidth);
+    this.lastGoodBeam = this.beam;
+    this.lastObservationCost = this.beam[0].obsCost;
+    this.uncertainStreak = 0;
+    this.status = "tracking";
+  }
+
   inject(state: CubeState, orient: number, obsCost: number, origin: HypothesisOrigin, extra: number): void {
     const b = this.beam[0];
     const h: Hypothesis = { state: new Uint8Array(state), orient, cost: b.cost - b.obsCost + obsCost + extra, obsCost, tail: b.tail, origin };
