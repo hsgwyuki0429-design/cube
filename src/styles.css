@@ -657,10 +657,10 @@ input[type="range"] {
   z-index: 30;
   left: 50%;
   bottom: calc(14px + env(safe-area-inset-bottom));
-  width: min(340px, calc(100% - 32px));
+  width: min(270px, calc(100% - 32px));
   transform: translateX(-50%);
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 2px;
   padding: 5px;
   border-radius: 999px;
