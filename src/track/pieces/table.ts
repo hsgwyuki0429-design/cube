@@ -14,14 +14,11 @@ import type { SightFace, SightFrame } from "./frame";
 import { CELL_TURN, EXPECT_ROT, NEIGHBOR, NUM_PIECES, PIECE_OF, REF_AT } from "./model";
 
 export interface TableOptions {
-  frameWeight: number; // 1 枚の読みの重み
-  shortWeights: number[]; // 1 枚だけ・2 枚だけの連なりの読みの重み
-  weakFactor: number; // 3 マス以下しか読めなかった面の読みの重みにかける
-  weakCells: number; // これ以下しか読めなかった面は「欠片」
   orientMs: number; // 面の向きを前のフレームから引き継ぐ時間
   centerMinRun: number; // センターの向きは、これだけ続けて同じに読めたものだけ使う
   touch: number; // 2 つの面の外枠の辺がこれ（辺の長さに対する割合）より近ければ、その辺で接している
-  // センターが 1 つも読めないフレーム: いちばん読めた面のマスがこれ以上・前後 blindMs 以内に見えていたピースの位置と blindMatch 個以上合い、
+  // センターが 1 つも読めないフレーム（既定では使わない: blindMatch 99。持ち替えの途中で置き方を取り違え、実物のソルブ 1 本で終わりの手順を間違えた）:
+  // いちばん読めた面のマスがこれ以上・前後 blindMs 以内に見えていたピースの位置と blindMatch 個以上合い、
   // 2 番目の置き方より blindMargin 個以上多く合うときだけ使う
   blindCells: number;
   blindMs: number;
@@ -29,7 +26,7 @@ export interface TableOptions {
   blindMargin: number;
 }
 
-export const DEFAULT_TABLE: TableOptions = { frameWeight: 0.5, shortWeights: [0.15, 0.3], weakFactor: 0.4, weakCells: 3, orientMs: 1500, centerMinRun: 2, touch: 0.45, blindCells: 4, blindMs: 400, blindMatch: 4, blindMargin: 3 };
+export const DEFAULT_TABLE: TableOptions = { orientMs: 1500, centerMinRun: 2, touch: 0.45, blindCells: 4, blindMs: 400, blindMatch: 99, blindMargin: 3 };
 
 export const KIND_SURE = 0; // 置き方がセンターと面の接し方だけで決まった
 export const KIND_CHAINED = 1; // センターが 1 つ: 前のフレームから向きが続くものを仮に選んだ
@@ -45,17 +42,7 @@ export interface PieceTable {
   first: Int32Array;
   piece: Uint8Array; // ピース（0〜19）。センターは 20 + 面
   at: Uint8Array; // ピースの代表のある facelet。センターは回した回数（0〜3）
-  w: Float32Array; // 食い違ったときのコスト（1 枚ぶん。同じ連なりの合計には上限: solve.ts）
-  fresh: Uint8Array; // 連なりの最初の読み
-  solid: Uint8Array; // 2 枚以上続いた連なりの読み（先読みに使う。1 枚だけの読みのために手を探さない）
-  // ほかの置き方（基準の面のまわりに d × 90°、d = 1〜3）での読み: altFirst[f * 3 + d − 1] 〜 altFirst[f * 3 + d] − 1（その置き方がなければ空）
-  altFirst: Int32Array;
-  altPiece: Uint8Array;
-  altAt: Uint8Array;
-  // ピース（とセンター）ごとの読みの番号（時刻順）と、フレーム f より後の最初の読み（byPiece[p] の中の番号）
-  byPiece: Int32Array[];
-  nextOf: Int32Array[];
-  frameOf: Int32Array;
+  solid: Uint8Array; // 2 枚以上続けて同じ所に見えた読み（1 枚だけの読みは使わない: 格子の向き・面の割り当てが 1 枚だけ狂ったフレーム）
   stats: { frames: number; used: number; sure: number; chained: number; free: number; noCenter: number; blind: number; clash: number; dropped: number; sightings: number };
 }
 
@@ -118,10 +105,6 @@ export function buildTable(frames: SightFrame[], options: Partial<TableOptions> 
   const first: number[] = [0];
   const piece: number[] = [];
   const at: number[] = [];
-  const weak: number[] = [];
-  const altFirst: number[] = [0];
-  const altPiece: number[] = [];
-  const altAt: number[] = [];
 
   // 面 fs を、基準の面 root を (face0, r0) に置いたときの置き方（つながらない面は null）。センターが食い違えば null を返す
   const placeAll = (fs: SightFace[], links: number[][], root: number, face0: number, r0: number): (Placed | null)[] | null => {
@@ -153,16 +136,12 @@ export function buildTable(frames: SightFrame[], options: Partial<TableOptions> 
   // 置き方 → 読み（ピース, 位置, 欠片か）。同じピースが 2 か所に読めたら、どちらも使わない
   const tmpP: number[] = [];
   const tmpA: number[] = [];
-  const tmpW: number[] = [];
   const read = (fs: SightFace[], placed: (Placed | null)[], count: boolean): void => {
-    tmpP.length = tmpA.length = tmpW.length = 0;
+    tmpP.length = tmpA.length = 0;
     for (let i = 0; i < fs.length; i++) {
       const pl = placed[i];
       if (!pl) continue;
       const f = fs[i];
-      let nRead = 0;
-      for (let c = 0; c < 9; c++) if (f.ids[c] >= 0 && f.rot[c] >= 0) nRead++;
-      const fragment = nRead <= opt.weakCells ? 1 : 0;
       for (let c = 0; c < 9; c++) {
         const s = f.ids[c];
         if (s < 0 || f.rot[c] < 0) continue;
@@ -175,7 +154,6 @@ export function buildTable(frames: SightFrame[], options: Partial<TableOptions> 
           }
           tmpP.push(NUM_PIECES + pl.face);
           tmpA.push(rot);
-          tmpW.push(fragment);
           continue;
         }
         const p = pl.face * 9 + cell;
@@ -188,12 +166,10 @@ export function buildTable(frames: SightFrame[], options: Partial<TableOptions> 
         const dup = tmpP.indexOf(k);
         if (dup >= 0) {
           if (tmpA[dup] !== x) tmpA[dup] = 255;
-          else if (!fragment) tmpW[dup] = 0;
           continue;
         }
         tmpP.push(k);
         tmpA.push(x);
-        tmpW.push(fragment);
       }
     }
   };
@@ -316,8 +292,6 @@ export function buildTable(frames: SightFrame[], options: Partial<TableOptions> 
     kind: number;
     p: number[];
     a: number[];
-    w: number[];
-    alt: { p: number[]; a: number[] }[];
     placed: (Placed | null)[];
   }
   const rows: (Row | null)[] = preps.map(() => null);
@@ -325,7 +299,6 @@ export function buildTable(frames: SightFrame[], options: Partial<TableOptions> 
     read(fs, placed, count);
     const p: number[] = [];
     const a: number[] = [];
-    const w: number[] = [];
     for (let i = 0; i < tmpP.length; i++) {
       if (tmpA[i] === 255) {
         if (count) stats.dropped++;
@@ -333,12 +306,11 @@ export function buildTable(frames: SightFrame[], options: Partial<TableOptions> 
       }
       p.push(tmpP[i]);
       a.push(tmpA[i]);
-      w.push(tmpW[i]);
     }
-    return { p, a, w };
+    return { p, a };
   };
   for (let pi = 0; pi < preps.length; pi++) {
-    const { t, fs, face0, options: options4, valid } = preps[pi];
+    const { fs, face0, options: options4, valid } = preps[pi];
     if (face0 < 0) continue;
     let kind = valid.length === 1 ? KIND_SURE : KIND_FREE;
     let r0 = valid[0];
@@ -351,16 +323,10 @@ export function buildTable(frames: SightFrame[], options: Partial<TableOptions> 
         kind = KIND_CHAINED;
       }
     }
-    void t;
     const placed = options4[r0]!;
     const main = collect(fs, placed, true);
     if (!main.p.length) continue;
-    const alt: Row["alt"] = [];
-    for (let d = 1; d < 4; d++) {
-      const o = kind === KIND_SURE ? null : options4[(r0 + d) & 3];
-      alt.push(o ? collect(fs, o, false) : { p: [], a: [] });
-    }
-    rows[pi] = { kind, ...main, alt, placed };
+    rows[pi] = { kind, ...main, placed };
   }
   // 4) センターが 1 つも読めないフレーム（指がセンターにかかっている）: 24 通りの置き方のうち、前後の近いフレームで見えていたピースの
   // 位置とはっきりいちばん合うもの。合うピースが少ない・紛れるフレームは使わない
@@ -418,7 +384,7 @@ export function buildTable(frames: SightFrame[], options: Partial<TableOptions> 
         } else if (m > second) second = m;
       }
       if (bestRead && best >= opt.blindMatch && best >= second + opt.blindMargin) {
-        rows[pi] = { kind: KIND_SURE, ...bestRead, alt: [], placed: p.options[bestK]! };
+        rows[pi] = { kind: KIND_SURE, ...bestRead, placed: p.options[bestK]! };
         stats.blind++;
       } else stats.noCenter++;
     }
@@ -431,16 +397,6 @@ export function buildTable(frames: SightFrame[], options: Partial<TableOptions> 
     for (let i = 0; i < row.p.length; i++) {
       piece.push(row.p[i]);
       at.push(row.a[i]);
-      weak.push(row.w[i]);
-    }
-    for (let d = 0; d < 3; d++) {
-      const al = row.alt[d];
-      if (al)
-        for (let i = 0; i < al.p.length; i++) {
-          altPiece.push(al.p[i]);
-          altAt.push(al.a[i]);
-        }
-      altFirst.push(altPiece.length);
     }
     // 認識のスロットと合う姿勢
     let o = -1;
@@ -463,165 +419,20 @@ export function buildTable(frames: SightFrame[], options: Partial<TableOptions> 
   }
   const n = ft.length;
   const total = piece.length;
-  const frameOf = new Int32Array(total);
-  for (let f = 0; f < n; f++) for (let j = first[f]; j < first[f + 1]; j++) frameOf[j] = f;
+  // 同じピースが同じ所に続けて見えた読み（連なり）の長さ: 2 枚以上のものだけ使う。センターの向きは centerMinRun 枚以上
   const lists: number[][] = Array.from({ length: NUM_PIECES + 6 }, () => []);
   for (let j = 0; j < total; j++) lists[piece[j]].push(j);
-  // 連なりごとの重み
-  const w = new Float32Array(total);
   const solid = new Uint8Array(total);
-  const keep = new Uint8Array(total).fill(1);
   for (let p = 0; p < lists.length; p++) {
     const L = lists[p];
     for (let a = 0; a < L.length; ) {
       let b = a;
       while (b < L.length && at[L[b]] === at[L[a]]) b++;
-      const len = b - a;
-      if (p >= NUM_PIECES && len < opt.centerMinRun) for (let i = a; i < b; i++) keep[L[i]] = 0;
-      const unit = len <= opt.shortWeights.length ? opt.shortWeights[len - 1] : opt.frameWeight;
-      for (let i = a; i < b; i++) {
-        w[L[i]] = unit * (weak[L[i]] ? opt.weakFactor : 1);
-        solid[L[i]] = len >= 2 ? 1 : 0;
-      }
+      if (b - a >= (p < NUM_PIECES ? 2 : Math.max(2, opt.centerMinRun))) for (let i = a; i < b; i++) solid[L[i]] = 1;
       a = b;
     }
   }
-  // 使わない読み（1 枚だけのセンター）を除いて詰める
-  const first2 = new Int32Array(n + 1);
-  const map = new Int32Array(total).fill(-1);
-  let m = 0;
-  for (let f = 0; f < n; f++) {
-    first2[f] = m;
-    for (let j = first[f]; j < first[f + 1]; j++) if (keep[j]) map[j] = m++;
-  }
-  first2[n] = m;
-  const piece2 = new Uint8Array(m);
-  const at2 = new Uint8Array(m);
-  const w2 = new Float32Array(m);
-  const fresh2 = new Uint8Array(m);
-  const solid2 = new Uint8Array(m);
-  const frame2 = new Int32Array(m);
-  for (let p = 0; p < lists.length; p++) {
-    let prev = -1;
-    for (const j of lists[p]) {
-      if (map[j] < 0) continue;
-      const k = map[j];
-      piece2[k] = piece[j];
-      at2[k] = at[j];
-      w2[k] = w[j];
-      solid2[k] = solid[j];
-      fresh2[k] = prev < 0 || at[j] !== prev ? 1 : 0;
-      prev = at[j];
-      frame2[k] = frameOf[j];
-    }
-  }
-  const byPiece = lists.map((L) => Int32Array.from(L.filter((j) => map[j] >= 0).map((j) => map[j])));
-  const nextOf = byPiece.map((L) => {
-    const out = new Int32Array(n);
-    let i = 0;
-    for (let f = 0; f < n; f++) {
-      while (i < L.length && frame2[L[i]] <= f) i++;
-      out[f] = i;
-    }
-    return out;
-  });
   stats.used = n;
-  stats.sightings = m;
-  return {
-    n,
-    t: Float64Array.from(ft),
-    kind: Uint8Array.from(kinds),
-    root: Int8Array.from(roots),
-    orient: Int8Array.from(orients),
-    first: first2,
-    piece: piece2,
-    at: at2,
-    w: w2,
-    fresh: fresh2,
-    solid: solid2,
-    altFirst: Int32Array.from(altFirst),
-    altPiece: Uint8Array.from(altPiece),
-    altAt: Uint8Array.from(altAt),
-    byPiece,
-    nextOf,
-    frameOf: frame2,
-    stats,
-  };
-}
-
-// 時刻を逆にした表（後ろ向きに解く: meet.ts）。フレームの番号は n − 1 − f、時刻は符号を逆に
-export function reverseTable(tb: PieceTable): PieceTable {
-  const n = tb.n;
-  const total = tb.piece.length;
-  const first = new Int32Array(n + 1);
-  const piece = new Uint8Array(total);
-  const at = new Uint8Array(total);
-  const w = new Float32Array(total);
-  const solid = new Uint8Array(total);
-  const frameOf = new Int32Array(total);
-  const altFirst: number[] = [0];
-  const altPiece: number[] = [];
-  const altAt: number[] = [];
-  let m = 0;
-  for (let g = 0; g < n; g++) {
-    const f = n - 1 - g;
-    first[g] = m;
-    for (let j = tb.first[f]; j < tb.first[f + 1]; j++) {
-      piece[m] = tb.piece[j];
-      at[m] = tb.at[j];
-      w[m] = tb.w[j];
-      solid[m] = tb.solid[j];
-      frameOf[m] = g;
-      m++;
-    }
-    for (let d = 0; d < 3; d++) {
-      for (let j = tb.altFirst[f * 3 + d]; j < tb.altFirst[f * 3 + d + 1]; j++) {
-        altPiece.push(tb.altPiece[j]);
-        altAt.push(tb.altAt[j]);
-      }
-      altFirst.push(altPiece.length);
-    }
-  }
-  first[n] = m;
-  const lists: number[][] = Array.from({ length: NUM_PIECES + 6 }, () => []);
-  for (let j = 0; j < total; j++) lists[piece[j]].push(j);
-  const fresh = new Uint8Array(total);
-  for (const L of lists) for (let i = 0; i < L.length; i++) if (i === 0 || at[L[i]] !== at[L[i - 1]]) fresh[L[i]] = 1;
-  const byPiece = lists.map((L) => Int32Array.from(L));
-  const nextOf = byPiece.map((L) => {
-    const out = new Int32Array(n);
-    let i = 0;
-    for (let f = 0; f < n; f++) {
-      while (i < L.length && frameOf[L[i]] <= f) i++;
-      out[f] = i;
-    }
-    return out;
-  });
-  const rev = <A extends { length: number; [i: number]: number }>(a: A, make: (n: number) => A): A => {
-    const out = make(a.length);
-    for (let i = 0; i < a.length; i++) out[i] = a[a.length - 1 - i];
-    return out;
-  };
-  const t = new Float64Array(n);
-  for (let g = 0; g < n; g++) t[g] = -tb.t[n - 1 - g];
-  return {
-    n,
-    t,
-    kind: rev(tb.kind, (k) => new Uint8Array(k)),
-    root: rev(tb.root, (k) => new Int8Array(k)),
-    orient: rev(tb.orient, (k) => new Int8Array(k)),
-    first,
-    piece,
-    at,
-    w,
-    fresh,
-    solid,
-    altFirst: Int32Array.from(altFirst),
-    altPiece: Uint8Array.from(altPiece),
-    altAt: Uint8Array.from(altAt),
-    byPiece,
-    nextOf,
-    frameOf,
-    stats: tb.stats,
-  };
+  stats.sightings = total;
+  return { n, t: Float64Array.from(ft), kind: Uint8Array.from(kinds), root: Int8Array.from(roots), orient: Int8Array.from(orients), first: Int32Array.from(first), piece: Uint8Array.from(piece), at: Uint8Array.from(at), solid, stats };
 }

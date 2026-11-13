@@ -4,7 +4,10 @@
 import { type CubeState, OPPOSITE, isSolved, moveFace, solvedState, statesEqual } from "../cube/model";
 import { type EngineOptions, TrackerEngine } from "../track/engine";
 import { mergeQuickRepeats, separateMotions, simplifyMoves } from "../track/merge";
-import { DEFAULT_OFFLINE, OfflineForward, type OfflineOptions, decodeOffline, finishDeep } from "../track/offline";
+import { DEFAULT_OFFLINE, OfflineForward, type OfflineOptions, type OfflineResult, decodeOffline, finishDeep } from "../track/offline";
+import { type DecodeOptions, decodePieces } from "../track/pieces/decode";
+import { type SightFrame, sightFrame } from "../track/pieces/frame";
+import { buildTable } from "../track/pieces/table";
 import type { DecodedMove, TrackStatus } from "../track/types";
 import type { Lab } from "./color";
 import { type PatchFrame, facePatch, refineEnd, refineStart } from "./fineTiming";
@@ -32,6 +35,9 @@ export interface RefineInput {
   // 進める解析と同じく間引く（vision.worker.ts の INSPECT_EVERY_MS）。インスペクションで回して見せている間を全部処理すると、持ち替えを
   // 手と読み違えて完成までつながらないことがあった（録画の画質の実物のソルブ 2 本）
   inspectUntil?: number;
+  // ピースの時刻表（src/track/pieces）で解き直す（既定 true）。完成までつながらなければ、これまでの解き直し（decodeOffline）に戻す
+  pieces?: boolean;
+  piecesOptions?: Partial<DecodeOptions>;
 }
 
 // 軽い検査: 全フレームを精密に処理する代わりに、前に精密に処理したフレーム（基準）の面の格子で、各マスの真ん中あたりの色を数点だけ測り
@@ -196,6 +202,9 @@ export class Refiner {
   // 前向きの再構成を観測が出るたびに進めておく（result で後ろ向きとつなぐだけにする）
   private forward: OfflineForward | null;
   private fedObs = 0;
+  // ピースの時刻表の材料（フレームごとの読み: 面・ID・マーカーの向き・外枠。1 フレーム数百バイト）
+  private sights: SightFrame[] = [];
+  piecesMs = 0; // 調査用: ピースの時刻表の解き直しにかかった時間（使わなければ 0）
 
   constructor(
     private cv: CV,
@@ -285,6 +294,7 @@ export class Refiner {
   full(img: PixelSource, t: number, detected?: Marker[]): void {
     const r = processFrame(this.cv, img, t, this.config, this.memory, detected);
     this.onFrame?.(t, r);
+    if (this.input.pieces !== false && r.faces.length) this.sights.push(sightFrame(t, r));
     // 基準: この格子で、処理に回したいちばん新しいフレームの色（1 か所で処理するときは、このフレーム）
     const latest = this.picked && this.picked.t > t ? this.picked.img : img;
     // 見えている面が減ったフレーム（回している途中・指）の後は、続けて精密に処理する: 残った面だけを基準にすると、回している面
@@ -330,6 +340,33 @@ export class Refiner {
     return { move: OPPOSITE[moveFace(m.move)] * 3, t0: m.t0, t: m.t, orient: m.orient };
   }
 
+  // ピースの時刻表（src/track/pieces）で解き直す。完成までつながらなければ null
+  private decodeByPieces(target: CubeState): OfflineResult | null {
+    const began = performance.now();
+    const table = buildTable(this.sights);
+    const r = decodePieces(table, Uint8Array.from(this.input.state), target, this.input.piecesOptions);
+    this.piecesMs = performance.now() - began;
+    if (!r.reachedEnd) return null;
+    // 手のときの姿勢（認識のスロットと合うもの。手の時刻の判定がスロットで層を見る）: その手の後、いちばん近いフレーム
+    let f = 0;
+    let orient = this.engine.decoder.best().orient;
+    for (let i = 0; i < table.n; i++)
+      if (table.orient[i] >= 0) {
+        orient = table.orient[i];
+        break;
+      }
+    const moves: DecodedMove[] = r.moves.map((m) => {
+      while (f < table.n && table.t[f] < m.t) f++;
+      for (let i = f; i < table.n && table.t[i] - m.t <= 500; i++)
+        if (table.orient[i] >= 0) {
+          orient = table.orient[i];
+          break;
+        }
+      return { move: m.move, t0: m.t0, t: m.t, orient, ...(m.inferred ? { inferred: true } : {}) };
+    });
+    return { moves, method: "meet", meetAt: -1, cost: r.cost, reachedEnd: true };
+  }
+
   // target: 最後の状態が分かっていれば（タイマーなら完成）、それにたどり着く仮説を選ぶ
   // onPhase: 段階を知らせる（解き直しの後に "timing"。落ちたときにどこで落ちたかを残すため: src/app/crashGuard.ts）。解き直しの間も
   // "decode" をときどき（呼ぶ側で間引く）: 本体は知らせが届かないと止まったとみなしてやり直す（controller.endAnalysis の STALL_MS）
@@ -338,8 +375,10 @@ export class Refiner {
     const dec = this.engine.decoder;
     const tick = onPhase ? () => onPhase("decode") : undefined;
     // 前向き（スクランブル後から）と後ろ向き（完成から）の両方で解き直し、辻褄の合う所でつなぐ
-    let off = decodeOffline(this.engine.observationLog, Uint8Array.from(this.input.state), target, this.lastT, { ...this.offlineOptions(), tick }, this.forward ?? undefined);
-    if (target && off.method !== "meet" && off.method !== "backward") {
+    // まずピースの時刻表で解く（数十〜数百 ms）。完成までつながらなければ、これまでの解き直しに戻す
+    const pieces = target && this.input.pieces !== false ? this.decodeByPieces(target) : null;
+    let off: OfflineResult = pieces ?? decodeOffline(this.engine.observationLog, Uint8Array.from(this.input.state), target, this.lastT, { ...this.offlineOptions(), tick }, this.forward ?? undefined);
+    if (!pieces && target && off.method !== "meet" && off.method !== "backward") {
       const base = this.offlineOptions();
       const deep = decodeOffline(this.engine.observationLog, Uint8Array.from(this.input.state), target, this.lastT, { ...base, decoder: { ...base.decoder, ...DEEP_DECODER }, backwardMs: DEEP_BACKWARD_MS, tick });
       const guessed = (r: typeof off) => r.moves.filter((m) => m.inferred).length;
@@ -363,7 +402,7 @@ export class Refiner {
         }
       }
     }
-    this.method = off.method;
+    this.method = pieces ? "pieces" : off.method;
     // 届かなかったとき、後ろ向きが終わりから追えていた最後の手（タイムの終わりに使う）
     const tailLast = !solved && off.tail?.length ? off.tail[off.tail.length - 1] : null;
     onPhase?.("timing");
