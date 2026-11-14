@@ -133,13 +133,20 @@ export function gridReadCell(img: ImageLike, H: Mat3, cell: number, scheme: Stic
   const ng = L.gap.length;
   const bv = new Float32Array(nb);
   const gv = new Float32Array(ng);
-  // 点の明るさ（max(R,G,B)）を out に読み、合計を返す。画像の外に出たら -1
+  const x0 = c0[0];
+  const y0 = c0[1];
+  // 点の明るさ（max(R,G,B)）を out に読み、合計を返す。画像の外に出たら -1（Math.round と同じ丸め: floor(x + 0.5)）
   const read = (A: Float32Array, n: number, k: number, ox: number, oy: number, out: Float32Array): number => {
     let sum = 0;
+    const bx = x0 + ox + 0.5;
+    const by = y0 + oy + 0.5;
     for (let q = 0; q < n; q++) {
-      const xi = Math.round(c0[0] + ox + k * A[q * 2]);
-      const yi = Math.round(c0[1] + oy + k * A[q * 2 + 1]);
-      if (xi < 0 || yi < 0 || xi >= W || yi >= Hh) return -1;
+      const fx = bx + k * A[q * 2];
+      const fy = by + k * A[q * 2 + 1];
+      if (fx < 0 || fy < 0) return -1;
+      const xi = fx | 0;
+      const yi = fy | 0;
+      if (xi >= W || yi >= Hh) return -1;
       const i = (yi * W + xi) * 4;
       const r = data[i];
       const g = data[i + 1];
@@ -150,75 +157,96 @@ export function gridReadCell(img: ImageLike, H: Mat3, cell: number, scheme: Stic
     }
     return sum;
   };
+  // 位置と大きさは格子の点（ずれ 0.01・大きさ 0.02 刻み）で表し、同じ点は 1 回だけ測る（山登り・細かい合わせは同じ点を何度も試す）
+  const seen = new Map<number, number>();
+  const KS = 0.02;
+  const DS = 0.01;
   // 枠は暗く、マーカーの間（ステッカーの色）は明るいほどよい
-  const score = (k: number, dx: number, dy: number): number => {
+  const score = (nk: number, nx: number, ny: number): number => {
+    const key = ((nk + 512) * 1024 + nx + 512) * 1024 + ny + 512;
+    const got = seen.get(key);
+    if (got !== undefined) return got;
+    const k = 1 + nk * KS;
+    const dx = prior[0] + nx * DS;
+    const dy = prior[1] + ny * DS;
     const ox = J[0] * dx + J[1] * dy;
     const oy = J[2] * dx + J[3] * dy;
+    let s = -Infinity;
     const sb = read(bA, nb, k, ox, oy, bv);
-    if (sb < 0) return -Infinity;
-    const sg = read(gA, ng, k, ox, oy, gv);
-    if (sg < 0) return -Infinity;
-    return sg / ng - sb / nb;
+    if (sb >= 0) {
+      const sg = read(gA, ng, k, ox, oy, gv);
+      if (sg >= 0) s = sg / ng - sb / nb;
+    }
+    seen.set(key, s);
+    return s;
   };
-  let best = { k: 1, dx: prior[0], dy: prior[1], s: score(1, prior[0], prior[1]) };
+  const unit = (x: number, u: number) => Math.round(x / u);
+  let best = { nk: 0, nx: 0, ny: 0, s: score(0, 0, 0) };
+  const reach = unit(o.reach, DS);
   if (o.climb) {
     // 山登り（前のフレームの格子から追う）: 予測した位置から 0.04 刻みで、良くなる方へ動かす（範囲は reach まで）
     for (let n = 0; n < 6; n++) {
       const b0 = best;
-      for (let dy = -0.04; dy <= 0.04 + 1e-9; dy += 0.04)
-        for (let dx = -0.04; dx <= 0.04 + 1e-9; dx += 0.04) {
+      for (let dy = -4; dy <= 4; dy += 4)
+        for (let dx = -4; dx <= 4; dx += 4) {
           if (!dx && !dy) continue;
-          const x = b0.dx + dx;
-          const y = b0.dy + dy;
-          if (Math.abs(x - prior[0]) > o.reach + 1e-9 || Math.abs(y - prior[1]) > o.reach + 1e-9) continue;
-          const sc = score(1, x, y);
-          if (sc > best.s) best = { k: 1, dx: x, dy: y, s: sc };
+          const x = b0.nx + dx;
+          const y = b0.ny + dy;
+          if (Math.abs(x) > reach || Math.abs(y) > reach) continue;
+          const sc = score(0, x, y);
+          if (sc > best.s) best = { nk: 0, nx: x, ny: y, s: sc };
         }
       if (best === b0) break;
     }
   } else {
-    const step0 = o.step ?? 0.04;
-    for (const k of scales)
-      for (let dy = -o.reach; dy <= o.reach + 1e-9; dy += step0)
-        for (let dx = -o.reach; dx <= o.reach + 1e-9; dx += step0) {
-          const sc = score(k, prior[0] + dx, prior[1] + dy);
-          if (sc > best.s) best = { k, dx: prior[0] + dx, dy: prior[1] + dy, s: sc };
+    const step0 = unit(o.step ?? 0.04, DS);
+    for (const kk of scales) {
+      const nk = unit(kk - 1, KS);
+      for (let dy = -reach; dy <= reach; dy += step0)
+        for (let dx = -reach; dx <= reach; dx += step0) {
+          const sc = score(nk, dx, dy);
+          if (sc > best.s) best = { nk, nx: dx, ny: dy, s: sc };
         }
+    }
   }
   // 細かく: ずれ（8 方向）と大きさ（2 通り）を交互に
   for (const [step, ks] of [
-    [0.02, 0.04],
-    [0.01, 0.02],
+    [2, 2],
+    [1, 1],
   ]) {
     const b0 = best;
-    for (let dy = -step; dy <= step + 1e-9; dy += step)
-      for (let dx = -step; dx <= step + 1e-9; dx += step) {
+    for (let dy = -step; dy <= step; dy += step)
+      for (let dx = -step; dx <= step; dx += step) {
         if (!dx && !dy) continue;
-        const sc = score(b0.k, b0.dx + dx, b0.dy + dy);
-        if (sc > best.s) best = { k: b0.k, dx: b0.dx + dx, dy: b0.dy + dy, s: sc };
+        const sc = score(b0.nk, b0.nx + dx, b0.ny + dy);
+        if (sc > best.s) best = { nk: b0.nk, nx: b0.nx + dx, ny: b0.ny + dy, s: sc };
       }
     const b1 = best;
     for (const dk of [-ks, ks]) {
-      const sc = score(b1.k + dk, b1.dx, b1.dy);
-      if (sc > best.s) best = { k: b1.k + dk, dx: b1.dx, dy: b1.dy, s: sc };
+      const sc = score(b1.nk + dk, b1.nx, b1.ny);
+      if (sc > best.s) best = { nk: b1.nk + dk, nx: b1.nx, ny: b1.ny, s: sc };
     }
   }
   if (!(best.s >= o.minContrast)) return null;
   // 合わせた位置で読む
-  score(best.k, best.dx, best.dy);
+  const bk = 1 + best.nk * KS;
+  const bdx = prior[0] + best.nx * DS;
+  const bdy = prior[1] + best.ny * DS;
+  const ox = J[0] * bdx + J[1] * bdy;
+  const oy = J[2] * bdx + J[3] * bdy;
+  read(bA, nb, bk, ox, oy, bv);
+  read(gA, ng, bk, ox, oy, gv);
   const sortedG = Array.from(gv).sort((a, b) => a - b);
   const light = sortedG[Math.floor(ng * 0.5)];
   const sortedB = Array.from(bv).sort((a, b) => a - b);
   const dark = sortedB[Math.floor(nb * 0.25)];
   if (light - dark < o.minContrast) return null;
   const thr = (light + dark) / 2;
-  const ox = J[0] * best.dx + J[1] * best.dy;
-  const oy = J[2] * best.dx + J[3] * best.dy;
   const markers = design.at.length;
   const perB = nb / markers;
   const iA = pack(L.inner);
   const iv = new Float32Array(L.inner.length);
-  if (read(iA, L.inner.length, best.k, ox, oy, iv) < 0) return null;
+  if (read(iA, L.inner.length, bk, ox, oy, iv) < 0) return null;
   const perI = L.inner.length / markers; // 9 マス × 4 点
   // マーカーごと: 枠が黒いか（指で隠れていないか）、符号のマスの明るさ（thr からの差）
   const valid: boolean[] = [];
@@ -282,8 +310,8 @@ export function gridReadCell(img: ImageLike, H: Mat3, cell: number, scheme: Stic
   const rgbSum = [0, 0, 0];
   let rgbN = 0;
   for (let q = 0; q < ng; q++) {
-    const xi = Math.round(c0[0] + ox + best.k * gA[q * 2]);
-    const yi = Math.round(c0[1] + oy + best.k * gA[q * 2 + 1]);
+    const xi = Math.round(c0[0] + ox + bk * gA[q * 2]);
+    const yi = Math.round(c0[1] + oy + bk * gA[q * 2 + 1]);
     const kk = (yi * img.width + xi) * 4;
     rgbSum[0] += img.data[kk];
     rgbSum[1] += img.data[kk + 1];
@@ -297,7 +325,7 @@ export function gridReadCell(img: ImageLike, H: Mat3, cell: number, scheme: Stic
     const corners: number[] = [];
     for (let i = 0; i < 4; i++) {
       const [u, v] = sq[(i + hit.rot) % 4];
-      const p = applyH(H, cx + u * sticker * best.k + best.dx, cy + v * sticker * best.k + best.dy);
+      const p = applyH(H, cx + u * sticker * bk + bdx, cy + v * sticker * bk + bdy);
       corners.push(Math.round(p[0] * 10) / 10, Math.round(p[1] * 10) / 10);
     }
     let side = 0;
@@ -308,7 +336,7 @@ export function gridReadCell(img: ImageLike, H: Mat3, cell: number, scheme: Stic
     for (let i = 0; i < 9; i++) if (bits[k][i] > 0 === ((code >> i) & 1) > 0) mk++;
     out.push({ id: hit.id, corners, side, angle, rgb, contrastGray: Math.round(light - dark), contrastMax: Math.round(light - dark), fit: mk / (perB + 9) });
   }
-  return { cell, id: hit.id, face: dec.face, sticker: dec.sticker, fit, markers: out, offset: [best.dx, best.dy] };
+  return { cell, id: hit.id, face: dec.face, sticker: dec.sticker, fit, markers: out, offset: [bdx, bdy] };
 }
 
 // 色の確かめ（同じフレームの色の仲間と比べる。src/aruco/cube.ts の frameColorFilter と同じ考え）: 写った色味（最大のチャンネルで

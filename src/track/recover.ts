@@ -78,16 +78,55 @@ const FACE_DIST = (() => {
   return d;
 })();
 
+// 位置の組（m バイト）の 32 ビットのハッシュ
 const hashOf = (buf: Uint8Array, off: number, m: number): number => {
   let x = 0x811c9dc5;
-  let y = 0x1b873593;
-  for (let i = 0; i < m; i++) {
-    const v = buf[off + i];
-    x = Math.imul(x ^ v, 0x01000193);
-    y = Math.imul(y + v, 0x85ebca6b) ^ (y >>> 13);
-  }
-  return (x >>> 0) * 0x200000 + ((y >>> 0) & 0x1fffff);
+  for (let i = 0; i < m; i++) x = Math.imul(x ^ buf[off + i], 0x01000193);
+  return (x ^ (x >>> 15)) >>> 0;
 };
+
+// 節点を同じ位置の組で引く表（開番地法。バイト列そのものを比べる）。以前は 53 ビットのハッシュを Map の鍵にしていて、
+// 鍵が小さい整数にならず遅かった（1 回の復帰探索が Node で最大 100ms）
+class Index {
+  readonly slots: Int32Array;
+  readonly mask: number;
+  constructor(
+    private readonly pos: Uint8Array,
+    private readonly m: number,
+    cap: number,
+  ) {
+    let size = 1024;
+    while (size < cap * 2) size <<= 1;
+    this.slots = new Int32Array(size).fill(-1);
+    this.mask = size - 1;
+  }
+  private same(a: number, buf: Uint8Array, off: number): boolean {
+    const pos = this.pos;
+    const o = a * this.m;
+    for (let k = 0; k < this.m; k++) if (pos[o + k] !== buf[off + k]) return false;
+    return true;
+  }
+  // buf[off..off+m] の節点（なければ -1）
+  get(buf: Uint8Array, off: number): number {
+    for (let h = hashOf(buf, off, this.m) & this.mask; ; h = (h + 1) & this.mask) {
+      const a = this.slots[h];
+      if (a < 0) return -1;
+      if (this.same(a, buf, off)) return a;
+    }
+  }
+  // 節点 n（pos の中の位置の組）を入れる。同じ組があれば false
+  add(n: number): boolean {
+    const off = n * this.m;
+    for (let h = hashOf(this.pos, off, this.m) & this.mask; ; h = (h + 1) & this.mask) {
+      const a = this.slots[h];
+      if (a < 0) {
+        this.slots[h] = n;
+        return true;
+      }
+      if (this.same(a, this.pos, off)) return false;
+    }
+  }
+}
 
 interface Layer {
   pos: Uint8Array; // 節点ごとに m バイト
@@ -95,33 +134,42 @@ interface Layer {
   move: Int8Array;
   depth: Uint8Array;
   count: number;
-  index: Map<number, number>;
+  index: Index;
 }
 
 // 位置の組 start から、手で広げる（backward なら逆向き: その手を回すと親の組になる位置の組）。other: 反対側の端（前向きなら目的、
 // 後ろ向きなら始まり）。どれかのステッカーが、残りの手（total − いまの深さ）では other の位置に届かない組は広げない
 function expand(start: Uint8Array, m: number, depth: number, cap: number, backward: boolean, other: Uint8Array, total: number): Layer {
-  const L: Layer = { pos: new Uint8Array(cap * m), parent: new Int32Array(cap), move: new Int8Array(cap), depth: new Uint8Array(cap), count: 1, index: new Map() };
-  L.pos.set(start);
+  const pos = new Uint8Array(cap * m);
+  const L: Layer = { pos, parent: new Int32Array(cap), move: new Int8Array(cap), depth: new Uint8Array(cap), count: 1, index: new Index(pos, m, cap) };
+  pos.set(start);
   L.parent[0] = -1;
   L.move[0] = -1;
-  L.index.set(hashOf(L.pos, 0, m), 0);
+  L.index.add(0);
+  // 届くかの表を、反対側の端のステッカーごとに引いておく（far[k * 54 + p]: ステッカー k が facelet p から届くのに要る手の数）
+  const dist = new Uint8Array(m * 54);
+  for (let k = 0; k < m; k++) for (let p = 0; p < 54; p++) dist[k * 54 + p] = backward ? FACE_DIST[other[k] * 54 + p] : FACE_DIST[p * 54 + other[k]];
   for (let i = 0; i < L.count && L.depth[i] < depth; i++) {
     const last = L.move[i] < 0 ? -1 : moveFace(L.move[i]);
+    const left = total - L.depth[i] - 1;
+    const io = i * m;
     for (let mv = 0; mv < 18 && L.count < cap; mv++) {
       const x = moveFace(mv);
       // 同じ面は続けない・反対の面は決まった順（前向きは番号の小さい方が先。後ろ向きはたどる向きが逆なので大きい方が先）
       if (x === last || (last >= 0 && OPPOSITE[x] === last && (backward ? x > last : x < last))) continue;
       const D = backward ? MOVE_DEST[inverseMove(mv)] : MOVE_DEST[mv];
       const o = L.count * m;
-      for (let k = 0; k < m; k++) L.pos[o + k] = D[L.pos[i * m + k]];
-      const left = total - L.depth[i] - 1;
       let far = false;
-      for (let k = 0; k < m && !far; k++) far = (backward ? FACE_DIST[other[k] * 54 + L.pos[o + k]] : FACE_DIST[L.pos[o + k] * 54 + other[k]]) > left;
+      for (let k = 0; k < m; k++) {
+        const q = D[pos[io + k]];
+        if (dist[k * 54 + q] > left) {
+          far = true;
+          break;
+        }
+        pos[o + k] = q;
+      }
       if (far) continue;
-      const key = hashOf(L.pos, o, m);
-      if (L.index.has(key)) continue;
-      L.index.set(key, L.count);
+      if (!L.index.add(L.count)) continue;
       L.parent[L.count] = i;
       L.move[L.count] = mv;
       L.depth[L.count] = L.depth[i] + 1;
@@ -155,8 +203,8 @@ export function recoverFrom(anchor: CubeState, obs: Observation, orients: number
     let best = Infinity;
     const hits: [number, number][] = [];
     for (let i = 0; i < F.count; i++) {
-      const j = B.index.get(hashOf(F.pos, i * m, m));
-      if (j === undefined) continue;
+      const j = B.index.get(F.pos, i * m);
+      if (j < 0) continue;
       const len = F.depth[i] + B.depth[j];
       if (len > best) continue;
       if (len < best) {

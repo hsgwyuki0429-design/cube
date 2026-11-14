@@ -736,113 +736,148 @@ export class MoveDecoder {
       if (bestObs > this.options.deepenAbove) {
         const scratch = new Uint8Array(54);
         const scratch2 = new Uint8Array(54);
-        const searched = new Set<number>();
+        // 同じ状態・姿勢からは、いちばん安く始められる仮説から 1 回だけ探す（手順の書き方・持ち替えだけが違う仮説は、同じ候補を
+        // 高いコストで見つけるだけ）
+        const searched = new Map<number, number>();
         for (const { h, i } of order.slice(0, this.options.deepHyps)) {
-          // 同じ状態・姿勢の仮説（手順の書き方だけが違う）からは 1 回だけ探す
-          const hk = combineKey(hashState(h.state), h.orient);
-          if (searched.has(hk)) continue;
-          searched.add(hk);
-          const os = orients.includes(h.orient) ? orients : [...orients, h.orient];
-          let filled = false;
-          for (const o of os) {
+          const os0 = orients.includes(h.orient) ? orients : [...orients, h.orient];
+          const hs = hashState(h.state);
+          const os: number[] = [];
+          const rotC: number[] = [];
+          const cs: IdConstraints[] = [];
+          for (const o of os0) {
             const c = consOf(o);
             if (c.n < BRIDGE_MIN_IDS) continue;
-            if (!filled) {
-              pos.fill(-1);
-              for (let f = 0; f < 54; f++) {
-                const id = stickerIdAt(h.state, f);
-                if (id >= 0) pos[id] = f;
-              }
-              filled = true;
+            const r = o === h.orient ? 0 : rotationCost;
+            const key = combineKey(hs, o);
+            const prev = searched.get(key);
+            if (prev !== undefined && prev <= h.cost + r) continue;
+            searched.set(key, h.cost + r);
+            os.push(o);
+            rotC.push(r);
+            cs.push(c);
+          }
+          if (!os.length) continue;
+          pos.fill(-1);
+          for (let f = 0; f < 54; f++) {
+            const id = stickerIdAt(h.state, f);
+            if (id >= 0) pos[id] = f;
+          }
+          // 読んだステッカー（とその重さ）は姿勢によらず同じ並び（idConstraints は面・マスの順に拾う）。姿勢で変わるのは、
+          // あるはずの facelet だけ。手順の木は 1 回だけたどり、姿勢ごとに「まだ合わせられるか」のビットを持つ
+          const c0 = cs[0];
+          const n = c0.n;
+          const at = new Int8Array((bridgeDepth + 1) * n);
+          let missing = false;
+          for (let k = 0; k < n; k++) {
+            at[k] = pos[c0.id[k]];
+            if (at[k] < 0) missing = true;
+          }
+          if (missing) continue;
+          const no = os.length;
+          const prevLen = h.tail?.len ?? 0;
+          const strongIdx: number[] = [];
+          for (let k = 0; k < n; k++) if (c0.lb[k] > BRIDGE_MAX_OBS) strongIdx.push(k);
+          const ns = strongIdx.length;
+          // 姿勢ごとの、強い読みのあるはずの facelet
+          const target = new Uint8Array(no * ns);
+          for (let oi = 0; oi < no; oi++) for (let q = 0; q < ns; q++) target[oi * ns + q] = cs[oi].f[strongIdx[q]];
+          const path: number[] = [];
+          const ctx: number[] = [0];
+          const cost: number[] = [0];
+          {
+            let cx = EMPTY_CONTEXT;
+            const recent: number[] = [];
+            for (let nd = h.tail; nd && recent.length < 3; nd = nd.prev) recent.push(nd.move);
+            for (let k = recent.length - 1; k >= 0; k--) cx = shiftContext(cx, recent[k]);
+            ctx[0] = cx;
+          }
+          const bad1 = new Int32Array((bridgeDepth + 1) * no);
+          const bad2 = new Int32Array((bridgeDepth + 1) * no);
+          const bad3 = new Int32Array((bridgeDepth + 1) * no);
+          const t1 = NOT_FIRST[0];
+          const t2 = NOT_FIRST[1];
+          const t3 = NOT_FIRST[2];
+          // alive: この節点まで、まだ合わせられる姿勢のビット
+          const dfs = (d: number, alive: number) => {
+            const R = bridgeDepth - d; // あと何手まで足せるか（1 以上）
+            const base = d * n;
+            const last = d ? path[d - 1] : -1;
+            // j 手（1〜min(R, 3)）で合わせるとき、最初の手になれない手のビット（どれかの読みを合わせられない手）: 姿勢ごと。
+            // 読んだステッカーは全部合うことを求めるので、読みごとの表の OR だけで済む（弱い読み = 矛盾のコストが BRIDGE_MAX_OBS
+            // 以下のものは数えない）
+            const J = Math.min(R, 3);
+            // 子そのものを評価するのは、手順の木で評価していない深さだけ。4 手以上残っていれば下の段へは必ず進む
+            const need1 = d + 1 > depth;
+            const need23 = R < 4;
+            const bo = d * no;
+            for (let oi = 0; oi < no; oi++) {
+              if (!((alive >> oi) & 1)) continue;
+              const tg = oi * ns;
+              let b1 = 0;
+              let b2 = 0;
+              let b3 = 0;
+              if (need1) for (let q = 0; q < ns; q++) b1 |= t1[at[base + strongIdx[q]] * 54 + target[tg + q]];
+              if (need23 && J >= 2) for (let q = 0; q < ns; q++) b2 |= t2[at[base + strongIdx[q]] * 54 + target[tg + q]];
+              if (need23 && J >= 3) for (let q = 0; q < ns; q++) b3 |= t3[at[base + strongIdx[q]] * 54 + target[tg + q]];
+              bad1[bo + oi] = b1;
+              bad2[bo + oi] = b2;
+              bad3[bo + oi] = b3;
             }
-            const n = c.n;
-            const at = new Int8Array((bridgeDepth + 1) * n);
-            let missing = false;
-            for (let k = 0; k < n; k++) {
-              at[k] = pos[c.id[k]];
-              if (at[k] < 0) missing = true;
-            }
-            if (missing) continue;
-            const rotC = o === h.orient ? 0 : rotationCost;
-            const prevLen = h.tail?.len ?? 0;
-            const strong = Array.from(c.lb, (v) => v > BRIDGE_MAX_OBS);
-            const path: number[] = [];
-            const ctx: number[] = [0];
-            const cost: number[] = [0];
-            {
-              let c0 = EMPTY_CONTEXT;
-              const recent: number[] = [];
-              for (let nd = h.tail; nd && recent.length < 3; nd = nd.prev) recent.push(nd.move);
-              for (let k = recent.length - 1; k >= 0; k--) c0 = shiftContext(c0, recent[k]);
-              ctx[0] = c0;
-            }
-            const dfs = (d: number) => {
-              const R = bridgeDepth - d; // あと何手まで足せるか（1 以上）
-              const base = d * n;
-              const last = d ? path[d - 1] : -1;
-              // j 手（1〜min(R, 3)）で合わせるとき、最初の手になれない手のビット（どれかの読みを合わせられない手）: bad[j - 1]。
-              // 読んだステッカーは全部合うことを求めるので、読みごとの表の OR だけで済む（読みの数だけの演算。弱い読み = 矛盾の
-              // コストが BRIDGE_MAX_OBS 以下のものは数えない）
-              const J = Math.min(R, 3);
-              let bad1 = 0;
-              let bad2 = 0;
-              let bad3 = 0;
-              // 子そのものを評価するのは、手順の木で評価していない深さだけ。4 手以上残っていれば下の段へは必ず進む
-              const need1 = d + 1 > depth;
-              const need23 = R < 4;
-              if (need1) {
-                const t1 = NOT_FIRST[0];
-                for (let k = 0; k < n; k++) if (strong[k]) bad1 |= t1[at[base + k] * 54 + c.f[k]];
-              }
-              if (need23 && J >= 2) {
-                const t2 = NOT_FIRST[1];
-                for (let k = 0; k < n; k++) if (strong[k]) bad2 |= t2[at[base + k] * 54 + c.f[k]];
-              }
-              if (need23 && J >= 3) {
-                const t3 = NOT_FIRST[2];
-                for (let k = 0; k < n; k++) if (strong[k]) bad3 |= t3[at[base + k] * 54 + c.f[k]];
-              }
-              for (let m = 0; m < NUM_MOVES; m++) {
-                if (redundantAfter(last, m)) continue;
-                const pc = h.cost + rotC + cost[d] + moveCost + (prior ? pw * prior.penalty(ctx[d], m) : 0);
+            for (let m = 0; m < NUM_MOVES; m++) {
+              if (redundantAfter(last, m)) continue;
+              const step = moveCost + (prior ? pw * prior.penalty(ctx[d], m) : 0);
+              const pc0 = h.cost + cost[d] + step;
+              const bit = 1 << m;
+              let evalMask = 0;
+              let goMask = 0;
+              for (let oi = 0; oi < no; oi++) {
+                if (!((alive >> oi) & 1)) continue;
+                const pc = pc0 + rotC[oi];
                 if (pc >= top.threshold) continue;
-                const bit = 1 << m;
-                const evalChild = need1 && !(bad1 & bit);
+                if (need1 && !(bad1[bo + oi] & bit)) evalMask |= 1 << oi;
                 // さらに深く: あと 2 手以上で合わせられるか（4 手以上残っていれば、どのステッカーも届く）
-                const go = R >= 4 || (J >= 2 && !(bad2 & bit) && pc + moveCost < top.threshold) || (J >= 3 && !(bad3 & bit) && pc + 2 * moveCost < top.threshold);
-                if (!evalChild && !go) continue;
-                const dstTable = MOVE_DST[m];
-                for (let k = 0; k < n; k++) at[base + n + k] = dstTable[at[base + k]];
-                path[d] = m;
-                cost[d + 1] = cost[d] + moveCost + (prior ? pw * prior.penalty(ctx[d], m) : 0);
-                ctx[d + 1] = shiftContext(ctx[d], m);
-                if (evalChild) {
-                  // 状態を作って評価する
-                  let src: Uint8Array = h.state;
-                  for (let k = 0; k <= d; k++) {
-                    const dst = k % 2 ? scratch2 : scratch;
-                    const p = MOVE_SRC[path[k]];
-                    for (let q = 0; q < 54; q++) dst[q] = src[p[q]];
-                    src = dst;
-                  }
+                if (R >= 4 || (J >= 2 && !(bad2[bo + oi] & bit) && pc + moveCost < top.threshold) || (J >= 3 && !(bad3[bo + oi] & bit) && pc + 2 * moveCost < top.threshold)) goMask |= 1 << oi;
+              }
+              if (!evalMask && !goMask) continue;
+              const dstTable = MOVE_DST[m];
+              for (let k = 0; k < n; k++) at[base + n + k] = dstTable[at[base + k]];
+              path[d] = m;
+              cost[d + 1] = cost[d] + step;
+              ctx[d + 1] = shiftContext(ctx[d], m);
+              if (evalMask) {
+                // 状態を作って（姿勢によらず 1 回）、姿勢ごとに評価する
+                let src: Uint8Array = h.state;
+                for (let k = 0; k <= d; k++) {
+                  const dst = k % 2 ? scratch2 : scratch;
+                  const p = MOVE_SRC[path[k]];
+                  for (let q = 0; q < 54; q++) dst[q] = src[p[q]];
+                  src = dst;
+                }
+                let sh: [number, number] | null = null;
+                for (let oi = 0; oi < no; oi++) {
+                  if (!((evalMask >> oi) & 1)) continue;
+                  const o = os[oi];
+                  const pc = pc0 + rotC[oi];
+                  if (pc >= top.threshold) continue;
                   const obsCost = evalCost(src, getCompiled(o), top.threshold - pc);
                   evaluated++;
                   const total = pc + obsCost;
-                  if (total < top.threshold) {
-                    const key = combineKey(hashState(src), o);
-                    const prev = best.get(key);
-                    const moves = prevLen + d + 1;
-                    if (!prev || total < prev.cost - 1e-9 || (Math.abs(total - prev.cost) <= 1e-9 && moves < prev.moves)) {
-                      if (!prev) top.push(total);
-                      best.set(key, { cost: total, obsCost, hyp: i, node: 0, orient: o, moves, seq: path.slice(0, d + 1) });
-                    }
+                  if (total >= top.threshold) continue;
+                  if (!sh) sh = hashState(src);
+                  const key = combineKey(sh, o);
+                  const prev = best.get(key);
+                  const moves = prevLen + d + 1;
+                  if (!prev || total < prev.cost - 1e-9 || (Math.abs(total - prev.cost) <= 1e-9 && moves < prev.moves)) {
+                    if (!prev) top.push(total);
+                    best.set(key, { cost: total, obsCost, hyp: i, node: 0, orient: o, moves, seq: path.slice(0, d + 1) });
                   }
                 }
-                if (go && R > 1) dfs(d + 1);
               }
-            };
-            dfs(0);
-          }
+              if (goMask && R > 1) dfs(d + 1, goMask);
+            }
+          };
+          dfs(0, (1 << no) - 1);
         }
       }
     }
