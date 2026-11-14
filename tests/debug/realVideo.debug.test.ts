@@ -7,7 +7,7 @@
 //   REAL_K=4（実機のライブのように、処理している間（Node の処理時間 × K）に来たフレームは捨て、空いたら待っている 3 枚のうち動きのいちばん
 //     小さいものを処理する: vision.worker.ts の pickFrame。省略時は全フレーム）・
 //   REAL_FPS=6（1 秒 6 枚に固定して処理する。処理時間によらないので、設定を比べるときにぶれない）・REAL_LIVE_DEC='{"beamWidth":16}'（ライブのデコーダ）・
-//   REAL_PROFILE=1（ライブが処理したフレームで関数ごとの時間）・
+//   REAL_PROFILE=1（ライブが処理したフレームで関数ごとの時間。REAL_PROFILE_FROM=秒 からの 150 枚）・
 //   REAL_DUMP=1（フレームごとの読み・合わない観測・作り変え）・REAL_REFINE=0（精密解析を省く）・REAL_SAVE=フォルダ（REAL_SAVE_AT 秒の
 //   フレームを PNG で）・REAL_REFINE_CFG='{"arucoColorFill":false}' など（精密解析の認識の設定を上書き）・REAL_LIVE='{"arucoColorFill":true}' など（ライブの認識の設定を上書き）・
 //   REAL_REFINE_GATE=0（精密解析の軽い検査で飛ばさない）・REAL_REFINE_ENGINE='{"decoder":{"priorWeight":0}}' など（精密解析の追跡の設定）
@@ -189,7 +189,7 @@ it("実際のプレイ動画", async () => {
     return { st, k };
   };
   // REAL_LIVE_DEC='{"beamWidth":16}' など: ライブの追跡のデコーダの設定を上書き
-  const liveDec = { priorWeight: 0, confirmMargin: 1, deepHyps: 4, bridgeDepth: 5, ...JSON.parse(process.env.REAL_LIVE_DEC ?? "{}") };
+  const liveDec = { beamWidth: 64, priorWeight: 0, confirmMargin: 1, deepHyps: 4, bridgeDepth: 5, ...JSON.parse(process.env.REAL_LIVE_DEC ?? "{}") };
   // REAL_LIVE_OBS='{"idBoost":1}' など: ライブの観測器の設定を上書き
   const liveObs = { ...ARUCO_OBSERVER, ...LIVE_OBSERVER, ...JSON.parse(process.env.REAL_LIVE_OBS ?? "{}") };
   const live = new TrackerEngine(start, ARUCO_REFS, { observer: liveObs, decoder: liveDec, snapToView: true, recover: true });
@@ -249,7 +249,7 @@ it("実際のプレイ動画", async () => {
   const picked: { img: Img; t: number }[] = [];
   const readings: FrameReading[] = []; // REAL_READINGS=ファイル: ライブが処理したフレームの読みを書き出す（liveReplay.debug.test.ts で追跡だけを繰り返し測る）
   const liveFrame = (img: Img, t: number) => {
-    if (process.env.REAL_PROFILE && picked.length < 120) picked.push({ img, t });
+    if (process.env.REAL_PROFILE && picked.length < 150 && t >= Number(process.env.REAL_PROFILE_FROM ?? 0) * 1000) picked.push({ img, t });
     const a = performance.now();
     const r = processFrame(cv as never, img, t, liveCfg, liveMemories[liveTurn++ % liveMemories.length]);
     const a2 = performance.now();
