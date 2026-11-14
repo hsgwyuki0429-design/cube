@@ -5,6 +5,7 @@ import { useEffect, useRef } from "preact/hooks";
 import { controller } from "../app/controller";
 import { settingsStore } from "../app/settings";
 import { averageOf, effectiveTime, formatTime } from "../app/storage";
+import { padStore } from "../app/ganTimer";
 import { useStore } from "../app/store";
 import { cancelTimer, inspectionTick, newScramble, stopManually, timerStore } from "../app/timer";
 import { MOVE_NAMES } from "../cube/model";
@@ -25,8 +26,9 @@ export const useFocus = () => useStore(timerStore, (t) => t.phase === "solving")
 // 認識の様子（カメラの fps・追跡の状態・精密解析の遅れ）
 function StatusDot() {
   const s = useStore(controller.store, (x) => ({ camera: x.camera, fps: x.stats.camFps, proc: x.stats.procFps, status: x.track?.status, cube: !!x.cube, demo: x.demo, analysis: x.analysis }));
+  const pad = useStore(padStore, (p) => p.status === "connected");
   const level = s.camera !== "on" ? "" : s.cube && s.status === "lost" ? "bad" : s.cube && s.status === "uncertain" ? "warn" : "ok";
-  const text = s.camera !== "on" ? "カメラ停止" : `${s.demo ? "デモ・" : ""}${s.fps}fps・認識 ${s.proc}fps${s.analysis ? `・解析 ${s.analysis.behindMs < 500 ? "追従" : `${(s.analysis.behindMs / 1000).toFixed(1)}秒遅れ`}` : ""}`;
+  const text = s.camera !== "on" ? "カメラ停止" : `${s.demo ? "デモ・" : ""}${pad ? "タイマー・" : ""}${s.fps}fps・認識 ${s.proc}fps${s.analysis ? `・解析 ${s.analysis.behindMs < 500 ? "追従" : `${(s.analysis.behindMs / 1000).toFixed(1)}秒遅れ`}` : ""}`;
   return (
     <span class={`status-dot glass ${level}`} title={text}>
       <span class="dot" />
@@ -326,6 +328,7 @@ function DoneStrip() {
 function TimerStrip() {
   const phase = useStore(timerStore, (s) => s.phase);
   const startIndex = useStore(timerStore, (s) => s.startIndex);
+  const pad = useStore(padStore, (p) => p.status === "connected");
   if (phase === "checking") return <CheckStrip />;
   if (phase === "scrambling") return <ScrambleGuide />;
   if (phase === "preparing") return <div class="strip-block strip-note">スクランブルを作っています…</div>;
@@ -339,7 +342,7 @@ function TimerStrip() {
             別のスクランブル
           </button>
         </div>
-        <p class="strip-note">最初の 1 手でタイマーが始まり、揃った瞬間に止まります。</p>
+        <p class="strip-note">{pad ? "タイマーから手を離すと始まり、タイマーで止めると止まります。" : "最初の 1 手でタイマーが始まり、揃った瞬間に止まります。"}</p>
       </div>
     );
   if (phase === "solving")

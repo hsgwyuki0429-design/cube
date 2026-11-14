@@ -1,5 +1,6 @@
 // デモの台本: 合成キューブがスキャンの指示どおりに面を見せ、スキャン後はスクランブル → 解く を繰り返す。
 // アプリ側は本物のカメラと同じ経路（Worker で画像認識 → 追跡）で処理する。
+import { PadState, fakePadConnect, fakePadEvent } from "../app/ganTimer";
 import { B, F, NUM_MOVES, U, invertMoves, moveFace } from "../cube/model";
 import { solveState } from "../cube/solver";
 import type { Controller } from "../app/controller";
@@ -79,6 +80,7 @@ export async function runDemo(app: Controller, syn: SyntheticCube, seed = Date.n
   if (options.timer) {
     const { newScramble, nextGuideMove, timerStore } = await import("../app/timer");
     app.store.set({ panel: "timer" });
+    if (new URLSearchParams(location.search).has("pad")) fakePadConnect();
     await newScramble();
     // 案内された手順どおりに崩す（案内は状態に応じて更新されるので、毎回先頭の未完了の手を回す）
     for (let guard = 0; guard < 80 && timerStore.get().phase === "scrambling"; guard++) {
@@ -93,10 +95,20 @@ export async function runDemo(app: Controller, syn: SyntheticCube, seed = Date.n
       await waitFor(() => timerStore.get().phase !== "scrambling" || sig(timerStore.get()) !== sig(t), 3000);
     }
     await waitFor(() => timerStore.get().phase === "inspection", 5000);
-    await sleep(1500);
+    // ?pad=1: 偽の GAN タイマー（手を離して 250ms 後に回し始め、回し終えて 300ms 後に止める）
+    const pad = new URLSearchParams(location.search).has("pad");
     const solution = await solveState(syn.state);
+    await sleep(pad ? 1250 : 1500);
+    const padAt = performance.now();
+    if (pad) fakePadEvent({ state: PadState.RUNNING }, padAt);
+    if (pad) await sleep(250);
     syn.solveFrom = syn.truth.length;
     for (const m of solution) await turn(m);
+    if (pad) {
+      await sleep(300);
+      const at = performance.now();
+      fakePadEvent({ state: PadState.STOPPED, timeMs: Math.round(at - padAt) }, at);
+    }
     await waitFor(() => timerStore.get().phase === "done", 8000);
     return;
   }

@@ -44,7 +44,7 @@ import { loadTestOpenCv } from "../cv";
 import { writePng } from "./png";
 import { profile, summarize } from "./prof";
 
-const LONG = 1280;
+const LONG = Number(process.env.REAL_LONG ?? 1280); // REAL_LONG=1920 など: 長辺（解像度が読みに効くかを測る）
 const LAGS = [150, 300, 600]; // 遅れを許した一致で許す遅れ（ms）
 const SETTLE_MS = 300; // 手を回し終えてから、ライブが追いつくのを待つ時間（一致の割合で数えない）
 type Img = { data: Uint8ClampedArray; width: number; height: number };
