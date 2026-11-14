@@ -4,7 +4,6 @@
 ;; 上下の half 行・左の 8 列は 0（暗くない）のまま。右の端は窓が画像の外（0）にかかるので暗くなりにくい。
 ;; win は 15 まで（(255 + c) × win² と窓の和が 16 ビットに収まること）。
 ;;   node scripts/wasm/build.mjs で src/aruco/threshWasm.ts を作り直す
-;; maxrgb: 明るさ max(R, G, B) を作る（下）
 (module
   (memory (export "mem") 48)
   (func (export "thresh")
@@ -79,40 +78,5 @@
                   (local.get $sum))))
             (local.set $x (i32.add (local.get $x) (i32.const 8)))
             (br $tx)))
-        (local.set $y (i32.add (local.get $y) (i32.const 1)))
-        (br $rows))))
-  ;; 明るさ max(R, G, B): RGBA（行の幅 w × 4 バイト、詰めて並べたもの）→ 1 画素 1 バイト（行の幅 vs。w から vs までは 0）。16 画素ずつ。
-  ;; 行の終わりを越えて 15 画素まで読み書きする（vs は 16 の倍数に切り上げた w 以上。読む側は後ろに 64 バイト余裕を置く）
-  (func (export "maxrgb")
-    (param $src i32) (param $w i32) (param $h i32) (param $dst i32) (param $vs i32)
-    (local $y i32) (local $x i32) (local $s i32) (local $d i32) (local $a v128) (local $m0 v128) (local $m1 v128) (local $m2 v128) (local $m3 v128)
-    (local $low v128)
-    (local.set $low (v128.const i32x4 255 255 255 255))
-    (local.set $y (i32.const 0))
-    (block $done
-      (loop $rows
-        (br_if $done (i32.ge_s (local.get $y) (local.get $h)))
-        (local.set $s (i32.add (local.get $src) (i32.shl (i32.mul (local.get $y) (local.get $w)) (i32.const 2))))
-        (local.set $d (i32.add (local.get $dst) (i32.mul (local.get $y) (local.get $vs))))
-        (local.set $x (i32.const 0))
-        (block $rowDone
-          (loop $px
-            (br_if $rowDone (i32.ge_s (local.get $x) (local.get $w)))
-            (local.set $a (v128.load align=1 (i32.add (local.get $s) (i32.shl (local.get $x) (i32.const 2)))))
-            (local.set $m0 (v128.and (i8x16.max_u (i8x16.max_u (local.get $a) (i32x4.shr_u (local.get $a) (i32.const 8))) (i32x4.shr_u (local.get $a) (i32.const 16))) (local.get $low)))
-            (local.set $a (v128.load offset=16 align=1 (i32.add (local.get $s) (i32.shl (local.get $x) (i32.const 2)))))
-            (local.set $m1 (v128.and (i8x16.max_u (i8x16.max_u (local.get $a) (i32x4.shr_u (local.get $a) (i32.const 8))) (i32x4.shr_u (local.get $a) (i32.const 16))) (local.get $low)))
-            (local.set $a (v128.load offset=32 align=1 (i32.add (local.get $s) (i32.shl (local.get $x) (i32.const 2)))))
-            (local.set $m2 (v128.and (i8x16.max_u (i8x16.max_u (local.get $a) (i32x4.shr_u (local.get $a) (i32.const 8))) (i32x4.shr_u (local.get $a) (i32.const 16))) (local.get $low)))
-            (local.set $a (v128.load offset=48 align=1 (i32.add (local.get $s) (i32.shl (local.get $x) (i32.const 2)))))
-            (local.set $m3 (v128.and (i8x16.max_u (i8x16.max_u (local.get $a) (i32x4.shr_u (local.get $a) (i32.const 8))) (i32x4.shr_u (local.get $a) (i32.const 16))) (local.get $low)))
-            (v128.store align=1 (i32.add (local.get $d) (local.get $x))
-              (i8x16.narrow_i16x8_u
-                (i16x8.narrow_i32x4_u (local.get $m0) (local.get $m1))
-                (i16x8.narrow_i32x4_u (local.get $m2) (local.get $m3))))
-            (local.set $x (i32.add (local.get $x) (i32.const 16)))
-            (br $px)))
-        ;; 行の余り（w から vs まで）は 0
-        (memory.fill (i32.add (local.get $d) (local.get $w)) (i32.const 0) (i32.sub (local.get $vs) (local.get $w)))
         (local.set $y (i32.add (local.get $y) (i32.const 1)))
         (br $rows)))))
