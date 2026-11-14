@@ -34,8 +34,50 @@ function classifyColor(lab: Lab, refs: Lab[] | null, display: string[] | null): 
   return NAMED_COLORS[nearestNamed(lab)].display;
 }
 
-// 画面いっぱいに広げたときに映す範囲の下限（映像の縦・横の割合）
-const COVER_MIN = 0.62;
+// 画面いっぱいに広げたときに映す範囲の下限（映像の縦・横の割合）。1 = 映像を全部映す（余白は映像の縁を伸ばしてぼかした絵で埋める:
+// drawBackdrop）。以前は 0.62 で画面いっぱいに広げていたが、カメラに映せる範囲が狭く感じた
+const COVER_MIN = 1;
+
+// 余白に伸ばす映像の縁の幅（画面の画素）
+const EDGE_PX = 10;
+// 余白の絵を描くキャンバスの長辺（ぼかすので粗くてよい）
+const BACKDROP_LONG = 192;
+
+// 余白の絵: 映像を真ん中に置き、外側の EDGE_PX の帯を上下左右（角は角の小さな四角）へ伸ばして余白を埋める。ぼかしは CSS
+function drawBackdrop(c: HTMLCanvasElement, video: HTMLVideoElement, W: number, H: number) {
+  const vw = video.videoWidth;
+  const vh = video.videoHeight;
+  if (!vw || !vh || !W || !H) return;
+  const k = BACKDROP_LONG / Math.max(W, H);
+  const cw = Math.max(1, Math.round(W * k));
+  const ch = Math.max(1, Math.round(H * k));
+  if (c.width !== cw || c.height !== ch) {
+    c.width = cw;
+    c.height = ch;
+  }
+  const ctx = c.getContext("2d");
+  if (!ctx) return;
+  const { s } = zoomOf(W, H, vw, vh);
+  const rw = vw * s * k;
+  const rh = vh * s * k;
+  const ox = (cw - rw) / 2;
+  const oy = (ch - rh) / 2;
+  const e = Math.max(1, Math.min(vw / 4, vh / 4, EDGE_PX / s));
+  const d = (sx: number, sy: number, sw: number, sh: number, dx: number, dy: number, dw: number, dh: number) => {
+    if (dw > 0 && dh > 0) ctx.drawImage(video, sx, sy, sw, sh, dx, dy, dw, dh);
+  };
+  const right = ox + rw;
+  const bottom = oy + rh;
+  d(0, 0, vw, vh, ox, oy, rw, rh);
+  d(0, 0, vw, e, ox, 0, rw, oy + 1);
+  d(0, vh - e, vw, e, ox, bottom - 1, rw, ch - bottom + 1);
+  d(0, 0, e, vh, 0, oy, ox + 1, rh);
+  d(vw - e, 0, e, vh, right - 1, oy, cw - right + 1, rh);
+  d(0, 0, e, e, 0, 0, ox + 1, oy + 1);
+  d(vw - e, 0, e, e, right - 1, 0, cw - right + 1, oy + 1);
+  d(0, vh - e, e, e, 0, bottom - 1, ox + 1, ch - bottom + 1);
+  d(vw - e, vh - e, e, e, right - 1, bottom - 1, cw - right + 1, ch - bottom + 1);
+}
 
 // 映像を画面いっぱいに広げる倍率（object-fit: contain からの倍率）。縦・横とも映像の COVER_MIN 以上は映す
 function zoomOf(W: number, H: number, vw: number, vh: number): { s: number; zoom: number } {
@@ -49,18 +91,44 @@ export function CameraView() {
   const mirrored = useStore(controller.store, (s) => s.mirror);
   const host = useRef<HTMLDivElement>(null);
   const canvas = useRef<HTMLCanvasElement>(null);
+  const backdrop = useRef<HTMLCanvasElement>(null);
   const hint = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const video = controller.camera.video;
     video.className = "";
-    host.current?.prepend(video);
+    // 余白の絵の上に重ねる
+    if (backdrop.current) backdrop.current.after(video);
+    else host.current?.prepend(video);
     return () => video.remove();
   }, []);
 
   useEffect(() => {
     controller.camera.video.classList.toggle("mirror", mirrored && !app.demo);
+    backdrop.current?.classList.toggle("mirror", mirrored && !app.demo);
   }, [mirrored, app.demo]);
+
+  // 余白の絵（映像の縁を伸ばしてぼかしたもの）。1 秒 15 枚ほどで描き直す（粗い絵なので軽い）
+  useEffect(() => {
+    const video = controller.camera.video;
+    let raf = 0;
+    let last = 0;
+    const tick = (now: number) => {
+      raf = requestAnimationFrame(tick);
+      if (now - last < 66 || document.hidden) return;
+      last = now;
+      const c = backdrop.current;
+      const el = host.current;
+      if (!c || !el || video.readyState < 2) return;
+      try {
+        drawBackdrop(c, video, el.clientWidth, el.clientHeight);
+      } catch {
+        /* 映像がまだ描けない */
+      }
+    };
+    raf = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(raf);
+  }, []);
 
   // 映像の倍率は、フレームの結果が届かなくても、画面や映像の大きさが変わったら測り直す。iPhone でアプリを閉じずに戻ると、
   // 戻る途中の（小さい）大きさで測った倍率のまま、映像が止まって結果が届かず、カメラの画面が狭いまま残っていた。
@@ -254,6 +322,7 @@ export function CameraView() {
 
   return (
     <div class="camera" ref={host}>
+      <canvas class="backdrop" ref={backdrop} aria-hidden="true" />
       <canvas ref={canvas} />
       <div class="hint" ref={hint} style={{ display: "none" }} />
       {app.camera !== "on" && (

@@ -129,14 +129,20 @@ input {
   height: 100%;
   object-fit: contain;
 }
-.cube3d.mirrored twisty-player {
-  transform: scaleX(-1);
-}
 .camera video {
   transform: scale(var(--zoom, 1));
 }
 .camera video.mirror {
   transform: scale(var(--zoom, 1)) scaleX(-1);
+}
+/* 余白: 映像の縁を伸ばしてぼかした絵（CameraView の drawBackdrop）。ぼかしで端が暗くならないように少し大きくする */
+.camera canvas.backdrop {
+  object-fit: fill;
+  filter: blur(18px);
+  transform: scale(1.12);
+}
+.camera canvas.backdrop.mirror {
+  transform: scale(1.12) scaleX(-1);
 }
 .camera .placeholder {
   position: absolute;
@@ -184,7 +190,13 @@ input {
   max-height: 100%;
   width: 100%;
 }
-.cube3d twisty-player {
+.cube3d.mirrored canvas {
+  transform: scaleX(-1);
+}
+.cube3d.live-cube canvas {
+  position: absolute;
+  inset: 0;
+  display: block;
   width: 100%;
   height: 100%;
 }
@@ -811,12 +823,12 @@ input[type="range"] {
 .stage-scrim.top {
   top: 0;
   height: 300px;
-  background: linear-gradient(rgba(0, 0, 0, 0.72), rgba(0, 0, 0, 0));
+  background: linear-gradient(rgba(0, 0, 0, 0.42), rgba(0, 0, 0, 0));
 }
 .stage-scrim.bottom {
   bottom: 0;
   height: 46dvh;
-  background: linear-gradient(rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.82));
+  background: linear-gradient(rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.48));
 }
 .chrome {
   transition:
@@ -1349,10 +1361,10 @@ input[type="range"] {
   position: relative;
   flex: none;
   align-self: flex-end;
-  width: clamp(120px, 34vw, 170px);
+  width: clamp(150px, 44vw, 220px);
   aspect-ratio: 1;
   pointer-events: none;
-  filter: drop-shadow(0 12px 24px rgba(0, 0, 0, 0.45));
+  filter: drop-shadow(0 10px 18px rgba(0, 0, 0, 0.35));
 }
 .cube-inset .cube3d {
   height: 100%;
@@ -1533,11 +1545,11 @@ input[type="range"] {
     left: auto;
     width: 62%;
     height: 100%;
-    background: linear-gradient(to left, rgba(0, 0, 0, 0.78), rgba(0, 0, 0, 0));
+    background: linear-gradient(to left, rgba(0, 0, 0, 0.45), rgba(0, 0, 0, 0));
   }
   .stage-scrim.bottom {
     height: 55%;
-    background: linear-gradient(rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.8));
+    background: linear-gradient(rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.46));
   }
   .stage-top {
     padding: max(14px, env(safe-area-inset-top)) calc(24px + env(safe-area-inset-right)) 0 calc(92px + env(safe-area-inset-left));
@@ -1596,7 +1608,7 @@ input[type="range"] {
     display: none;
   }
   .cube-inset {
-    width: clamp(110px, 32dvh, 190px);
+    width: clamp(140px, 40dvh, 230px);
   }
   .stage .cam-badge {
     left: 40%;
@@ -1954,11 +1966,7 @@ input[type="range"] {
 }
 .cube-block .cube3d {
   aspect-ratio: auto;
-  height: auto;
-  min-height: 200px;
-}
-.cube-block .cube3d twisty-player {
-  height: 220px;
+  height: 260px;
 }
 button.mv {
   font: inherit;

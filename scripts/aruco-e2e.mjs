@@ -90,7 +90,7 @@ async function runCube(page) {
     await page.locator(".card", { hasText: "3. 動画で確かめる" }).screenshot({ path: `${OUT}/${basename(VIDEO)}.${label}.png` });
   }
   // 3D キューブ（動画に合わせて動くもの・手順の再生）が出ていること。最後の手の後で、動画の 3D が全部の手を回し終えた状態
-  const n3d = await page.evaluate(() => [".cube-3d twisty-player", ".cube-replay twisty-player"].map((q) => document.querySelectorAll(q).length));
+  const n3d = await page.evaluate(() => [".cube-3d .cube3d canvas", ".cube-replay .cube3d canvas"].map((q) => document.querySelectorAll(q).length));
   if (n3d.join() !== "1,1") throw new Error(`3D キューブがない: ${n3d}`);
   await page.evaluate(() => {
     const v = document.querySelector(".viewer video");
@@ -111,15 +111,12 @@ async function runCube(page) {
     const scale = window.__aruco.timeScale ?? 1;
     v.currentTime = ((m.t0 + m.t) / 2 / scale) / 1000 + (window.__aruco.offset ?? 0) + 0.25 / Math.max(1, info.fps);
     await new Promise((r) => setTimeout(r, 1200));
-    const p = document.querySelector(".cube-3d twisty-player");
-    const idx = await p.experimentalModel.indexer.get();
-    const ts = await p.experimentalModel.timestampRequest.get();
-    const s = idx.indexToMoveStartTimestamp(k);
+    const done = Number(document.querySelector(".cube-3d .cube3d").dataset.done);
     const hint = [...document.querySelectorAll(".aruco .hint")].map((h) => h.textContent).find((x) => x.includes("実時間"));
-    return { k, ts, s, e: s + idx.moveDuration(k), t0: m.t0, t: m.t, cur: v.currentTime, hint };
+    return { k, done, t0: m.t0, t: m.t, cur: v.currentTime, hint };
   });
   console.log("動画の途中の 3D:", JSON.stringify(mid));
-  if (mid !== "skip" && Math.abs(mid.ts - mid.e) > 1) throw new Error("動画の手の途中で止めたのに、3D がその手を回し終えていない");
+  if (mid !== "skip" && mid.done < mid.k + 1) throw new Error("動画の手の途中で止めたのに、3D がその手を回し終えていない");
   // 手順の再生: 等間隔（1 手 400ms）で、手数 × 400ms（+ 前の 400ms）かかる
   const replay = page.locator(".cube-replay");
   await replay.locator("text=⏮ 最初へ").click();

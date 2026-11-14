@@ -81,6 +81,9 @@ export class VisionClient {
         } else if (m.type === "track-snapshot") {
           this.queries.get(m.id)?.(m.track);
           this.queries.delete(m.id);
+        } else if (m.type === "live-log") {
+          this.logQueries.get(m.id)?.(m.log);
+          this.logQueries.delete(m.id);
         }
       };
       this.worker.onerror = (e) => {
@@ -199,6 +202,19 @@ export class VisionClient {
 
   stopTracking(): void {
     this.post({ type: "track-stop" });
+  }
+
+  // ライブの記録（src/track/liveLog.ts）をもらう
+  private logQueries = new Map<number, (log: unknown) => void>();
+  liveLog(): Promise<unknown> {
+    const id = this.nextId++;
+    return new Promise((resolve) => {
+      this.logQueries.set(id, resolve);
+      this.post({ type: "live-log", id });
+      setTimeout(() => {
+        if (this.logQueries.delete(id)) resolve(null);
+      }, 10000);
+    });
   }
 
   // 観測を待たずに、今の追跡結果（各手の時刻はその時点までのフレームから）をもらう
