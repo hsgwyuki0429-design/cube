@@ -29,7 +29,10 @@ export const DEFAULT_OFFLINE: OfflineOptions = {
   // 読みと 5 マス食い違う別の手順（B' L' F L B …）で完成までつなぎ、6 手を確定のまま間違えた）。3 手より深く探すのは上位 16 仮説だけ
   // （全部だと 2〜3 倍遅く、外れ値で 26 秒。8 では外れ値 25 秒）。実物 5 本 × 原画質・5Mbps・2.5Mbps（60・30fps）で、ほかの手順は
   // 変わらず（読みとの食い違いは同じか少ない）、Node の解き直し 1.0〜2.6 → 1.4〜9.8 秒
-  decoder: { beamWidth: 64, maxMovesPerStep: 4, deepHyps: 16, lostAfter: 1000 },
+  // 候補 128: 正解がいったん候補から消えると、戻れるかは運次第だった（IMG_5048 の 2.5Mbps の 43.7 秒: 64 では戻れず 27 秒探して
+  // 完成までつながらない、128 では 7 秒でつながる）。実物 4 本 × 5Mbps・2.5Mbps で 1 枚の観測（ARUCO_OBSERVER の transient）と合わせて
+  // 8/8 が正解と同じ手順（64 では 7/8）、つながる場合の解き直しは 2 割ほど長い
+  decoder: { beamWidth: 128, maxMovesPerStep: 4, deepHyps: 16, lostAfter: 1000 },
 };
 
 export interface OfflineResult {
