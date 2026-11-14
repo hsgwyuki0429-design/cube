@@ -1,171 +1,82 @@
-// 推定した手順を動かす 3D キューブ（cubing.js の <twisty-player> の再生位置を自前で進める）。
+// 推定した手順を動かす 3D キューブ（描画はライブと同じ src/ui/cubeScene.ts）。
 // time（実時間 ms）を親が進める（動画に合わせる・自前の再生ボタンで進める）。time までに回し始めた手を、実際の速さではなく
-// 決まった速さ（1 手 TURN_MS、画面の時間）で 1 手ずつ回す: 実際の速さに合わせると、速い手は 1 フレームで終わって回転が
-// 描かれないことがあった。たまっていれば速めるが、人が回るのを見て取れる MIN_TURN_MS より速くしない。
-// pose（キューブ固定 → カメラの回転）を渡すと、カメラに映っているキューブと同じ向き（ジャイロのように傾きにも追従）
-import type { TwistyPlayer } from "cubing/twisty";
+// 決まった速さ（1 手 TURN_MS、画面の時間。溜まっていれば速める）で 1 手ずつ回す: 実際の速さに合わせると、速い手は 1 フレームで
+// 終わって回転が描かれないことがあった。戻るとき（動画を戻した）はすぐにその状態にする。
+// pose（キューブ固定 → カメラの回転）を渡すと、カメラに映っているキューブと同じ向き（傾きにも追従）
 import { useEffect, useRef, useState } from "preact/hooks";
-import { Quaternion, type Object3D } from "three";
-import { MOVE_NAMES, ORIENTATIONS } from "../cube/model";
+import { Quaternion } from "three";
+import { ORIENTATIONS, applyMove, solvedState, type CubeState } from "../cube/model";
 import type { DecodedMove } from "../track/types";
-import { PLAYER_BASE, matToQuat, viewAngles } from "../ui/Cube3D";
+import { CubeScene, approach, matToQuat } from "../ui/cubeScene";
 import { moveAt, moveSpans } from "./timeline";
 
 const TURN_MS = 220;
-const MIN_TURN_MS = 90;
-
-interface Timing {
-  starts: number[]; // 手ごとの回し始め（実時間 ms）
-  pStart: number[];
-  pDur: number[];
-}
 
 export function TimedCube3D({ moves, time, held, pose }: { moves: DecodedMove[]; time: number; held: boolean; pose?: number[] | null }) {
   const host = useRef<HTMLDivElement>(null);
-  const player = useRef<TwistyPlayer | null>(null);
-  const puzzle = useRef<Object3D | null>(null);
-  const timing = useRef<Timing | null>(null);
-  const timeRef = useRef(time);
+  const scene = useRef<CubeScene | null>(null);
+  const shownQ = useRef(new Quaternion());
   const target = useRef(new Quaternion());
-  const raf = useRef(0);
-  const anim = useRef(0);
-  const pos = useRef(0); // 表示している位置（手の番号 + 回した割合）
-  const ready = useRef<Promise<void> | null>(null);
-  timeRef.current = time;
-  const gyro = held && !!pose;
-
-  const render = async () => {
-    const p = player.current;
-    if (p) for (const v of await p.experimentalCurrentVantages()) v.scheduleRender();
-  };
-
-  // 向き（持ち方・カメラから見た傾き）へ滑らかに向ける
-  const turnTo = (q: Quaternion) => {
-    if (q.angleTo(target.current) < 1e-4) return;
-    target.current = q;
-    cancelAnimationFrame(raf.current);
-    const step = () => {
-      const obj = puzzle.current;
-      if (!obj) return;
-      obj.quaternion.slerp(target.current, gyro ? 0.35 : 0.25);
-      void render();
-      if (obj.quaternion.angleTo(target.current) > 0.002) raf.current = requestAnimationFrame(step);
-      else obj.quaternion.copy(target.current);
-    };
-    raf.current = requestAnimationFrame(step);
-  };
-
-  const show = () => {
-    const p = player.current;
-    const tm = timing.current;
-    if (!p || !tm) return;
-    const i = Math.min(Math.floor(pos.current), tm.pStart.length);
-    const ts = i >= tm.pStart.length ? (tm.pStart.length ? tm.pStart[i - 1] + tm.pDur[i - 1] : 0) : tm.pStart[i] + tm.pDur[i] * (pos.current - i);
-    p.timestamp = ts as never; // MillisecondTimestamp（タグ付きの number）
-  };
-
-  // time までに回し始めた手の数まで、決まった速さで進める。戻るとき（動画を戻した）はすぐに戻す
-  const advance = () => {
-    const tm = timing.current;
-    if (!tm) return;
-    const want = moveAt(timeRef.current, tm.starts.map((s) => ({ start: s, end: s }))) + 1;
-    if (want < pos.current) {
-      pos.current = want;
-      show();
-      return;
-    }
-    if (anim.current || want <= pos.current) return;
-    let last = performance.now();
-    const step = (now: number) => {
-      const goal = moveAt(timeRef.current, tm.starts.map((s) => ({ start: s, end: s }))) + 1;
-      const backlog = goal - pos.current;
-      const ms = Math.max(MIN_TURN_MS, TURN_MS / Math.max(1, backlog / 2));
-      pos.current = Math.min(goal, pos.current + (now - last) / ms);
-      last = now;
-      show();
-      if (pos.current < goal) anim.current = requestAnimationFrame(step);
-      else anim.current = 0;
-    };
-    anim.current = requestAnimationFrame(step);
-  };
-
-  const apply = () => {
-    advance();
-    if (!held || !moves.length || !timing.current) return;
-    const T = timeRef.current;
-    const o = moves[Math.max(0, moveAt(T, timing.current.starts.map((s) => ({ start: s, end: s }))))].orient;
-    const M = ORIENTATIONS[o];
-    if (!pose) return turnTo(matToQuat(M));
-    // キューブ固定 → カメラ = 傾き R · 持ち方
-    const RM = [0, 1, 2].flatMap((r) => [0, 1, 2].map((c) => pose[r * 3] * M[c] + pose[r * 3 + 1] * M[3 + c] + pose[r * 3 + 2] * M[6 + c]));
-    turnTo(matToQuat(RM));
-  };
+  const count = useRef(0); // 回した（回している・待っている）手の数
+  const states = useRef<CubeState[]>([solvedState()]);
+  const starts = useRef<number[]>([]);
 
   useEffect(() => {
-    let cancelled = false;
-    ready.current = (async () => {
-      const { TwistyPlayer } = await import("cubing/twisty");
-      if (cancelled || !host.current) return;
-      const p = new TwistyPlayer({
-        ...PLAYER_BASE,
-        controlPanel: "none",
-        experimentalDragInput: held ? "none" : "auto",
-        // カメラの傾きに追従するときは正面から（カメラと同じ視点）
-        ...viewAngles(gyro),
-      });
-      p.indexer = "simple"; // 手を 1 つずつ順に（同時に回す手をまとめない）
-      host.current.appendChild(p);
-      player.current = p;
-      puzzle.current = (await p.experimentalCurrentThreeJSPuzzleObject()) as unknown as Object3D;
-    })();
+    const s = new CubeScene();
+    scene.current = s;
+    host.current!.appendChild(s.canvas);
+    const ro = new ResizeObserver(() => {
+      const r = host.current?.getBoundingClientRect();
+      if (r) s.resize(r.width, r.height);
+    });
+    ro.observe(host.current!);
+    s.onFrame = (_now, dt, root) => {
+      const before = shownQ.current.clone();
+      approach(shownQ.current, target.current, dt, 80);
+      root.quaternion.copy(shownQ.current);
+      // 回し終えた手の数（E2E が見る）
+      if (host.current) host.current.dataset.done = String(Math.max(0, count.current) - s.waiting() - (s.turning() ? 1 : 0));
+      return before.angleTo(shownQ.current) > 1e-4;
+    };
     return () => {
-      cancelled = true;
-      cancelAnimationFrame(raf.current);
-      cancelAnimationFrame(anim.current);
-      anim.current = 0;
-      player.current?.remove();
-      player.current = null;
-      puzzle.current = null;
+      ro.disconnect();
+      s.dispose();
+      scene.current = null;
     };
   }, []);
 
-  useEffect(() => {
-    const p = player.current;
-    if (!p) return;
-    Object.assign(p, viewAngles(gyro));
-  }, [gyro]);
-
-  // 手順が変わったら、3D 側の手ごとの位置と長さを読み直す
+  // 手順が変わったら、状態と手ごとの回し始めを作り直す
   const key = moves.map((m) => `${m.move}:${m.t0 ?? ""}:${m.t}`).join(",");
   useEffect(() => {
-    let cancelled = false;
-    void (async () => {
-      await ready.current;
-      const p = player.current;
-      if (cancelled || !p) return;
-      p.alg = moves.map((m) => MOVE_NAMES[m.move]).join(" ");
-      const idx = await p.experimentalModel.indexer.get();
-      if (cancelled) return;
-      const n = moves.length;
-      cancelAnimationFrame(anim.current);
-      anim.current = 0;
-      timing.current = {
-        starts: moveSpans(moves).map((s) => s.start),
-        pStart: Array.from({ length: n }, (_, i) => idx.indexToMoveStartTimestamp(i as never)),
-        pDur: Array.from({ length: n }, (_, i) => idx.moveDuration(i as never)),
-      };
-      pos.current = Math.min(pos.current, n);
-      show();
-      apply();
-    })();
-    return () => {
-      cancelled = true;
-    };
+    const st = [solvedState()];
+    for (const m of moves) st.push(applyMove(st[st.length - 1], m.move));
+    states.current = st;
+    starts.current = moveSpans(moves).map((x) => x.start);
+    count.current = -1; // 次で合わせ直す
   }, [key]);
 
-  useEffect(apply, [time, pose?.join()]);
+  useEffect(() => {
+    const s = scene.current;
+    if (!s) return;
+    const want = moveAt(time, starts.current.map((x) => ({ start: x, end: x }))) + 1;
+    if (count.current < 0 || want < count.current) {
+      s.setState(states.current[want]);
+      count.current = want;
+    } else {
+      for (let i = count.current; i < want; i++) s.enqueue(moves[i].move, s.waiting() > 1 ? TURN_MS / 2 : TURN_MS);
+      count.current = want;
+    }
+    if (held && moves.length) {
+      const o = moves[Math.max(0, want - 1)].orient;
+      const M = ORIENTATIONS[o];
+      // キューブ固定 → カメラ = 傾き R · 持ち方
+      const RM = pose ? [0, 1, 2].flatMap((r) => [0, 1, 2].map((c) => pose[r * 3] * M[c] + pose[r * 3 + 1] * M[3 + c] + pose[r * 3 + 2] * M[6 + c])) : M;
+      target.current = matToQuat(RM);
+    } else target.current = new Quaternion();
+    s.invalidate();
+  }, [time, key, pose?.join(), held]);
 
-  return <div class="cube3d" ref={host} />;
+  return <div class="cube3d live-cube" ref={host} />;
 }
 
 // 自前の再生ボタンで、手を等間隔（STEP_MS ごとに 1 手）に再生する（実際の速さ・間ではなく、どの手も同じ速さで見えるように）

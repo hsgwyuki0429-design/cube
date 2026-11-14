@@ -7,10 +7,10 @@ import { settingsStore } from "../app/settings";
 import { averageOf, effectiveTime, formatTime } from "../app/storage";
 import { useStore } from "../app/store";
 import { cancelTimer, inspectionTick, newScramble, stopManually, timerStore } from "../app/timer";
-import { MOVE_NAMES, rotateOrientation } from "../cube/model";
+import { MOVE_NAMES } from "../cube/model";
 import { mergeQuickRepeats, simplifyMoves } from "../track/merge";
 import { CameraView } from "./CameraView";
-import { Cube3D } from "./Cube3D";
+import { LiveCube3D } from "./LiveCube3D";
 import { StartCard } from "./playParts";
 import { moveLabel } from "./notation";
 import { ScanPanel } from "./ScanPanel";
@@ -173,17 +173,18 @@ function CubeInset() {
   const doneId = useStore(timerStore, (t) => (t.phase === "done" ? (t.result?.id ?? null) : null));
   if (!cube) return null;
   // 見えているキューブと同じ状態にする: いまの見え方に一番合う仮説の手順（確定を待つと、その間 3D が見えているキューブとずれた）。
-  // 足された手は回して見せ、解釈が変わったら回さずにその状態へ切り替える（Cube3D の live）。手順を追えずに見えている色に合わせて
+  // 足された手は回して見せ、解釈が変わったら回さずにその状態へ切り替える（LiveCube3D）。手順を追えずに見えている色に合わせて
   // 作り変えたら（track.base）、その場でその状態にする
   const moves = (track?.moves ?? []).map((m) => m.move);
   const shownOrient = track?.view?.orient ?? track?.orient ?? 0; // 表示だけの作り変えの間は、その状態の姿勢
-  const orient = settings.view === "fixed" || !track ? null : settings.view === "user" ? rotateOrientation(shownOrient, "y", 2) : shownOrient;
+  const follow = settings.view !== "fixed";
+  const orient = !follow || !track ? null : shownOrient;
   // 完成の演出: タイマーが止まったとき
   const party = doneId;
   return (
     <div class={`cube-inset${party ? " party" : ""}`}>
       {party && <Celebrate key={party} />}
-      <Cube3D epoch={cube.epoch} setupMoves={cube.setupMoves} moves={moves} orient={orient} view={settings.view} mirror={settings.view === "camera" && mirror && !demo} colors={null} live base={track?.base ?? null} seen={track?.view ?? null} />
+      <LiveCube3D epoch={cube.epoch} setupMoves={cube.setupMoves} moves={moves} orient={orient} follow={follow} mirror={mirror && !demo} base={track?.base ?? null} seen={track?.view ?? null} />
     </div>
   );
 }
