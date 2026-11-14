@@ -41,3 +41,42 @@ describe("ArUco の観測", () => {
     expect(o.push({ t: 100, faces: [{ ...front, ids }] })).toBeNull(); // 1 つだけ増えた
   });
 });
+
+// 精密解析（60fps で 2 枚続くのを待つ）でも、1 枚だけ見えた手と手の間の状態を観測にする（ARUCO_OBSERVER の transient）
+describe("1 枚だけ見えた状態", () => {
+  const ids = (top: number[]) => [...top, 21, 22, 23, 24, 25, 26];
+  const read = (top: number[], color: number) => ({ ...face(2, [color, color, color, 2, 2, 2, 2, 2, 2]), ids: ids(top) });
+  const X = read([18, 19, 20], 2); // 揃った正面
+  const A = read([9, 10, 11], 1); // 1 枚だけ見えた途中の状態（上の段が右の面のもの）
+  const B = read([36, 37, 38], 4); // その次の状態
+  const observer = () => new FaceObserver(new ColorModel(ARUCO_REFS), { ...ARUCO_OBSERVER, stableFrames: 2 });
+
+  it("次のフレームが前の観測とも、取っておいた 1 枚とも違えば、その 1 枚を観測にする", () => {
+    const o = observer();
+    o.push({ t: 0, faces: [X] });
+    expect(o.push({ t: 17, faces: [X] })!.t).toBe(0);
+    expect(o.push({ t: 33, faces: [A] })).toBeNull();
+    const a = o.push({ t: 50, faces: [B] });
+    expect(a!.t).toBe(33);
+    expect(Array.from(a!.faces[0].ids!.slice(0, 3))).toEqual([9, 10, 11]);
+    expect(o.push({ t: 67, faces: [B] })!.t).toBe(50); // 2 枚続いた B はいつもどおり
+  });
+
+  it("次のフレームが前の観測に戻れば、1 枚の誤読として捨てる", () => {
+    const o = observer();
+    o.push({ t: 0, faces: [X] });
+    o.push({ t: 17, faces: [X] });
+    expect(o.push({ t: 33, faces: [A] })).toBeNull();
+    expect(o.push({ t: 50, faces: [X] })).toBeNull();
+    expect(o.push({ t: 67, faces: [X] })).toBeNull();
+  });
+
+  it("ID が少ない 1 枚は観測にしない", () => {
+    const o = observer();
+    o.push({ t: 0, faces: [X] });
+    o.push({ t: 17, faces: [X] });
+    const few = { ...A, ids: [9, 10, 11, 21, -1, -1, -1, -1, -1], valid: [true, true, true, true, false, false, false, false, false] };
+    expect(o.push({ t: 33, faces: [few] })).toBeNull();
+    expect(o.push({ t: 50, faces: [B] })).toBeNull();
+  });
+});
