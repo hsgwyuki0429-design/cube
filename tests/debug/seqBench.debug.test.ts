@@ -224,9 +224,10 @@ it("手順の総合評価", async () => {
     if (process.env.H264) {
       const raw = Buffer.concat(frameList.map((f) => Buffer.from(f.img.data.buffer, f.img.data.byteOffset, f.img.data.byteLength)));
       const br = `${process.env.H264}k`;
-      const enc = spawnSync("ffmpeg", ["-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", `${w}x${h}`, "-r", String(FPS), "-i", "-", "-c:v", "libx264", "-profile:v", "baseline", "-preset", "veryfast", "-tune", "zerolatency", "-b:v", br, "-maxrate", br, "-bufsize", `${Number(process.env.H264) / 2}k`, "-g", String(FPS), "-f", "h264", "-"], { input: raw, maxBuffer: 1 << 30 });
+      const enc = spawnSync("ffmpeg", ["-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", `${w}x${h}`, "-r", String(FPS), "-i", "-", "-pix_fmt", "yuv420p", "-c:v", "libx264", "-profile:v", "baseline", "-preset", "veryfast", "-tune", "zerolatency", "-b:v", br, "-maxrate", br, "-bufsize", `${Number(process.env.H264) / 2}k`, "-g", String(FPS), "-f", "h264", "-"], { input: raw, maxBuffer: 1 << 30 });
       const dec = spawnSync("ffmpeg", ["-loglevel", "error", "-f", "h264", "-i", "-", "-f", "rawvideo", "-pix_fmt", "rgba", "-"], { input: enc.stdout, maxBuffer: 2 ** 32 });
       const n = w * h * 4;
+      if (dec.stdout.length < n * frameList.length) throw new Error(`H.264 の圧縮・復号に失敗: ${enc.stderr} ${dec.stderr}`);
       frameList.forEach((f, i) => {
         if ((i + 1) * n <= dec.stdout.length) f.img = { data: new Uint8ClampedArray(dec.stdout.buffer.slice(dec.stdout.byteOffset + i * n, dec.stdout.byteOffset + (i + 1) * n)), width: w, height: h };
       });
