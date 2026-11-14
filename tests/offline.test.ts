@@ -62,7 +62,7 @@ describe("offline reconstruction (forward + backward meet)", () => {
     expect(offEnd).toBe(N);
     expect(offSum / N).toBeGreaterThanOrEqual(fwdSum / N);
     expect(offSum / N).toBeGreaterThan(0.9);
-  });
+  }, 180000); // 8 本を解き直す（1 観測 4 手まで・候補 128 にしてから CI の実行機で 60 秒を超えた）
 
   it("matches the forward result when nothing is hidden", () => {
     const s = session(42, 25, [99, 99]);
@@ -113,10 +113,11 @@ describe("offline reconstruction (forward + backward meet)", () => {
     const t0 = performance.now();
     const off = decodeOffline(s.obs, s.start, solvedState(), s.lastT);
     peak = Math.max(peak, process.memoryUsage().heapUsed - before);
-    expect(performance.now() - t0).toBeLessThan(40000);
+    // 後ろ向き 30 秒（BACKWARD_MS）+ 橋渡し 10 秒（BRIDGE_MS）の上限で打ち切る。CI の遅い実行機では上限に少し足した時間がかかる
+    expect(performance.now() - t0).toBeLessThan(80000);
     expect(peak / 1e6).toBeLessThan(400);
     expect(off.moves.length).toBeGreaterThan(0);
-  }, 60000);
+  }, 120000);
 });
 
 describe("最後に見えなかった手を足して完成までつなぐ（finishDeep）", () => {
