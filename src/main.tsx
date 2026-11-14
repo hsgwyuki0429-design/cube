@@ -5,6 +5,7 @@ import { lowerRecordBitrate } from "./vision/recorder";
 import { timerStore } from "./app/timer";
 import "./styles.css";
 import { App } from "./ui/App";
+import { trackViewport } from "./ui/viewport";
 
 // テストとデバッグ用の入口
 declare global {
@@ -39,6 +40,8 @@ class ErrorBoundary extends Component<{ children: ComponentChildren }, { error: 
     );
   }
 }
+
+trackViewport();
 
 // カメラや Worker の準備に失敗しても、画面は出す（失敗の内容は各表示に出る）
 try {

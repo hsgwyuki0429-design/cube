@@ -1,4 +1,4 @@
-// カメラ映像と、検出結果のオーバーレイ（格子・各セルの分類色・隠れたセル・デバッグ情報）
+// カメラ映像と、検出結果のオーバーレイ（スキャン中の隠れたセル。格子・各セルの分類色・面の名前・デバッグ情報は ?debug のときだけ）
 import { useEffect, useRef } from "preact/hooks";
 import { controller } from "../app/controller";
 import { settingsStore } from "../app/settings";
@@ -37,6 +37,13 @@ function classifyColor(lab: Lab, refs: Lab[] | null, display: string[] | null): 
 // 画面いっぱいに広げたときに映す範囲の下限（映像の縦・横の割合）
 const COVER_MIN = 0.62;
 
+// 映像を画面いっぱいに広げる倍率（object-fit: contain からの倍率）。縦・横とも映像の COVER_MIN 以上は映す
+function zoomOf(W: number, H: number, vw: number, vh: number): { s: number; zoom: number } {
+  const contain = Math.min(W / vw, H / vh);
+  const s = Math.min(Math.max(W / vw, H / vh), contain / COVER_MIN);
+  return { s, zoom: s / contain };
+}
+
 export function CameraView() {
   const app = useStore(controller.store, (s) => ({ camera: s.camera, error: s.cameraError, demo: s.demo, scanning: !!s.scan && !s.scan.result, vision: s.vision }));
   const mirrored = useStore(controller.store, (s) => s.mirror);
@@ -55,6 +62,40 @@ export function CameraView() {
     controller.camera.video.classList.toggle("mirror", mirrored && !app.demo);
   }, [mirrored, app.demo]);
 
+  // 映像の倍率は、フレームの結果が届かなくても、画面や映像の大きさが変わったら測り直す。iPhone でアプリを閉じずに戻ると、
+  // 戻る途中の（小さい）大きさで測った倍率のまま、映像が止まって結果が届かず、カメラの画面が狭いまま残っていた。
+  // 戻ったときに映像が止まっていれば再生し直す
+  useEffect(() => {
+    const video = controller.camera.video;
+    const refit = () => {
+      const el = host.current;
+      if (!el || !video.videoWidth || !video.videoHeight || !el.clientWidth || !el.clientHeight) return;
+      const zoom = zoomOf(el.clientWidth, el.clientHeight, video.videoWidth, video.videoHeight).zoom.toFixed(3);
+      if (el.style.getPropertyValue("--zoom") !== zoom) el.style.setProperty("--zoom", zoom);
+    };
+    const onVisible = () => {
+      if (document.visibilityState !== "visible") return;
+      if (video.srcObject && video.paused) video.play().catch(() => undefined);
+      refit();
+      for (const ms of [150, 500, 1200]) setTimeout(refit, ms);
+    };
+    const ro = new ResizeObserver(refit);
+    if (host.current) ro.observe(host.current);
+    video.addEventListener("resize", refit);
+    video.addEventListener("loadedmetadata", refit);
+    window.addEventListener("resize", refit);
+    window.addEventListener("pageshow", onVisible);
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      ro.disconnect();
+      video.removeEventListener("resize", refit);
+      video.removeEventListener("loadedmetadata", refit);
+      window.removeEventListener("resize", refit);
+      window.removeEventListener("pageshow", onVisible);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
+  }, []);
+
   useEffect(() => {
     const draw = (m: FrameMessage) => {
       const c = canvas.current;
@@ -72,9 +113,8 @@ export function CameraView() {
       ctx.clearRect(0, 0, W, H);
       // 映像の表示: 画面いっぱいに広げる（はみ出す分を切る）。ただし縦・横とも映像の COVER_MIN 以上は映す（縦持ちのスマホに
       // 横長の映像のとき、画面いっぱいではキューブが画面の外に出る）。video は CSS の --zoom で同じだけ拡大し、重ねる絵も合わせる
-      const contain = Math.min(W / m.width, H / m.height);
-      const s = Math.min(Math.max(W / m.width, H / m.height), contain / COVER_MIN);
-      const zoom = (s / contain).toFixed(3);
+      const { s, zoom: z } = zoomOf(W, H, m.width, m.height);
+      const zoom = z.toFixed(3);
       if (host.current && host.current.style.getPropertyValue("--zoom") !== zoom) host.current.style.setProperty("--zoom", zoom);
       const ox = (W - m.width * s) / 2;
       const oy = (H - m.height * s) / 2;
@@ -97,8 +137,9 @@ export function CameraView() {
 
       for (const face of m.faces) {
         const anchor = face.slot === 2;
+        // 面の格子・マスの読み・面の名前はデバッグ表示（?debug）のときだけ描く（ふだんはキューブの上に何も重ねない）
         // 枠と格子: 回している途中の層（外側の 1 列）があれば、本体（残りの 2 列）と層を別々の格子で描く
-        const blocks = blocksOf(face);
+        const blocks = debug ? blocksOf(face) : [];
         for (const bl of blocks) {
           const [x0, y0, x1, y1] = bl.rect;
           const at = (x: number, y: number) => map(applyH(bl.H, x, y));
@@ -120,7 +161,7 @@ export function CameraView() {
           ctx.stroke();
         }
         // 各セルの分類色（小さな四角。層のマスは層の格子で置く）
-        for (let cell = 0; cell < 9; cell++) {
+        for (let cell = 0; cell < (debug ? 9 : 0); cell++) {
           const x = (cell % 3) + 0.5;
           const y = Math.floor(cell / 3) + 0.5;
           const Hc = cellH(face, cell);
@@ -167,7 +208,7 @@ export function CameraView() {
           ctx.lineWidth = 1;
         }
         // 正面のラベルは下に（上面と重ならないように）
-        if (!debug && !anchor) continue;
+        if (!debug) continue;
         const label = map(slotPoint(face, 1.5, anchor ? 3.3 : -0.3));
         ctx.font = "600 12px system-ui, sans-serif";
         ctx.textAlign = "center";

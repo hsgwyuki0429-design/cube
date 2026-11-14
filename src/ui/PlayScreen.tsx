@@ -251,6 +251,44 @@ function ScrambleGuide() {
   );
 }
 
+// 「揃った状態から開始」の後: 揃っているかを確かめる。揃っていなければ 6 面を見せてもらう（src/app/timer.ts の checking）
+function CheckStrip() {
+  const t = useStore(timerStore, (s) => ({ unsolved: s.checkUnsolved, left: s.checkLeft }));
+  const done = 48 - t.left;
+  return (
+    <div class="strip-block">
+      <div class="strip-head">
+        <span class="rise">{t.unsolved ? "揃っていないようです" : "キューブを確かめています"}</span>
+        <span class="spacer" />
+        {t.unsolved && (
+          <button
+            class="pill"
+            onClick={() => {
+              controller.beginScan();
+              cancelTimer();
+            }}
+          >
+            6面スキャン
+          </button>
+        )}
+      </div>
+      {t.unsolved ? (
+        <>
+          <p class="strip-note">キューブを持ち替えて、6 面すべてをカメラに見せてください。読み取ったら、その状態からスクランブルを出します。</p>
+          <div class="progress glass-progress" aria-label="読み取ったステッカー">
+            <div style={{ width: `${Math.round((done / 48) * 100)}%` }} />
+          </div>
+          <p class="strip-note">
+            {done} / 48 枚
+          </p>
+        </>
+      ) : (
+        <p class="strip-note">正面と上面がカメラに映るように持ってください。</p>
+      )}
+    </div>
+  );
+}
+
 function DoneStrip() {
   const t = useStore(timerStore, (s) => s);
   const settings = useStore(settingsStore, (s) => ({ notation: s.notation }));
@@ -295,6 +333,7 @@ function DoneStrip() {
 function TimerStrip() {
   const phase = useStore(timerStore, (s) => s.phase);
   const startIndex = useStore(timerStore, (s) => s.startIndex);
+  if (phase === "checking") return <CheckStrip />;
   if (phase === "scrambling") return <ScrambleGuide />;
   if (phase === "preparing") return <div class="strip-block strip-note">スクランブルを作っています…</div>;
   if (phase === "inspection")

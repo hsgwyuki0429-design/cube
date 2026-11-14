@@ -54,7 +54,7 @@ export function StartCard() {
   return (
     <div class="start-card">
       <p class="small" style={{ margin: 0 }}>
-        揃ったキューブならスキャンなしで始められます。崩れていたら 6 面をスキャンしてください。
+        揃ったキューブならスキャンなしで始められます。揃っていなければ、6 面を見せるとその状態からスクランブルを出します。
       </p>
       <div class="btn-row">
         <button class="btn primary" disabled={camera !== "on"} onClick={() => controller.startFromSolved()}>

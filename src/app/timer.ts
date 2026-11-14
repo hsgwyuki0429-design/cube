@@ -10,6 +10,7 @@ import { StartDetector } from "./startDetect";
 import { markPhase } from "./crashGuard";
 import { ScrambleGuide, undoMoves } from "./scrambleGuide";
 import type { TrackUpdate } from "../track/engine";
+import { CHECK_STICKERS, type CheckMemo, checkStep } from "./solvedCheck";
 import { mergeQuickRepeats } from "../track/merge";
 import type { RefineResult } from "../vision/refine";
 import { controller } from "./controller";
@@ -17,7 +18,8 @@ import { settingsStore } from "./settings";
 import { type Solve, loadSolves, saveSolves } from "./storage";
 import { createStore } from "./store";
 
-export type TimerPhase = "idle" | "preparing" | "scrambling" | "inspection" | "solving" | "done";
+// checking: 「揃った状態から開始」の後、本当に揃っているかを確かめる（揃っていなければ 6 面を見せてもらい、その状態からスクランブルを作る）
+export type TimerPhase = "idle" | "checking" | "preparing" | "scrambling" | "inspection" | "solving" | "done";
 
 export interface TimerState {
   phase: TimerPhase;
@@ -36,6 +38,8 @@ export interface TimerState {
   message: string | null;
   analysisProgress: number; // 精密解析の進み具合（0..1）
   analysisStartedAt: number; // 精密解析を始めた時刻（残り時間の目安に使う）
+  checkUnsolved: boolean; // checking: 揃っていないように見えた
+  checkLeft: number; // checking: まだ読めていないステッカーの数（センター以外 48 枚のうち）
 }
 
 export const timerStore = createStore<TimerState>({
@@ -55,6 +59,8 @@ export const timerStore = createStore<TimerState>({
   message: null,
   analysisProgress: 0,
   analysisStartedAt: 0,
+  checkUnsolved: false,
+  checkLeft: 48,
 });
 
 let target: CubeState | null = null;
@@ -106,12 +112,38 @@ export function nextGuideMove(t: TimerState): number | null {
 }
 
 export async function newScramble(): Promise<void> {
-  const track = controller.store.get().track;
   const cube = controller.store.get().cube;
   if (!cube) {
     timerStore.set({ message: "先にキューブをスキャンしてください。" });
     return;
   }
+  // 「揃った状態から開始」の直後: まず揃っているかを見る（揃っていなければ、その状態を読み取ってからスクランブルを作る）
+  if (controller.takeStartCheck()) {
+    check = null;
+    timerStore.set({ phase: "checking", message: null, result: null, checkUnsolved: false, checkLeft: CHECK_STICKERS });
+    return;
+  }
+  await makeScramble();
+}
+
+// ---- 揃っているかを確かめる（checking。src/app/solvedCheck.ts） ----
+let check: CheckMemo | null = null;
+
+function onCheck(u: TrackUpdate): void {
+  const s = timerStore.get();
+  const r = checkStep(u, check);
+  check = r.memo;
+  if (r.step.unsolved !== s.checkUnsolved || r.step.left !== s.checkLeft) timerStore.set({ checkUnsolved: r.step.unsolved, checkLeft: r.step.left });
+  if (!r.step.ready) return;
+  check = null;
+  controller.beep(880, 0.08);
+  void makeScramble();
+}
+
+async function makeScramble(): Promise<void> {
+  const track = controller.store.get().track;
+  const cube = controller.store.get().cube;
+  if (!cube) return;
   timerStore.set({ phase: "preparing", message: null, result: null });
   const scramble = await randomScramble();
   target = applyMoves(solvedState(), scramble);
@@ -126,6 +158,7 @@ export async function newScramble(): Promise<void> {
 
 export function cancelTimer(): void {
   target = null;
+  check = null;
   if (recording) controller.cancelAnalysis();
   recording = false;
   timerStore.set({ phase: "idle", guide: [], scramble: [], message: null });
@@ -133,6 +166,10 @@ export function cancelTimer(): void {
 
 function onTrack(u: TrackUpdate): void {
   const s = timerStore.get();
+  if (s.phase === "checking") {
+    onCheck(u);
+    return;
+  }
   const state = Uint8Array.from(u.state);
   if (s.phase === "scrambling" && target) {
     if (statesEqual(state, target)) {

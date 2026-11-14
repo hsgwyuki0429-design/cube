@@ -395,6 +395,7 @@ class Controller {
   }
 
   confirmScan(): void {
+    this.startCheck = false;
     const scan = this.store.get().scan;
     if (!scan?.result || !scan.edited) return;
     const state = Uint8Array.from(scan.edited);
@@ -406,9 +407,19 @@ class Controller {
     this.startTrackingFrom(state);
   }
 
-  // 完成状態から始める（色はマーカーの ID で決まるので、スキャンしなくてよい）
+  // 完成状態から始める（色はマーカーの ID で決まるので、スキャンしなくてよい）。本当に揃っているかはタイマーが確かめる
+  // （src/app/timer.ts の checking: 揃っていなければ 6 面を見せてもらい、読み取った状態からスクランブルを作る）
   startFromSolved(): void {
+    this.startCheck = true;
     this.startTrackingFrom(solvedState());
+  }
+
+  private startCheck = false;
+  // 「揃った状態から開始」の後の最初のスクランブルか（1 回だけ true を返す）
+  takeStartCheck(): boolean {
+    const v = this.startCheck;
+    this.startCheck = false;
+    return v;
   }
 
   // ---- 追跡 ----
