@@ -129,9 +129,6 @@ input {
   height: 100%;
   object-fit: contain;
 }
-.cube3d.mirrored twisty-player {
-  transform: scaleX(-1);
-}
 .camera video {
   transform: scale(var(--zoom, 1));
 }
@@ -184,11 +181,9 @@ input {
   max-height: 100%;
   width: 100%;
 }
-.cube3d twisty-player {
-  width: 100%;
-  height: 100%;
-}
 .cube3d.live-cube canvas {
+  position: absolute;
+  inset: 0;
   display: block;
   width: 100%;
   height: 100%;
@@ -1959,11 +1954,7 @@ input[type="range"] {
 }
 .cube-block .cube3d {
   aspect-ratio: auto;
-  height: auto;
-  min-height: 200px;
-}
-.cube-block .cube3d twisty-player {
-  height: 220px;
+  height: 260px;
 }
 button.mv {
   font: inherit;

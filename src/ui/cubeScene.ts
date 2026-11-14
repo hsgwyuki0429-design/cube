@@ -6,14 +6,16 @@
 // キューブを回転の軸のまわりに回して見せ、回し終えたら回転を戻して回した後の色に塗り替える（見た目は同じ）。
 import {
   AmbientLight,
-  CircleGeometry,
+  CanvasTexture,
   Color,
   DirectionalLight,
   Group,
+  Matrix4,
   Mesh,
   MeshBasicMaterial,
   MeshStandardMaterial,
   PerspectiveCamera,
+  PlaneGeometry,
   PMREMGenerator,
   Quaternion,
   Scene,
@@ -70,6 +72,11 @@ export class CubeScene {
   private state: CubeState = solvedState();
   private turn: Turn | null = null;
   private queue: { move: number; dur: number }[] = [];
+  private dimMats: MeshStandardMaterial[];
+  private grayMat: MeshStandardMaterial;
+  private mask: PieceMask | null = null;
+  // 手を回し始めたとき
+  onTurn: ((move: number) => void) | null = null;
   private dirty = true;
   private raf = 0;
   private disposed = false;
@@ -97,17 +104,18 @@ export class CubeScene {
     this.camera.lookAt(0, 0, 0);
 
     this.mats = FACE_COLORS.map((c) => new MeshStandardMaterial({ color: new Color(c), roughness: 0.28, metalness: 0, envMapIntensity: 0.55 }));
+    this.dimMats = FACE_COLORS.map((c) => new MeshStandardMaterial({ color: new Color(c).multiplyScalar(0.3), roughness: 0.5, metalness: 0, envMapIntensity: 0.2 }));
+    this.grayMat = new MeshStandardMaterial({ color: 0x5a5a60, roughness: 0.6, metalness: 0, envMapIntensity: 0.2 });
     const body = new MeshStandardMaterial({ color: 0x0c0c0e, roughness: 0.42, metalness: 0, envMapIntensity: 0.6 });
     const boxGeo = new RoundedBoxGeometry(0.985, 0.985, 0.985, 4, 0.11);
     const stickerGeo = roundedSquare(0.86, 0.14);
     this.scene.add(this.root);
     this.root.add(this.pivot);
 
-    // 床の影（キューブの下にぼんやり）
-    const shadow = new Mesh(new CircleGeometry(2.3, 48), new MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.22, depthWrite: false }));
+    // 床の影（キューブの下にぼんやり。縁はぼかす）
+    const shadow = new Mesh(new PlaneGeometry(5, 5), new MeshBasicMaterial({ map: softSpot(), transparent: true, depthWrite: false }));
     shadow.rotation.x = -Math.PI / 2;
-    shadow.position.y = -2.75;
-    shadow.scale.set(1, 0.9, 1);
+    shadow.position.y = -2.6;
     this.scene.add(shadow);
 
     const byPos = new Map<string, Group>();
@@ -154,9 +162,20 @@ export class CubeScene {
     return this.state;
   }
 
-  // 手を回す（前の手を回し終えてから）
-  enqueue(move: number): void {
-    this.queue.push({ move, dur: 0 });
+  // 手を回す（前の手を回し終えてから）。dur（ms）を渡せばその長さで、なければ決まった速さ（溜まっていれば速める）
+  enqueue(move: number, dur = 0): void {
+    this.queue.push({ move, dur });
+  }
+
+  // ピースごとの見せ方（null = 全部ふつう）。ピースはステッカーの色の組で見分ける（センターは 1 色）
+  setMask(mask: PieceMask | null): void {
+    this.mask = mask;
+    this.paint();
+  }
+
+  // 回している手があるか
+  turning(): boolean {
+    return !!this.turn;
   }
 
   // 待っている手の数（回している手は含まない）
@@ -188,7 +207,14 @@ export class CubeScene {
   }
 
   private paint(): void {
-    for (let i = 0; i < 54; i++) this.stickers[i].material = this.mats[this.state[i]];
+    const mask = this.mask;
+    if (!mask) for (let i = 0; i < 54; i++) this.stickers[i].material = this.mats[this.state[i]];
+    else
+      for (const ids of PIECES) {
+        const colors = ids.map((i) => this.state[i]);
+        const look = mask(colors);
+        for (const i of ids) this.stickers[i].material = look === "gray" ? this.grayMat : look === "dim" ? this.dimMats[this.state[i]] : this.mats[this.state[i]];
+      }
     this.dirty = true;
   }
 
@@ -202,9 +228,10 @@ export class CubeScene {
     const angle = amount === 1 ? -Math.PI / 2 : amount === 2 ? -Math.PI : Math.PI / 2;
     const base = amount === 2 ? HALF_MS : TURN_MS;
     const speed = 1 + 0.45 * this.queue.length; // 溜まっていれば速める
-    const dur = Math.max(amount === 2 ? MIN_TURN_MS * 1.3 : MIN_TURN_MS, base / speed);
+    const dur = next.dur > 0 ? next.dur : Math.max(amount === 2 ? MIN_TURN_MS * 1.3 : MIN_TURN_MS, base / speed);
     for (const c of this.cubies) if (c.pos[0] * n[0] + c.pos[1] * n[1] + c.pos[2] * n[2] === 1) this.pivot.add(c.group);
     this.turn = { move: next.move, start: now, dur, axis: new Vector3(...n), angle };
+    this.onTurn?.(next.move);
   }
 
   private endTurn(done: boolean): void {
@@ -241,6 +268,56 @@ export class CubeScene {
     }
     this.raf = requestAnimationFrame(this.loop);
   };
+}
+
+export type PieceLook = "on" | "dim" | "gray";
+export type PieceMask = (colors: number[]) => PieceLook;
+
+// キュービーごとの facelet 番号（センター・エッジ・コーナー）
+const PIECES: number[][] = (() => {
+  const by = new Map<string, number[]>();
+  for (let i = 0; i < 54; i++) {
+    const k = faceletGeometry(i).pos.join(",");
+    by.set(k, [...(by.get(k) ?? []), i]);
+  }
+  return [...by.values()];
+})();
+
+// 行優先 3×3 の回転行列 → 四元数
+export function matToQuat(m: readonly number[]): Quaternion {
+  return new Quaternion().setFromRotationMatrix(new Matrix4().set(m[0], m[1], m[2], 0, m[3], m[4], m[5], 0, m[6], m[7], m[8], 0, 0, 0, 0, 1));
+}
+
+// q に一番近い 24 通りの持ち方（90° ごと）から、q へ gain の割合だけ傾けた向き（映った傾きを弱めて見せる）
+const ORIENT_QUATS: Quaternion[] = [];
+export function damped(q: Quaternion, gain: number, orientations: readonly (readonly number[])[]): Quaternion {
+  if (!ORIENT_QUATS.length) for (const m of orientations) ORIENT_QUATS.push(matToQuat(m));
+  let best = ORIENT_QUATS[0];
+  let bd = -1;
+  for (const o of ORIENT_QUATS) {
+    const d = Math.abs(o.dot(q));
+    if (d > bd) {
+      bd = d;
+      best = o;
+    }
+  }
+  return best.clone().slerp(q, gain);
+}
+
+// 真ん中が濃く、縁へ消えていく丸い影
+function softSpot(): CanvasTexture {
+  const c = document.createElement("canvas");
+  c.width = c.height = 128;
+  const g = c.getContext("2d")!;
+  const r = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+  r.addColorStop(0, "rgba(0,0,0,0.32)");
+  r.addColorStop(0.5, "rgba(0,0,0,0.14)");
+  r.addColorStop(1, "rgba(0,0,0,0)");
+  g.fillStyle = r;
+  g.fillRect(0, 0, 128, 128);
+  const t = new CanvasTexture(c);
+  t.colorSpace = SRGBColorSpace;
+  return t;
 }
 
 function roundedSquare(size: number, r: number): ShapeGeometry {

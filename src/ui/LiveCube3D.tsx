@@ -8,9 +8,8 @@ import { useEffect, useRef } from "preact/hooks";
 import { Quaternion } from "three";
 import { controller } from "../app/controller";
 import { ORIENTATIONS, ROTATION, applyMoves, mul, solvedState, type Mat3 } from "../cube/model";
-import { CubeScene, approach } from "./cubeScene";
+import { CubeScene, approach, matToQuat } from "./cubeScene";
 import { DEFAULT_GYRO, GyroFilter } from "./gyro";
-import { matToQuat } from "./Cube3D";
 
 export interface LiveCube3DProps {
   epoch: number;
