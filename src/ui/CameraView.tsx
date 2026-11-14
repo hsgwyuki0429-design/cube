@@ -221,15 +221,10 @@ export function CameraView() {
               <path d="M3 8a2 2 0 0 1 2-2h2l1.5-2h7L17 6h2a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
               <circle cx="12" cy="13" r="4" />
             </svg>
-            {app.camera === "error" ? <p>{app.error}</p> : <p>キューブを映すと、回した手を 3D で再現します。</p>}
-            <div class="btn-row" style={{ justifyContent: "center" }}>
-              <button class="btn primary small" onClick={() => controller.startCamera()} disabled={app.camera === "starting"}>
-                {app.camera === "starting" ? "起動中…" : "カメラを開始"}
-              </button>
-              <button class="btn small" onClick={() => controller.startDemo()}>
-                デモで試す
-              </button>
-            </div>
+            {app.camera === "error" && <p>{app.error}</p>}
+            <button class="btn primary" onClick={() => controller.startCamera()} disabled={app.camera === "starting"}>
+              {app.camera === "starting" ? "起動中…" : "カメラを開始"}
+            </button>
           </div>
         </div>
       )}

@@ -7,6 +7,7 @@ import { effectiveTime, formatTime } from "../app/storage";
 import { useStore } from "../app/store";
 import { timerStore } from "../app/timer";
 import { crossFaceOf } from "../cube/analysis";
+import { f2lPlan } from "../cube/f2l";
 import { holdWithDown } from "../cube/hold";
 import { MOVE_NAMES, applyMoves, moveIndex, parseMoves, relativeMove, rotateOrientation, solvedState } from "../cube/model";
 import type { SolveMove } from "../app/storage";
@@ -31,6 +32,7 @@ const safeMoves = (names: string[]): number[] | null => {
 // 手ごとの、カメラから見えていたキューブの向き。以前の記録（o がない）は、持ち方基準の表記 r とキューブ固定の表記 m から、
 // 合う向きのうち前の手の向きにいちばん近いもの（同じなら同じ）を選ぶ（表記は自分から見た向きか、カメラから見た向き）
 function replayMoves(moves: SolveMove[], ms: number[]): ReplayMove[] {
+  // 回し始めがない以前の記録は、回し終わりの 150ms 前から
   let prev: number | null = null;
   return moves.map((m, i) => {
     let o: number | null = m.o ?? null;
@@ -40,7 +42,7 @@ function replayMoves(moves: SolveMove[], ms: number[]): ReplayMove[] {
       o = prev !== null && cands.includes(prev) ? prev : (cands[0] ?? prev);
     }
     prev = o;
-    return { move: ms[i], s: m.s ?? m.t, orient: o };
+    return { move: ms[i], s: m.s ?? m.t - 150, t: m.t, orient: o };
   });
 }
 
@@ -49,6 +51,10 @@ export function SolveDetail() {
   const solves = useStore(timerStore, (t) => t.solves);
   const solve = solves.find((s) => s.id === id) ?? null;
   const notation = useStore(settingsStore, (s) => s.notation);
+  const cube3dView = useStore(settingsStore, (s) => s.cube3dView);
+  const viewpoint = useStore(settingsStore, (s) => s.viewpoint);
+  const mirror = useStore(controller.store, (s) => s.mirror);
+  const demo = useStore(controller.store, (s) => s.demo);
   // 3D で見せるもの: 自分の解き方の k 手目から / X クロスの最短
   const [view, setView] = useState<{ mode: "mine"; at: number } | { mode: "xcross" }>({ mode: "mine", at: 0 });
   const [xcross, setXcross] = useState<{ face: number; result: XCrossResult | null } | "busy" | "error" | null>(null);
@@ -149,7 +155,22 @@ export function SolveDetail() {
           </div>
           {solve.scramble ? (
             view.mode === "mine" && mine ? (
-              <ReplayCube key={solve.id} setupAlg={solve.scramble} moves={replayMoves(solve.moves, mine)} from={view.at} poses={solve.poses} onTurn={() => controller.turnSound()} />
+              <ReplayCube
+                key={solve.id}
+                setupAlg={solve.scramble}
+                moves={replayMoves(solve.moves, mine)}
+                from={view.at}
+                poses={solve.poses}
+                onTurn={() => controller.turnSound()}
+                mirror={cube3dView === "camera" && mirror && !demo}
+                userView={cube3dView === "user"}
+                solverFlip={viewpoint === "user" && !demo}
+                downOrient={hold.o}
+                downLabel={`定点（${FACE_COLOR[face]}面下）`}
+                crossFace={face}
+                plan={start ? f2lPlan(start, mine, face) : []}
+                labels={solve.moves.map(label)}
+              />
             ) : (
               <Cube3D key={`${solve.id}-x`} epoch={0} setupMoves={[]} moves={[]} orient={null} controls setupAlg={setupAlg} alg={alg} />
             )
