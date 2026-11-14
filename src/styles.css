@@ -772,10 +772,6 @@ input[type="range"] {
   padding: calc(min(52dvh, 440px) + env(safe-area-inset-top)) 16px 120px;
   color: rgba(235, 235, 245, 0.6);
 }
-.stage-cam .camera .placeholder svg {
-  display: block;
-  margin: 0 auto 14px;
-}
 .stage-cam .camera .placeholder .btn.primary {
   height: 48px;
   padding: 0 28px;
@@ -850,7 +846,7 @@ input[type="range"] {
 .stage-bar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  justify-content: flex-end;
   gap: 8px;
 }
 .mode-switch {

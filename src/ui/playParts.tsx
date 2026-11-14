@@ -1,11 +1,6 @@
-// プレイ画面の部品: 追跡の状態・解法ガイド・始め方（揃った状態から / 6 面スキャン）
-import { useEffect, useRef, useState } from "preact/hooks";
+// プレイ画面の部品: 追跡の状態・始め方（揃った状態から / 6 面スキャン）
 import { controller } from "../app/controller";
-import { settingsStore } from "../app/settings";
 import { useStore } from "../app/store";
-import { type CubeState, MOVE_NAMES, applyMoves, isSolved, relativeMove, statesEqual } from "../cube/model";
-import { solveState } from "../cube/solver";
-import { viewOrient } from "./notation";
 
 // カメラの実測 fps が低いと速い回転を取りこぼす（暗い場所ではカメラが露光を伸ばして fps が落ちる）
 function FpsWarning() {
@@ -54,67 +49,6 @@ function TrackStatusBanner() {
   );
 }
 
-export function SolutionGuide() {
-  const track = useStore(controller.store, (s) => s.track);
-  const cube = useStore(controller.store, (s) => s.cube);
-  const settings = useStore(settingsStore, (s) => ({ notation: s.notation, viewpoint: s.viewpoint }));
-  const [guide, setGuide] = useState<{ moves: number[]; states: CubeState[]; done: number } | null>(null);
-  const [busy, setBusy] = useState(false);
-  const pending = useRef(0);
-  const state = track ? Uint8Array.from(track.state) : cube ? Uint8Array.from(cube.state) : null;
-
-  const compute = async (from: CubeState) => {
-    setBusy(true);
-    const id = ++pending.current;
-    try {
-      const moves = await solveState(from);
-      if (id !== pending.current) return;
-      const states = [from];
-      for (const m of moves) states.push(applyMoves(states[states.length - 1], [m]));
-      setGuide({ moves, states, done: 0 });
-    } finally {
-      if (id === pending.current) setBusy(false);
-    }
-  };
-
-  useEffect(() => {
-    if (!guide || !state) return;
-    const k = guide.states.findIndex((g, i) => i >= guide.done && statesEqual(g, state));
-    if (k >= 0 && k !== guide.done) setGuide({ ...guide, done: k });
-    else if (k < 0 && !busy) compute(state);
-  }, [track?.observations]);
-
-  if (!state) return null;
-  if (!guide)
-    return (
-      <button class="btn" disabled={busy || isSolved(state)} onClick={() => compute(state)}>
-        {busy ? "計算中…" : "解法を表示"}
-      </button>
-    );
-  const orient = track?.orient ?? 0;
-  const label = (m: number) => (settings.notation === "relative" ? MOVE_NAMES[relativeMove(m, viewOrient(orient, settings))] : MOVE_NAMES[m]);
-  const finished = guide.done >= guide.moves.length;
-  return (
-    <div>
-      <div class="muted small" style={{ marginBottom: 6 }}>
-        {finished ? "完成しました！" : `残り ${guide.moves.length - guide.done} 手（今の持ち方での表記）。光っている手を回してください。`}
-      </div>
-      <div class="moves">
-        {guide.moves.map((m, i) => (
-          <span key={i} class={`mv ${i < guide.done ? "done" : i === guide.done ? "next" : ""}`}>
-            {label(m)}
-          </span>
-        ))}
-      </div>
-      <div class="btn-row" style={{ marginTop: 8 }}>
-        <button class="btn small" onClick={() => setGuide(null)}>
-          閉じる
-        </button>
-      </div>
-    </div>
-  );
-}
-
 export function StartCard() {
   const camera = useStore(controller.store, (s) => s.camera);
   return (
@@ -130,7 +64,6 @@ export function StartCard() {
           6面スキャン
         </button>
       </div>
-      {camera !== "on" && <p class="muted small" style={{ margin: 0 }}>先にカメラを開始してください（「デモで試す」でも動きを確認できます）。</p>}
       <details class="tips">
         <summary class="small">うまく追跡するコツ</summary>
         <ul class="small muted">
