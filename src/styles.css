@@ -766,8 +766,26 @@ input[type="range"] {
   -webkit-backdrop-filter: blur(20px);
   padding: 7px 16px;
 }
+/* カメラを開始する前: タイム・記録の下（重ならない所）に「カメラを開始」だけ */
 .stage-cam .camera .placeholder {
-  padding-bottom: 30dvh;
+  align-items: start;
+  padding: calc(min(52dvh, 440px) + env(safe-area-inset-top)) 16px 120px;
+  color: rgba(235, 235, 245, 0.6);
+}
+.stage-cam .camera .placeholder svg {
+  display: block;
+  margin: 0 auto 14px;
+}
+.stage-cam .camera .placeholder .btn.primary {
+  height: 48px;
+  padding: 0 28px;
+  font-size: 16px;
+}
+@media (min-width: 900px), (orientation: landscape) and (max-height: 540px) {
+  .stage-cam .camera .placeholder {
+    align-items: center;
+    padding: 16px 40% 16px 92px;
+  }
 }
 /* スキャン中は案内の板がカメラに重ならないように、映像を板の上（横持ちでは右）に寄せ、タイムは隠す */
 .stage-cam {
@@ -2725,4 +2743,34 @@ button.mv {
 }
 .switch input:checked::after {
   transform: translateX(16px);
+}
+
+/* 記録の 3D: いま回した手の表記を大きく */
+.replay-stage {
+  position: relative;
+}
+.replay-move {
+  position: absolute;
+  left: 4px;
+  top: 0;
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  pointer-events: none;
+  animation: replay-move 0.6s var(--ease-out) both;
+}
+@keyframes replay-move {
+  0% {
+    transform: translateY(6px) scale(0.7);
+    opacity: 0;
+  }
+  25% {
+    transform: none;
+    opacity: 1;
+  }
+  100% {
+    transform: none;
+    opacity: 0.35;
+  }
 }

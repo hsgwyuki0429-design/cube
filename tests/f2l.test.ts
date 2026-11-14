@@ -19,16 +19,15 @@ describe("F2L のスロット", () => {
     expect(plan[3]).toBeNull(); // F2L が済んだ後
   });
 
-  it("光らせる印: 次のペアとクロス・入ったスロットはふつう、最後の段は暗く", () => {
+  it("光らせる印: 次のペアだけふつう、クロスと入ったスロットは暗く、ほかは灰色", () => {
     const start = applyMoves(solvedState(), parseMoves("R U' R'"));
     const plan = f2lPlan(start, parseMoves("R U R'"), 3);
-    const mask = f2lMask(3, plan[0]);
-    expect(mask).toMatch(/^EDGES:[-D]{12},CORNERS:[-D]{8},CENTERS:------$/);
-    // U の段のエッジ（UF UR UB UL）・コーナー（最初の 4 つ）は暗い
-    expect(mask!.slice(6, 10)).toBe("DDDD");
-    expect(mask!.split(",")[1].slice(8, 12)).toBe("DDDD");
-    // D の段のエッジ（クロス）と中段のエッジはふつう
-    expect(mask!.slice(10, 18)).toBe("--------");
+    const mask = f2lMask(3, plan[0])!;
+    expect(mask).toMatch(/^EDGES:[-DI]{12},CORNERS:[-DI]{8},CENTERS:D{6}$/);
+    const edges = mask.slice(6, 18); // UF UR UB UL DF DR DB DL FR FL BR BL
+    const corners = mask.split(",")[1].slice(8); // UFR URB UBL ULF DRF DFL DLB DBR
+    expect(edges).toBe("IIIIDDDD-DDD");
+    expect(corners).toBe("IIII-DDD");
     expect(f2lMask(3, null)).toBeNull();
   });
 });

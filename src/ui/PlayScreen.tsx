@@ -397,7 +397,9 @@ function FreeStrip() {
 }
 
 function BottomStrip() {
-  const app = useStore(controller.store, (s) => ({ scan: !!s.scan, cube: !!s.cube, panel: s.panel }));
+  const app = useStore(controller.store, (s) => ({ scan: !!s.scan, cube: !!s.cube, panel: s.panel, camera: s.camera }));
+  // カメラを開始する前は、カメラの「カメラを開始」だけにする（始め方の案内はカメラが動いてから）
+  if (!app.scan && !app.cube && app.camera !== "on") return null;
   // スキャン・始め方は文字が多いので、すりガラスの板に載せる
   const sheet = app.scan || !app.cube;
   return (

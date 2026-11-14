@@ -1,18 +1,19 @@
 // 記録の詳しい画面の 3D: 自分の解き方を、実際と同じ速さで再生する。手を回し始める時刻・1 手を回す長さ（回し始め〜回し終わり）とも
-// 計測した時刻のとおり（速さを 1/2・1/4・1/8 にしても、全部を同じ割合で遅くする）。
+// 計測した時刻のとおり（速さを 1/2・1/4・1/8 にしても、全部を同じ割合で遅くする）。「回転を見やすく」（既定オン）は 1 手の描画を
+// CLEAR_TURN_MS より短くしない（遅れは手の間の止まりで取り戻す）。回した手の表記を 3D の上に大きく出す。
 // 見え方は 3 通り（`ReplayView`）:
 // - camera: 計測中にカメラから見えていた向き（`Solve.poses`）。ライブの 3D と同じく、鏡像のプレビューなら鏡像、自分視点なら y2
 // - fixed: 白上・緑前を少し上と右から見た定点
 // - down: クロスの面を下にした定点。「F2L に合わせる」がオンなら、F2L の間は次に入るスロットが、入れたときにカメラから見て
 //   あった側（手前の右・手前の左・奥の右・奥の左）に来るように縦の軸で 90° ごとに回す（手前で入れたペアは手前に、奥で入れた
-//   ペア（裏 F2L）は奥に）
+//   ペア（裏 F2L）は奥に）。クロス・OLL・PLL の間はカメラの方を向いていた面を前に
 // 「次の F2L を光らせる」は、F2L の途中で次に入るペアとクロス・入ったスロットのほかを暗くする（どの見え方でも）。
 // 指でドラッグしている間だけ指のとおりに向きを変え、離すと戻る
 import { useEffect, useRef, useState } from "preact/hooks";
 import { type Object3D, Quaternion, Vector3 } from "three";
 import type { TwistyPlayer } from "cubing/twisty";
 import { type F2LStep, f2lMask, slotDir } from "../cube/f2l";
-import { type Mat3, MOVE_NAMES, ORIENTATIONS, ROTATION, apply, mul } from "../cube/model";
+import { type Mat3, MOVE_NAMES, NORMAL, OPPOSITE, ORIENTATIONS, ROTATION, apply, mul } from "../cube/model";
 import { PLAYER_BASE, matToQuat } from "./Cube3D";
 
 export interface ReplayMove {
@@ -27,6 +28,10 @@ export type ReplayView = "camera" | "fixed" | "down";
 const CATCH_UP_MS = 500; // cubing.js で足した手を回す長さ（tempoScale 1 のとき）
 const MIN_TURN_MS = 60; // 回し終わりが分からない・短すぎる手の描画の長さの下限（実際の時間）
 const UNKNOWN_TURN_MS = 150;
+// 「回転を見やすく」: 1 手を回す描画を少なくともこの長さにし、次の手はその後に（遅れた分は手の間の止まりで取り戻す）。
+// 実際の速さ（1 手 0.1〜0.2 秒）のままでは、速い所の回転が目で追えなかった
+const CLEAR_TURN_MS = 340;
+const CLEAR_GAP_MS = 50;
 
 // 少し上と右から見た向き（3 面が見える）
 const TILT = new Quaternion()
@@ -34,7 +39,8 @@ const TILT = new Quaternion()
   .multiply(new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), (25 * Math.PI) / 180));
 const tiltOf = (m: Mat3) => new Quaternion().multiplyQuaternions(TILT, matToQuat(m));
 
-// 記録した向き（計測開始からの ms, x, y, z, w）をならす: 1 つだけ大きく跳ねた向き（持ち替えの読み違い）は捨て、前後 ±150ms を平均する
+// 記録した向き（計測開始からの ms, x, y, z, w）をならす: 1 つだけ大きく跳ねた向き（持ち替えの読み違い）は捨て、前後 ±250ms を平均する
+// （細かく揺れると、層の回転よりキューブ全体の揺れが目に入って回転が見づらかった）
 type Pose = { t: number; q: Quaternion };
 function smoothPoses(raw: number[][]): Pose[] {
   const ps = raw.map((p) => ({ t: p[0], q: new Quaternion(p[1], p[2], p[3], p[4]).normalize() }));
@@ -47,9 +53,9 @@ function smoothPoses(raw: number[][]): Pose[] {
   return kept.map((p) => {
     let x = 0, y = 0, z = 0, w = 0, n = 0;
     for (const o of kept) {
-      if (Math.abs(o.t - p.t) > 150 || o.q.angleTo(p.q) > 0.6) continue;
+      if (Math.abs(o.t - p.t) > 250 || o.q.angleTo(p.q) > 0.6) continue;
       const s = o.q.dot(p.q) < 0 ? -1 : 1;
-      const k = 1 - Math.abs(o.t - p.t) / 200;
+      const k = 1 - Math.abs(o.t - p.t) / 300;
       x += s * k * o.q.x;
       y += s * k * o.q.y;
       z += s * k * o.q.z;
@@ -126,6 +132,7 @@ export interface ReplayCubeProps {
   downLabel: string; // 「白面下」など
   crossFace: number;
   plan: (F2LStep | null)[]; // k 手回した後の次に入るスロット（f2lPlan）
+  labels: string[]; // 手ごとの表記（いま回した手を 3D の上に大きく出す）
 }
 
 export function ReplayCube(props: ReplayCubeProps) {
@@ -141,6 +148,8 @@ export function ReplayCube(props: ReplayCubeProps) {
   const [view, setView] = usePref<ReplayView>("view", "camera");
   const [follow, setFollow] = usePref<boolean>("f2lFollow", true);
   const [glow, setGlow] = usePref<boolean>("f2lGlow", false);
+  const [clear, setClear] = usePref<boolean>("clearTurns", true);
+  const [shown, setShown] = useState<{ i: number; label: string } | null>(null);
   const slow = SPEEDS[speed].slow;
   // 再生中のフレームからも、いまの見え方・スイッチを読む
   const opts = useRef({ view, follow, glow });
@@ -165,11 +174,30 @@ export function ReplayCube(props: ReplayCubeProps) {
     return props.userView ? new Quaternion().multiplyQuaternions(matToQuat(mul(ROTATION.y, ROTATION.y)), base) : base;
   };
 
-  // F2L に合わせる: 次に入るスロットが、入れた手のときにカメラから見てあった側（手前・奥 × 右・左）に来るように縦の軸で回す
-  const downMatrix = (k: number): Mat3 => {
+  // カメラの方を向いていた側面（クロスの面とその反対を除く）を前にする（クロス・OLL・PLL の間）。「カメラと同じ」の見え方で前に
+  // 見えていた面と同じ（自分視点なら反対側）
+  const cameraFront = (k: number, t: number, hold: Mat3): Mat3 => {
+    const q = poseAt(poses.current, t);
+    const o = props.moves[Math.min(k, props.moves.length - 1)]?.orient;
+    if (!q && (o === null || o === undefined)) return hold;
+    const toCam = (v: readonly number[]) => (q ? new Vector3(v[0], v[1], v[2]).applyQuaternion(q).z : apply(ORIENTATIONS[o!], [v[0], v[1], v[2]])[2]);
+    const sides = [0, 1, 2, 3, 4, 5].filter((f) => f !== props.crossFace && f !== OPPOSITE[props.crossFace]);
+    const sign = props.userView ? -1 : 1;
+    const front = sides.reduce((best, f) => (sign * toCam(NORMAL[f]) > sign * toCam(NORMAL[best]) ? f : best), sides[0]);
+    for (let r = 0; r < 4; r++) {
+      const m = mul(yaw(r), hold);
+      if (apply(m, NORMAL[front])[2] > 0.5) return m;
+    }
+    return hold;
+  };
+
+  // F2L に合わせる: 次に入るスロットが、入れた手のときにカメラから見てあった側（手前・奥 × 右・左）に来るように縦の軸で回す。
+  // F2L の前後（クロス・OLL・PLL）はカメラの方を向いていた面を前に
+  const downMatrix = (k: number, t: number): Mat3 => {
     const hold = ORIENTATIONS[props.downOrient];
     const step = props.plan[k];
-    if (!opts.current.follow || !step) return hold;
+    if (!opts.current.follow) return hold;
+    if (!step) return cameraFront(k, t, hold);
     const done = props.moves[step.doneAt - 1];
     const dir = slotDir(step.slot);
     // 入れたときのカメラから見た向き（記録の向き → 手ごとの向き → 分からなければ手前の右）
@@ -194,7 +222,7 @@ export function ReplayCube(props: ReplayCubeProps) {
   const targetQuat = (k: number, t: number): Quaternion => {
     if (opts.current.view === "camera") return cameraQuat(t, k);
     if (opts.current.view === "fixed") return TILT.clone();
-    return tiltOf(downMatrix(k));
+    return tiltOf(downMatrix(k, t));
   };
 
   // 定点の向きは、変わるときだけなめらかに追う（camera は毎フレーム記録どおり）
@@ -255,7 +283,8 @@ export function ReplayCube(props: ReplayCubeProps) {
     showAt(k, startOf(k), true);
   };
 
-  // k 手目から、実際と同じ時刻で再生する（速さを変えたら全部を同じ割合で遅く）
+  // k 手目から、実際と同じ時刻で再生する（速さを変えたら全部を同じ割合で遅く）。「回転を見やすく」なら 1 手を回す描画を
+  // CLEAR_TURN_MS より短くせず、次の手はその後に（向きの記録は再生の時刻 → 実際の時刻に直して合わせる）
   const play = (k0: number) => {
     const p = player.current;
     if (!p) return;
@@ -265,23 +294,45 @@ export function ReplayCube(props: ReplayCubeProps) {
     setPlaying(true);
     // 最初の手は少し待ってから（いきなり回り始めないように）
     const real0 = startOf(from) - 300;
-    const t0 = performance.now();
-    const end = props.moves[props.moves.length - 1].t + 400;
-    let next = from;
-    const step = (now: number) => {
-      const real = real0 + (now - t0) / slow;
-      while (next < props.moves.length && props.moves[next].s <= real) {
-        const m = props.moves[next];
-        const dur = (m.t > m.s ? Math.max(MIN_TURN_MS, m.t - m.s) : UNKNOWN_TURN_MS) * slow;
-        p.tempoScale = CATCH_UP_MS / dur;
-        p.experimentalAddMove(MOVE_NAMES[m.move]);
-        props.onTurn?.();
-        next++;
-        setAt(next);
-        if (opts.current.view !== "camera") showAt(next, real, false);
+    const sched: { at: number; len: number; real: number }[] = [];
+    let prevEnd = -Infinity;
+    for (let i = from; i < props.moves.length; i++) {
+      const m = props.moves[i];
+      let len = (m.t > m.s ? Math.max(MIN_TURN_MS, m.t - m.s) : UNKNOWN_TURN_MS) * slow;
+      let at = (m.s - real0) * slow;
+      if (clear) {
+        len = Math.max(len, CLEAR_TURN_MS);
+        at = Math.max(at, prevEnd + CLEAR_GAP_MS);
       }
-      if (opts.current.view === "camera") showAt(next, real, true);
-      if (real < end) loop.current = requestAnimationFrame(step);
+      sched.push({ at, len, real: m.s });
+      prevEnd = at + len;
+    }
+    const end = prevEnd + 500;
+    // 再生の時刻 tp の実際の時刻（遅れている間は次の手の回し始めで待つ）
+    const realAt = (tp: number) => {
+      let j = -1;
+      while (j + 1 < sched.length && sched[j + 1].at <= tp) j++;
+      if (j < 0) return Math.min(real0 + tp / slow, sched[0].real);
+      const r = sched[j].real + (tp - sched[j].at) / slow;
+      return j + 1 < sched.length ? Math.min(r, sched[j + 1].real) : r;
+    };
+    const t0 = performance.now();
+    let next = 0;
+    const step = (now: number) => {
+      const tp = now - t0;
+      const real = realAt(tp);
+      while (next < sched.length && sched[next].at <= tp) {
+        const i = from + next;
+        p.tempoScale = CATCH_UP_MS / sched[next].len;
+        p.experimentalAddMove(MOVE_NAMES[props.moves[i].move]);
+        props.onTurn?.();
+        setShown({ i, label: props.labels[i] ?? MOVE_NAMES[props.moves[i].move] });
+        next++;
+        setAt(i + 1);
+        if (opts.current.view !== "camera") showAt(i + 1, real, false);
+      }
+      if (opts.current.view === "camera") showAt(from + next, real, true);
+      if (tp < end) loop.current = requestAnimationFrame(step);
       else setPlaying(false);
     };
     loop.current = requestAnimationFrame(step);
@@ -311,7 +362,7 @@ export function ReplayCube(props: ReplayCubeProps) {
   // 手を押したとき・記録・速さが変わったとき: その手の前から再生
   useEffect(() => {
     if (ready) play(props.from);
-  }, [ready, props.from, props.setupAlg, props.moves.length, speed]);
+  }, [ready, props.from, props.setupAlg, props.moves.length, speed, clear]);
 
   // 見え方・スイッチを変えたら、止まっていればその場で向きと光り方だけ変える（再生中は次のフレームから）
   useEffect(() => {
@@ -360,7 +411,14 @@ export function ReplayCube(props: ReplayCubeProps) {
   ];
   return (
     <div class="replay-cube">
-      <div class={`cube3d${mirrored ? " mirrored" : ""}`} ref={host} />
+      <div class="replay-stage">
+        <div class={`cube3d${mirrored ? " mirrored" : ""}`} ref={host} />
+        {shown && playing && (
+          <span class="replay-move" key={shown.i} aria-live="off">
+            {shown.label}
+          </span>
+        )}
+      </div>
       <div class="replay-bar">
         <button class="btn ghost small" onClick={() => jump(0)}>
           最初へ
@@ -393,6 +451,10 @@ export function ReplayCube(props: ReplayCubeProps) {
             <span>F2L に合わせて回す</span>
           </label>
         )}
+        <label class="switch">
+          <input type="checkbox" checked={clear} onChange={(e) => setClear((e.target as HTMLInputElement).checked)} />
+          <span>回転を見やすく</span>
+        </label>
         <label class="switch">
           <input type="checkbox" checked={glow} onChange={(e) => setGlow((e.target as HTMLInputElement).checked)} />
           <span>次の F2L を光らせる</span>
