@@ -3,6 +3,7 @@
 //   npx vitest run -c vitest.debug.config.ts tests/debug/seqBench.debug.test.ts
 //   CACHE=描いた画像を置くディレクトリ（2 回目から描かない）・LIVEK=2（実機のライブのように処理中のフレームを捨てる。処理時間の倍率。LIVE=base@2 のように設定ごとにも）・SEEDS=1-20（範囲）・SPEED=fast（約 6 手/秒）・FPS=60・ROT=1（持ち替え）・LIVE=base,notrack,…・REFINE=base,nogate,…（"" で使わない）・OUT=結果の JSON Lines の書き出し先
 // 1 行 = 1 つの手順と 1 つの設定: { seed, kind, cfg, ok, got, truth, dist, start, end, ms }
+import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { it } from "vitest";
@@ -22,7 +23,9 @@ import { loadTestOpenCv } from "../cv";
 import { applyMoveStickers, renderArucoCube, solvedStickers } from "../arucoCube";
 import type { Finger } from "../render";
 
-const LIVE_BASE: PipelineConfig = { ...STICKERS, arucoRegion: true, arucoTrack: true }; // src/app/controller.ts の pipelineConfig と同じ（精密解析にも使う）
+// DESIGN=standard など: マーカーの配置（src/aruco/design.ts）・SCHEME=aruco54 など: 符号（4×4 の 54 種類）。マーカーの形式の比較用
+const BENCH_STICKERS = { stickers: (process.env.SCHEME ?? STICKERS.stickers) as typeof STICKERS.stickers, arucoDesign: (process.env.DESIGN ?? STICKERS.arucoDesign) as typeof STICKERS.arucoDesign };
+const LIVE_BASE: PipelineConfig = { ...BENCH_STICKERS, arucoRegion: true, arucoTrack: true }; // src/app/controller.ts の pipelineConfig と同じ（精密解析にも使う）
 const LIVE_ONLY: Partial<PipelineConfig> = { arucoTurn: false }; // ライブだけ（controller.liveConfig）
 // decoder: 追跡のデコーダの設定（認識の設定ではない）
 const LIVE: Record<string, Partial<PipelineConfig> & { decoder?: Partial<DecoderOptions>; observer?: Partial<ObserverOptions> }> = {
@@ -149,7 +152,7 @@ it("手順の総合評価", async () => {
   const [from, to] = (process.env.SEEDS ?? "1-10").split("-").map(Number);
   const liveNames = (process.env.LIVE ?? Object.keys(LIVE).join(",")).split(",").filter(Boolean);
   const refineNames = (process.env.REFINE ?? Object.keys(REFINE).join(",")).split(",").filter(Boolean);
-  const design = designOf(STICKERS.arucoDesign);
+  const design = designOf(BENCH_STICKERS.arucoDesign);
   for (let seed = from; seed <= (to ?? from); seed++) {
     const sc = scene(seed);
     const { w, h, eye } = sc.view;
@@ -183,6 +186,7 @@ it("手順の総合評価", async () => {
     let renderMs = 0;
     const shiftMemory = {};
     const FPS = Number(process.env.FPS ?? 30);
+    const frameList: { img: { data: Uint8ClampedArray; width: number; height: number }; t: number; fingers: number; turning: boolean }[] = [];
     for (let t = 0; t <= sc.endT; t += 1000 / FPS) {
       while (done < sc.moves.length && t >= sc.timing[done].start + sc.timing[done].dur) st = applyMoveStickers(st, sc.moves[done++]);
       const cur = sc.timing[done];
@@ -198,7 +202,7 @@ it("手順の総合評価", async () => {
         fingers.push({ a: [tip[0] - pitch * 3, tip[1] + pitch * 3], b: tip, width: pitch * 0.9 });
       }
       const t0 = performance.now();
-      const cacheFile = process.env.CACHE ? `${process.env.CACHE}/${process.env.SPEED ?? "normal"}${process.env.ROT ? "-rot" : ""}-${FPS}-${seed}-${Math.round(t)}.gz` : null;
+      const cacheFile = process.env.CACHE ? `${process.env.CACHE}/${process.env.SCHEME ?? ""}${process.env.DESIGN ?? ""}${process.env.SPEED ?? "normal"}${process.env.ROT ? "-rot" : ""}-${FPS}-${seed}-${Math.round(t)}.gz` : null;
       const img = cacheFile && existsSync(cacheFile) ? { data: new Uint8ClampedArray(gunzipSync(readFileSync(cacheFile))), width: w, height: h } : renderArucoCube(cv as never, {
         width: w,
         height: h,
@@ -208,12 +212,26 @@ it("手順の総合評価", async () => {
         turn: turning ? { move: sc.moves[done], fraction: (t - cur.start) / cur.dur, spread: Math.min(0.3, 1000 / FPS / 2 / cur.dur) } : undefined,
         noise: 2.5,
         seed: Math.round(t) + seed * 100000,
-        scheme: "unique54",
+        scheme: BENCH_STICKERS.stickers,
         fingers,
         design,
       });
       if (cacheFile && !existsSync(cacheFile)) writeFileSync(cacheFile, gzipSync(img.data, { level: 1 }));
       renderMs += performance.now() - t0;
+      frameList.push({ img, t, fingers: done, turning });
+    }
+    // H264=2500 など: 本体の録画と同じ形の H.264（kbps）に圧縮して戻した映像で測る（CLAUDE.md の ffmpeg の条件）
+    if (process.env.H264) {
+      const raw = Buffer.concat(frameList.map((f) => Buffer.from(f.img.data.buffer, f.img.data.byteOffset, f.img.data.byteLength)));
+      const br = `${process.env.H264}k`;
+      const enc = spawnSync("ffmpeg", ["-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", `${w}x${h}`, "-r", String(FPS), "-i", "-", "-c:v", "libx264", "-profile:v", "baseline", "-preset", "veryfast", "-tune", "zerolatency", "-b:v", br, "-maxrate", br, "-bufsize", `${Number(process.env.H264) / 2}k`, "-g", String(FPS), "-f", "h264", "-"], { input: raw, maxBuffer: 1 << 30 });
+      const dec = spawnSync("ffmpeg", ["-loglevel", "error", "-f", "h264", "-i", "-", "-f", "rawvideo", "-pix_fmt", "rgba", "-"], { input: enc.stdout, maxBuffer: 1 << 31 });
+      const n = w * h * 4;
+      frameList.forEach((f, i) => {
+        if ((i + 1) * n <= dec.stdout.length) f.img = { data: new Uint8ClampedArray(dec.stdout.buffer.slice(dec.stdout.byteOffset + i * n, dec.stdout.byteOffset + (i + 1) * n)), width: w, height: h };
+      });
+    }
+    for (const { img, t, turning } of frameList) {
       const grid = thumb(img);
       const motion = prevGrid ? motionOf(grid, prevGrid) : Infinity;
       prevGrid = grid;
