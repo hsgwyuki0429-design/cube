@@ -184,7 +184,7 @@ function CubeInset() {
   return (
     <div class={`cube-inset${party ? " party" : ""}`}>
       {party && <Celebrate key={party} />}
-      <LiveCube3D epoch={cube.epoch} setupMoves={cube.setupMoves} moves={moves} orient={orient} follow={follow} userEye={mirror && !demo} base={track?.base ?? null} seen={track?.view ?? null} />
+      <LiveCube3D epoch={cube.epoch} setupMoves={cube.setupMoves} moves={moves} orient={orient} follow={follow} mirror={mirror && !demo} base={track?.base ?? null} seen={track?.view ?? null} />
     </div>
   );
 }

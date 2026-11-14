@@ -32,7 +32,7 @@ import { NORMAL, applyMove, faceletGeometry, moveAmount, moveFace, solvedState, 
 // 面 U R F D L B の色（明るい標準配色。スピードキューブのステッカーに近い色）
 export const FACE_COLORS = ["#f4f5f0", "#e3263a", "#13b255", "#ffd42a", "#ff7a12", "#1f5fe0"];
 
-// 見る目線: 少し上（緯度）・少し右（経度）から
+// 見る目線: 定点のときは少し上（緯度）・少し右（経度）から（3 面が見える）。カメラの向きに合わせるときは真正面から（カメラと同じ）
 const EYE_LAT = (26 * Math.PI) / 180;
 const EYE_LON = (32 * Math.PI) / 180;
 const EYE_DIST = 12.5;
@@ -100,8 +100,7 @@ export class CubeScene {
     fill.position.set(-5, -2, 3);
     this.scene.add(fill);
 
-    this.camera.position.set(EYE_DIST * Math.cos(EYE_LAT) * Math.sin(EYE_LON), EYE_DIST * Math.sin(EYE_LAT), EYE_DIST * Math.cos(EYE_LAT) * Math.cos(EYE_LON));
-    this.camera.lookAt(0, 0, 0);
+    this.setEye(false);
 
     this.mats = FACE_COLORS.map((c) => new MeshStandardMaterial({ color: new Color(c), roughness: 0.28, metalness: 0, envMapIntensity: 0.55 }));
     this.dimMats = FACE_COLORS.map((c) => new MeshStandardMaterial({ color: new Color(c).multiplyScalar(0.3), roughness: 0.5, metalness: 0, envMapIntensity: 0.2 }));
@@ -140,6 +139,15 @@ export class CubeScene {
       this.stickers.push(m);
     }
     this.raf = requestAnimationFrame(this.loop);
+  }
+
+  // 目線: front = 真正面から（カメラに映ったのと同じ見え方）。false = 少し上・右から
+  setEye(front: boolean): void {
+    const lat = front ? 0 : EYE_LAT;
+    const lon = front ? 0 : EYE_LON;
+    this.camera.position.set(EYE_DIST * Math.cos(lat) * Math.sin(lon), EYE_DIST * Math.sin(lat), EYE_DIST * Math.cos(lat) * Math.cos(lon));
+    this.camera.lookAt(0, 0, 0);
+    this.dirty = true;
   }
 
   resize(w: number, h: number): void {
@@ -286,22 +294,6 @@ const PIECES: number[][] = (() => {
 // 行優先 3×3 の回転行列 → 四元数
 export function matToQuat(m: readonly number[]): Quaternion {
   return new Quaternion().setFromRotationMatrix(new Matrix4().set(m[0], m[1], m[2], 0, m[3], m[4], m[5], 0, m[6], m[7], m[8], 0, 0, 0, 0, 1));
-}
-
-// q に一番近い 24 通りの持ち方（90° ごと）から、q へ gain の割合だけ傾けた向き（映った傾きを弱めて見せる）
-const ORIENT_QUATS: Quaternion[] = [];
-export function damped(q: Quaternion, gain: number, orientations: readonly (readonly number[])[]): Quaternion {
-  if (!ORIENT_QUATS.length) for (const m of orientations) ORIENT_QUATS.push(matToQuat(m));
-  let best = ORIENT_QUATS[0];
-  let bd = -1;
-  for (const o of ORIENT_QUATS) {
-    const d = Math.abs(o.dot(q));
-    if (d > bd) {
-      bd = d;
-      best = o;
-    }
-  }
-  return best.clone().slerp(q, gain);
 }
 
 // 真ん中が濃く、縁へ消えていく丸い影

@@ -190,6 +190,9 @@ input {
   max-height: 100%;
   width: 100%;
 }
+.cube3d.mirrored canvas {
+  transform: scaleX(-1);
+}
 .cube3d.live-cube canvas {
   position: absolute;
   inset: 0;

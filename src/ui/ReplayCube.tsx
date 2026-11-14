@@ -1,8 +1,10 @@
 // 記録の詳しい画面の 3D: 自分の解き方を、実際と同じ速さで再生する（描画はライブと同じ src/ui/cubeScene.ts）。手を回し始める時刻・
 // 1 手を回す長さとも計測した時刻のとおり（速さを 1/2・1/4 にしても、全部を同じ割合で遅くする）。ただし 1 手の描画は MIN_TURN_MS より
 // 短くしない（実際の速さ 1 手 0.1 秒では回転が目で追えない。遅れは手の間の止まりで取り戻す）。回した手の表記を 3D の上に大きく出す。
-// 見え方は 3 通り（`ReplayView`）。どれも少し上・右から見下ろす目線で描く:
-// - camera: 計測中にカメラから見えていた向き（`Solve.poses`）。ライブの 3D と同じく自分の目線（インカメラなら y2）で、傾きは弱めて見せる
+// 見え方は 3 通り（`ReplayView`）:
+// - camera: 計測中にカメラから見えていた向き（`Solve.poses`）。ライブの 3D と同じく、カメラに映ったのと同じ向き・真正面から
+//   （プレビューが鏡像だったら鏡像）
+// 定点の 2 つは少し上・右から見下ろす目線で描く（3 面が見える）
 // - fixed: 白上・緑前の定点
 // - down: クロスの面を下にした定点。「F2L に合わせる」がオンなら、F2L の間は次に入るスロットが、入れたときにカメラから見て
 //   あった側（手前の右・手前の左・奥の右・奥の左）に来るように縦の軸で 90° ごとに回す（手前で入れたペアは手前に、奥で入れた
@@ -13,7 +15,7 @@ import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { Quaternion, Vector3 } from "three";
 import { type F2LStep, f2lLook, slotDir } from "../cube/f2l";
 import { type CubeState, type Mat3, MOVE_NAMES, NORMAL, OPPOSITE, ORIENTATIONS, ROTATION, apply, applyMove, mul, parseMoves, solvedState } from "../cube/model";
-import { CubeScene, approach, damped, matToQuat } from "./cubeScene";
+import { CubeScene, approach, matToQuat } from "./cubeScene";
 
 export interface ReplayMove {
   move: number; // キューブ固定の手
@@ -27,8 +29,6 @@ export type ReplayView = "camera" | "fixed" | "down";
 const MIN_TURN_MS = 200; // 1 手の描画の長さの下限（画面の時間）
 const GAP_MS = 40; // 手と手の間の最小の止まり
 const UNKNOWN_TURN_MS = 150; // 回し終わりが分からない手の長さ（実際の時間）
-const TILT_GAIN = 0.65; // camera の見え方で、映った傾きをどれだけ移すか（ライブと同じ）
-const Y2 = matToQuat(mul(ROTATION.y, ROTATION.y));
 
 // 記録した向き（計測開始からの ms, x, y, z, w）をならす: 1 つだけ大きく跳ねた向き（持ち替えの読み違い）は捨て、前後 ±250ms を平均する
 // （細かく揺れると、層の回転よりキューブ全体の揺れが目に入って回転が見づらかった）
@@ -115,7 +115,7 @@ export interface ReplayCubeProps {
   from: number;
   poses?: number[][];
   onTurn?: () => void;
-  userEye?: boolean; // camera の見え方で自分の側から見る（インカメラ: y2。ライブの 3D と同じ）
+  mirror?: boolean; // camera の見え方で鏡像にする（カメラのプレビューが鏡像だった: インカメラ。ライブの 3D と同じ）
   solverFlip?: boolean; // 解いた人はカメラの反対側から見ていた（インカメラ）: 手前・奥と左右をカメラから見たのと逆にする
   downOrient: number; // クロスの面を下にした持ち方（キューブ固定 → 表示）
   downLabel: string; // 「白面下」など
@@ -146,6 +146,7 @@ export function ReplayCube(props: ReplayCubeProps) {
   const [glow, setGlow] = usePref<boolean>("f2lGlow", false);
   const [shown, setShown] = useState<{ i: number; label: string } | null>(null);
   const view: ReplayView = props.simple ? "down" : prefView;
+  const mirrored = view === "camera" && !!props.mirror;
   const slow = SPEEDS[speed].slow;
   // 描画のループからも、いまの見え方・スイッチを読む
   const opts = useRef({ view, follow: follow && !props.simple, glow: glow && !props.simple });
@@ -180,15 +181,14 @@ export function ReplayCube(props: ReplayCubeProps) {
     poses.current = smoothPoses(props.poses ?? []);
   }, [props.poses]);
 
-  // 実際の時刻 t の、カメラから見えていた向き（記録がなければ手ごとの向き）。傾きは弱め、自分の目線に直す
+  // 実際の時刻 t の、カメラから見えていた向き（記録がなければ手ごとの向き）。カメラに映ったのと同じ向き
   const cameraQuat = (t: number, k: number): Quaternion => {
     const p = propsRef.current;
     const q = poseAt(poses.current, t);
-    const base = q ? damped(q, TILT_GAIN, ORIENTATIONS) : matToQuat(ORIENTATIONS[p.moves[Math.min(k, p.moves.length - 1)]?.orient ?? 0]);
-    return p.userEye ? base.premultiply(Y2) : base;
+    return q ?? matToQuat(ORIENTATIONS[p.moves[Math.min(k, p.moves.length - 1)]?.orient ?? 0]);
   };
 
-  // カメラの方を向いていた側面（クロスの面とその反対を除く）を前にする（クロス・OLL・PLL の間）。自分の目線なら反対側
+  // カメラの方を向いていた側面（クロスの面とその反対を除く）を前にする（クロス・OLL・PLL の間）
   const cameraFront = (k: number, t: number, hold: Mat3): Mat3 => {
     const p = propsRef.current;
     const q = poseAt(poses.current, t);
@@ -196,8 +196,7 @@ export function ReplayCube(props: ReplayCubeProps) {
     if (!q && (o === null || o === undefined)) return hold;
     const toCam = (v: readonly number[]) => (q ? new Vector3(v[0], v[1], v[2]).applyQuaternion(q).z : apply(ORIENTATIONS[o!], [v[0], v[1], v[2]])[2]);
     const sides = [0, 1, 2, 3, 4, 5].filter((f) => f !== p.crossFace && f !== OPPOSITE[p.crossFace]);
-    const sign = p.userEye ? -1 : 1;
-    const front = sides.reduce((best, f) => (sign * toCam(NORMAL[f]) > sign * toCam(NORMAL[best]) ? f : best), sides[0]);
+    const front = sides.reduce((best, f) => (toCam(NORMAL[f]) > toCam(NORMAL[best]) ? f : best), sides[0]);
     for (let r = 0; r < 4; r++) {
       const m = mul(yaw(r), hold);
       if (apply(m, NORMAL[front])[2] > 0.5) return m;
@@ -298,6 +297,7 @@ export function ReplayCube(props: ReplayCubeProps) {
 
   useEffect(() => {
     const s = new CubeScene();
+    s.setEye(opts.current.view === "camera");
     scene.current = s;
     host.current!.appendChild(s.canvas);
     const ro = new ResizeObserver(() => {
@@ -358,6 +358,7 @@ export function ReplayCube(props: ReplayCubeProps) {
   // 見え方・スイッチを変えたら光り方を変える（向きは描画のループがなめらかに追う）
   useEffect(() => {
     if (!ready) return;
+    scene.current?.setEye(view === "camera");
     setMask(atRef.current);
     scene.current?.invalidate();
   }, [view, follow, glow]);
@@ -374,7 +375,7 @@ export function ReplayCube(props: ReplayCubeProps) {
   const onMove = (e: PointerEvent) => {
     const d = drag.current;
     if (!d.on) return;
-    const dx = e.clientX - d.x;
+    const dx = (mirrored ? -1 : 1) * (e.clientX - d.x);
     const dy = e.clientY - d.y;
     d.x = e.clientX;
     d.y = e.clientY;
@@ -396,7 +397,7 @@ export function ReplayCube(props: ReplayCubeProps) {
   return (
     <div class="replay-cube">
       <div class="replay-stage">
-        <div class="cube3d live-cube" ref={host} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp} />
+        <div class={`cube3d live-cube${mirrored ? " mirrored" : ""}`} ref={host} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp} />
         {shown && playing && (
           <span class="replay-move" key={shown.i} aria-live="off">
             {shown.label}
