@@ -217,10 +217,6 @@ export function CameraView() {
       {app.camera !== "on" && (
         <div class="placeholder">
           <div>
-            <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6">
-              <path d="M3 8a2 2 0 0 1 2-2h2l1.5-2h7L17 6h2a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
-              <circle cx="12" cy="13" r="4" />
-            </svg>
             {app.camera === "error" && <p>{app.error}</p>}
             <button class="btn primary" onClick={() => controller.startCamera()} disabled={app.camera === "starting"}>
               {app.camera === "starting" ? "起動中…" : "カメラを開始"}

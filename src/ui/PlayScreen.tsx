@@ -1,5 +1,5 @@
 // プレイ画面: カメラを画面いっぱいに映し、その上にタイム・記録・回した手・3D キューブを重ねる（画面録画がそのまま縦動画になる）。
-// 上にタイマー / フリーの切り替えと認識の様子、タイム、記録（best・ao5・ao12・直近のタイム）。下に回す前はスクランブル、回した後は
+// フリー（タイマーなしで回す）は 2026-11 に外した。上に認識の様子、タイム、記録（best・ao5・ao12・直近のタイム）。下に回す前はスクランブル、回した後は
 // 回した手、右下に 3D キューブ。タイマーの計測中は、タイムとカメラ・回した手だけを残して他を隠す（`focus`）
 import { useEffect, useRef } from "preact/hooks";
 import { controller } from "../app/controller";
@@ -7,38 +7,20 @@ import { settingsStore } from "../app/settings";
 import { averageOf, effectiveTime, formatTime } from "../app/storage";
 import { useStore } from "../app/store";
 import { cancelTimer, inspectionTick, newScramble, stopManually, timerStore } from "../app/timer";
-import { MOVE_NAMES, relativeMove, rotateOrientation } from "../cube/model";
+import { MOVE_NAMES, rotateOrientation } from "../cube/model";
 import { mergeQuickRepeats, simplifyMoves } from "../track/merge";
 import { CameraView } from "./CameraView";
 import { Cube3D } from "./Cube3D";
-import { SolutionGuide, StartCard } from "./playParts";
-import { moveLabel, viewOrient } from "./notation";
+import { StartCard } from "./playParts";
+import { moveLabel } from "./notation";
 import { ScanPanel } from "./ScanPanel";
 import { shareSolve } from "./shareCard";
 import { AnalysisBadge, PenaltyRow, bestGain, openSolve, useTicker } from "./solveUi";
 
 // タイマーで計測している間（下のバー・切り替え・記録を隠す）
-export const useFocus = () => {
-  const panel = useStore(controller.store, (s) => s.panel);
-  const solving = useStore(timerStore, (t) => t.phase === "solving");
-  return panel === "timer" && solving;
-};
+export const useFocus = () => useStore(timerStore, (t) => t.phase === "solving");
 
 // ---- 上: タイム ----
-
-function ModeSwitch() {
-  const panel = useStore(controller.store, (s) => s.panel);
-  const busy = useStore(timerStore, (t) => t.phase !== "idle" && t.phase !== "done");
-  return (
-    <div class="mode-switch glass" role="tablist" aria-label="モード">
-      {(["timer", "free"] as const).map((p) => (
-        <button key={p} role="tab" aria-selected={panel === p} disabled={busy && panel !== p} onClick={() => controller.store.set({ panel: p })}>
-          {p === "timer" ? "タイマー" : "フリー"}
-        </button>
-      ))}
-    </div>
-  );
-}
 
 // 認識の様子（カメラの fps・追跡の状態・精密解析の遅れ）
 function StatusDot() {
@@ -104,30 +86,6 @@ function TimerTop() {
   );
 }
 
-function FreeTop() {
-  const track = useStore(controller.store, (s) => s.track);
-  const base = useStore(controller.store, (s) => s.baseMoves);
-  const moves = simplifyMoves(mergeQuickRepeats((track?.moves ?? []).slice(base, Math.max(base, track?.confirmed ?? 0))));
-  const startT = moves[0]?.t ?? 0;
-  const lastT = moves[moves.length - 1]?.t ?? 0;
-  const running = moves.length > 0 && !track?.solved;
-  const now = useTicker(running);
-  const dur = running ? now - startT : lastT - startT;
-  const tps = moves.length > 1 && lastT > startT ? (moves.length - 1) / ((lastT - startT) / 1000) : 0;
-  const solved = !!track?.solved && moves.length > 0;
-  return (
-    <div class={`time-main ${moves.length ? "" : "idle"}`}>
-      <div class="time-label">
-        フリー・{moves.length} 手{tps > 0 ? `・${tps.toFixed(2)} TPS` : ""}
-        {solved && <span class="ok-text">・完成</span>}
-      </div>
-      <div class="time-value" key={solved ? `solved-${moves.length}` : "live"}>
-        {moves.length ? `${(dur / 1000).toFixed(1)}` : "0.0"}
-      </div>
-    </div>
-  );
-}
-
 // 記録: best・ao5・ao12 と直近のタイム（押すとその記録の詳しい画面）
 function Records() {
   const solves = useStore(timerStore, (s) => s.solves);
@@ -166,16 +124,14 @@ function Records() {
 }
 
 function TopBar() {
-  const panel = useStore(controller.store, (s) => s.panel);
   return (
     <header class="stage-top">
       <div class="stage-bar chrome">
-        <ModeSwitch />
         <StatusDot />
       </div>
       <div class="stage-time">
-        {panel === "timer" ? <TimerTop /> : <FreeTop />}
-        {panel === "timer" && <Records />}
+        <TimerTop />
+        <Records />
       </div>
     </header>
   );
@@ -214,9 +170,7 @@ function CubeInset() {
   const settings = useStore(settingsStore, (s) => ({ view: s.cube3dView }));
   const mirror = useStore(controller.store, (s) => s.mirror);
   const demo = useStore(controller.store, (s) => s.demo);
-  const panel = useStore(controller.store, (s) => s.panel);
   const doneId = useStore(timerStore, (t) => (t.phase === "done" ? (t.result?.id ?? null) : null));
-  const base = useStore(controller.store, (s) => s.baseMoves);
   if (!cube) return null;
   // 見えているキューブと同じ状態にする: いまの見え方に一番合う仮説の手順（確定を待つと、その間 3D が見えているキューブとずれた）。
   // 足された手は回して見せ、解釈が変わったら回さずにその状態へ切り替える（Cube3D の live）。手順を追えずに見えている色に合わせて
@@ -224,9 +178,8 @@ function CubeInset() {
   const moves = (track?.moves ?? []).map((m) => m.move);
   const shownOrient = track?.view?.orient ?? track?.orient ?? 0; // 表示だけの作り変えの間は、その状態の姿勢
   const orient = settings.view === "fixed" || !track ? null : settings.view === "user" ? rotateOrientation(shownOrient, "y", 2) : shownOrient;
-  // 完成の演出: タイマーは止まったとき、フリーは回した後に揃ったとき
-  const freeSolved = panel === "free" && !!track?.solved && (track?.confirmed ?? 0) > base;
-  const party = panel === "timer" ? doneId : freeSolved ? `free-${track?.confirmed}` : null;
+  // 完成の演出: タイマーが止まったとき
+  const party = doneId;
   return (
     <div class={`cube-inset${party ? " party" : ""}`}>
       {party && <Celebrate key={party} />}
@@ -259,18 +212,17 @@ function LiveMoves({ from }: { from: number }) {
 
 function ScrambleGuide() {
   const t = useStore(timerStore, (s) => s);
-  const orient = useStore(controller.store, (s) => s.track?.orient ?? 0);
-  const settings = useStore(settingsStore, (s) => ({ notation: s.notation, viewpoint: s.viewpoint }));
-  const label = (m: number) => (settings.notation === "relative" ? MOVE_NAMES[relativeMove(m, viewOrient(orient, settings))] : MOVE_NAMES[m]);
+  // スクランブルの表記はいつも白上・緑前（キューブ固定の手）。持ち方基準の表記の設定には従わない
+  const label = (m: number) => MOVE_NAMES[m];
   const fix = t.guideFix;
   return (
     <div class="strip-block">
       <div class="strip-head">
         <span>スクランブル</span>
-        <span class="strip-note">{settings.notation === "relative" ? "今の持ち方での表記" : "白上・緑前"}</span>
+        <span class="strip-note">白上・緑前</span>
         <span class="spacer" />
         <button class="pill" onClick={cancelTimer}>
-          やめる
+          別のスクランブル
         </button>
       </div>
       {fix === null ? (
@@ -325,16 +277,16 @@ function DoneStrip() {
           </div>
         </>
       )}
-      <div class="next-row">
-        <button class="btn primary" onClick={() => newScramble()}>
-          {r ? "次のソルブ" : "スクランブルを出す"}
-        </button>
-        {r && (
+      {r && (
+        <div class="next-row">
+          <button class="btn primary" onClick={() => newScramble()}>
+            次のソルブ
+          </button>
           <button class="pill" onClick={() => openSolve(r.id)}>
             詳しく
           </button>
-        )}
-      </div>
+        </div>
+      )}
       {t.message && <p class="strip-note">{t.message}</p>}
     </div>
   );
@@ -352,7 +304,7 @@ function TimerStrip() {
           <span class="rise">スクランブル完了・準備ができたら回してください</span>
           <span class="spacer" />
           <button class="pill" onClick={cancelTimer}>
-            やめる
+            別のスクランブル
           </button>
         </div>
         <p class="strip-note">最初の 1 手でタイマーが始まり、揃った瞬間に止まります。</p>
@@ -373,38 +325,20 @@ function TimerStrip() {
   return <DoneStrip />;
 }
 
-function FreeStrip() {
-  const base = useStore(controller.store, (s) => s.baseMoves);
-  return (
-    <div class="strip-block">
-      <LiveMoves from={base} />
-      <div class="strip-head wrap">
-        <button class="pill" onClick={() => controller.clearMoves()}>
-          クリア
-        </button>
-        <button class="pill" onClick={() => controller.resetToSolved()}>
-          完成にリセット
-        </button>
-        <button class="pill" onClick={() => controller.beginScan()}>
-          再スキャン
-        </button>
-      </div>
-      <div class="strip-guide">
-        <SolutionGuide />
-      </div>
-    </div>
-  );
-}
-
 function BottomStrip() {
-  const app = useStore(controller.store, (s) => ({ scan: !!s.scan, cube: !!s.cube, panel: s.panel, camera: s.camera }));
+  const app = useStore(controller.store, (s) => ({ scan: !!s.scan, cube: !!s.cube, camera: s.camera }));
+  const idle = useStore(timerStore, (t) => t.phase === "idle");
+  // スクランブルは最初から出す（「スクランブルを出す」を押さなくてよい）: キューブがあってタイマーが何もしていなければ作る
+  useEffect(() => {
+    if (idle && app.cube && !app.scan && app.camera === "on") newScramble();
+  }, [idle, app.cube, app.scan, app.camera]);
   // カメラを開始する前は、カメラの「カメラを開始」だけにする（始め方の案内はカメラが動いてから）
   if (!app.scan && !app.cube && app.camera !== "on") return null;
   // スキャン・始め方は文字が多いので、すりガラスの板に載せる
   const sheet = app.scan || !app.cube;
   return (
     <section class={`play-strip${sheet ? " sheet glass" : ""}`}>
-      {app.scan ? <ScanPanel /> : !app.cube ? <StartCard /> : app.panel === "timer" ? <TimerStrip /> : <FreeStrip />}
+      {app.scan ? <ScanPanel /> : !app.cube ? <StartCard /> : <TimerStrip />}
     </section>
   );
 }
