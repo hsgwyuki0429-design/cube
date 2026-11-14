@@ -132,6 +132,14 @@ export function SolveDetail() {
         <div class="detail-meta">
           {solve.moves.length} 手・{solve.tps.toFixed(2)} TPS{!solve.tracked && "・手動停止"}
         </div>
+        {solve.pad && (
+          <div class="detail-meta small muted">
+            GAN タイマー
+            {solve.pad.visionMs !== undefined && `・カメラ ${formatTime(solve.pad.visionMs)}`}
+            {solve.pad.lead !== undefined && `・回し始めまで ${(solve.pad.lead / 1000).toFixed(2)} 秒`}
+            {solve.pad.tail !== undefined && `・手を置くまで ${(solve.pad.tail / 1000).toFixed(2)} 秒`}
+          </div>
+        )}
         <div class="detail-badges">
           {pb && <span class="pb-badge">自己ベスト</span>}
           <AnalysisBadge solve={solve} />

@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "preact/hooks";
 import { controller } from "../app/controller";
 import { type Settings, settingsStore, updateSettings } from "../app/settings";
+import { connectPad, disconnectPad, padStore } from "../app/ganTimer";
 import { useStore } from "../app/store";
 import { HelpPage } from "./HelpPage";
 import { exportLiveLog } from "./liveLogExport";
@@ -67,6 +68,37 @@ function CameraSelect() {
   );
 }
 
+// GAN Smart Timer（Bluetooth）。つないでいる間は、タイマーから手を離した時に始まり、タイマーで止めた時に止まる（タイムはタイマーのもの）
+function PadCard() {
+  const pad = useStore(padStore, (s) => s);
+  return (
+    <div class="card" style={{ marginTop: 12 }}>
+      <div class="card-head">GAN タイマー</div>
+      <div class="card-body">
+        <p class="small muted" style={{ margin: "0 0 10px" }}>
+          {pad.status === "connected"
+            ? `${pad.name} とつながっています。タイマーから手を離すと始まり、タイマーで止めると止まります（タイムはタイマーのもの。手順はカメラで読みます）。`
+            : pad.status === "unsupported"
+              ? "このブラウザは Bluetooth に対応していません。iPhone は Bluefy などの Bluetooth に対応したブラウザで開いてください。"
+              : pad.status === "connecting"
+                ? "つないでいます…"
+                : "GAN Smart Timer を Bluetooth でつなぐと、開始・停止とタイムをタイマーで計ります。"}
+        </p>
+        {pad.message && <p class="small" style={{ margin: "0 0 10px" }}>{pad.message}</p>}
+        {pad.status === "connected" ? (
+          <button class="btn" onClick={disconnectPad}>
+            切断する
+          </button>
+        ) : (
+          <button class="btn" disabled={pad.status === "unsupported" || pad.status === "connecting"} onClick={() => void connectPad()}>
+            タイマーをつなぐ
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export function SettingsPage() {
   const info = useStore(controller.store, (s) => s.cameraInfo);
   const facing = useStore(settingsStore, (s) => s.facingMode);
@@ -119,6 +151,8 @@ export function SettingsPage() {
           </Field>
         </div>
       </div>
+
+      <PadCard />
 
       <div class="card" style={{ marginTop: 12 }}>
         <div class="card-head">ライブの記録</div>

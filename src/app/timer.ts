@@ -7,6 +7,7 @@ import { cfopSplits } from "../cube/analysis";
 import { type CubeState, MOVE_NAMES, applyMoves, invertMoves, isSolved, moveFace, movesToString, relativeMove, rotateOrientation, solvedState, statesEqual } from "../cube/model";
 import { randomScramble, solveBetween, solveState } from "../cube/solver";
 import { StartDetector } from "./startDetect";
+import { PadState, onPadEvent, padConnected } from "./ganTimer";
 import { markPhase } from "./crashGuard";
 import { ScrambleGuide, undoMoves } from "./scrambleGuide";
 import type { TrackUpdate } from "../track/engine";
@@ -211,24 +212,42 @@ function onTrack(u: TrackUpdate): void {
   }
   if (s.phase === "inspection") {
     // 回し始めたか: 最初の手が確定して層が動いたのを見たか、スクランブルの状態から外れたまま続いたとき（src/app/startDetect.ts）
+    // GAN タイマーをつないでいれば、タイマーから手を離した時に始める（src/app/ganTimer.ts）
+    if (padConnected()) return;
     const startT = startDetector.push(u, target, readyMoves);
     if (startT === null) return;
-    timerStore.set({ phase: "solving", startT, startIndex: readyMoves, liveMoves: Math.max(0, u.moves.length - readyMoves) });
-    controller.recorder.keepMs = 150000;
-    controller.solvingStarted(startT);
-    lookRun = 0;
-    controller.beep(990, 0.08);
+    beginSolve(startT, u.moves.length);
     return;
   }
   if (s.phase === "solving") {
     timerStore.set({ liveMoves: Math.max(0, u.moves.length - s.startIndex) });
-    if (u.solved) finish(u, "tracked");
+    // タイマーをつないでいれば、タイマーで止めるまで待つ（止めた時刻とタイムはタイマーのもの）
+    if (u.solved && !padConnected()) finish(u, "tracked");
   }
+}
+
+function beginSolve(startT: number, liveCount: number): void {
+  timerStore.set({ phase: "solving", startT, startIndex: readyMoves, liveMoves: Math.max(0, liveCount - readyMoves) });
+  controller.recorder.keepMs = 150000;
+  controller.solvingStarted(startT);
+  lookRun = 0;
+  controller.beep(990, 0.08);
+}
+
+// GAN タイマーの知らせ: 計測が始まったらソルブを始め、止まったらタイマーのタイムで止める。
+// 開始の時刻は止めたときに「停止の知らせが届いた時刻 − タイム」で決め直す（Bluetooth の届く遅れを打ち消す）
+function onPad(e: { state: PadState; timeMs?: number }, at: number): void {
+  const s = timerStore.get();
+  if (e.state === PadState.RUNNING && s.phase === "inspection") {
+    beginSolve(at, controller.store.get().track?.moves.length ?? readyMoves);
+    return;
+  }
+  if (e.state === PadState.STOPPED && s.phase === "solving" && e.timeMs !== undefined) finish(controller.store.get().track, "pad", undefined, { startT: at - e.timeMs, stopT: at, ms: e.timeMs });
 }
 
 // 追跡を見失っていても、見えている面がすべて1色のまま数フレーム続いたら止める
 function onFrame(m: { t: number; looksSolved?: boolean }): void {
-  if (timerStore.get().phase !== "solving" || m.looksSolved === undefined) {
+  if (timerStore.get().phase !== "solving" || m.looksSolved === undefined || padConnected()) {
     lookRun = 0;
     return;
   }
@@ -284,16 +303,25 @@ function updateSolve(id: string, patch: Partial<Solve>): void {
   timerStore.set({ solves, result: result?.id === id ? { ...result, ...patch } : result });
 }
 
-type StopReason = "tracked" | "look" | "manual";
+type StopReason = "tracked" | "look" | "manual" | "pad";
 
-function finish(u: TrackUpdate | null, how: StopReason, lookT?: number): void {
-  const s = timerStore.get();
+// GAN タイマーで止めた: タイマーの開始・停止の時刻（performance.now()）とタイム
+interface PadStop {
+  startT: number;
+  stopT: number;
+  ms: number;
+}
+
+function finish(u: TrackUpdate | null, how: StopReason, lookT?: number, pad?: PadStop): void {
+  const s0 = timerStore.get();
+  // タイマーで止めたときは、開始もタイマーの時刻（停止の時刻 − タイム）にする
+  const s = pad ? { ...s0, startT: pad.startT } : s0;
   const startState = target ?? solvedState();
   const endIndex = u?.moves.length ?? s.startIndex;
   const moves = u ? liveTimed(u, s.startIndex) : [];
   const stopT = performance.now();
-  const endT = how === "tracked" && moves.length ? moves[moves.length - 1].end : how === "look" && lookT !== undefined ? lookT : stopT;
-  const timeMs = Math.max(0, endT - s.startT);
+  const endT = pad ? pad.stopT : how === "tracked" && moves.length ? moves[moves.length - 1].end : how === "look" && lookT !== undefined ? lookT : stopT;
+  const timeMs = pad ? pad.ms : Math.max(0, endT - s.startT);
   const inspectionMs = s.startT - s.inspectionStart;
   const penalty: Solve["penalty"] = settingsStore.get().inspection ? (inspectionMs > 17000 ? "DNF" : inspectionMs > 15000 ? "+2" : "") : "";
   const analyze = recording && controller.recorder.recording;
@@ -308,6 +336,7 @@ function finish(u: TrackUpdate | null, how: StopReason, lookT?: number): void {
     // ソルブ中に見えている色に合わせて作り変えた（手順がつながらない）ときは、分割タイムは精密解析で決める
     splits: how === "tracked" && !(u?.base && u.base.at > s.startIndex) ? splitsOf(startState, moves, s.startT) : undefined,
     tracked: how !== "manual",
+    ...(pad ? { pad: { ms: pad.ms } } : {}),
     poses: posesOf(s.startT, endT),
     ...(analyze ? { analysis: "pending" as const, provisionalMs: timeMs } : {}),
   };
@@ -323,7 +352,7 @@ function finish(u: TrackUpdate | null, how: StopReason, lookT?: number): void {
     // 速報値を、止めた後のフレーム（最後の手が止まったところ）も使って更新する
     if (how === "tracked") await refreshLive(live, s.startIndex, endIndex);
     // 次のソルブ（とフリーの追跡）のための解析は、この解析が終わってから始める（同じ解析の Worker で取り合うと、確定が数倍遅れた）
-    if (analyze) void analyzeRecording(live, how === "manual" ? stopT : endT);
+    if (analyze) void analyzeRecording(live, how === "manual" || how === "pad" ? stopT : endT);
     else controller.cancelAnalysis();
   }, POSTROLL_MS);
 }
@@ -343,6 +372,11 @@ async function refreshLive(live: LiveSpan, from: number, to: number): Promise<vo
   if (!moves.length || !isSolved(applyMoves(live.start, moves.map((m) => m.move)))) return;
   const cur = timerStore.get().solves.find((x) => x.id === live.id);
   if (!cur || cur.analysis === "done") return;
+  // タイマーで止めた: タイムはタイマーのまま。手順だけ止めた後のフレームで更新する
+  if (live.how === "pad") {
+    updateSolve(live.id, solveFields(live.start, moves, live.startT, cur.timeMs));
+    return;
+  }
   // 回し始めは、層が動き出したフレームが分かったときだけ更新する（分からない手の開始は前の読みが最後に見えた時刻で、指で隠して
   // いた間が長いとその分だけ前になり、タイムが長くなっていた）
   const first = u.timings?.[from];
@@ -387,7 +421,7 @@ async function analyzeRecordingInner(live: LiveSpan, endT: number): Promise<void
   }
   markPhase("saving");
   debug.result = result;
-  const forcedEnd = how === "manual" && result.forced > 0;
+  const forcedEnd = (how === "manual" || how === "pad") && result.forced > 0;
   const startSure = !result.startUncertain;
   const endSure = !result.endUncertain && !forcedEnd;
   // 完成までつながらなかった: 手順はリアルタイムのまま。タイムは、解析でフレームから決められた端（最初の手の回し始め・後ろ向きに
@@ -395,6 +429,11 @@ async function analyzeRecordingInner(live: LiveSpan, endT: number): Promise<void
   if (!result.solved || !result.moves.length || result.start === null || result.end === null) {
     const begin = result.moves.length && result.start !== null && startSure ? result.start : live.startT;
     const finish = result.gapped && result.end !== null && endSure && result.end > begin ? result.end : live.endT;
+    if (how === "pad") {
+      // タイマーで止めた: タイムはタイマーのもの。手順はリアルタイムのまま（解析では完成までつながらなかった）
+      updateSolve(id, { analysis: "partial" });
+      return;
+    }
     if (begin === live.startT && finish === live.endT) {
       updateSolve(id, { analysis: "failed" });
       return;
@@ -407,9 +446,18 @@ async function analyzeRecordingInner(live: LiveSpan, endT: number): Promise<void
   // 時間がかかっても結果は出す: 手順は解析のものにする。タイムの端は、フレームから決められた端は解析の時刻、決められなかった端
   // （最初・最後の手が写っていない・手動で止めて最後に見えない手を足した）はリアルタイムの時刻を使い、「確定（一部推定）」にする。
   // リアルタイムが最初の数手を取りこぼしていた（解析の最初の手より後に始まっていた）ら、解析の最初の手の回し始めを使う
-  const begin = startSure ? result.start : Math.min(live.startT, result.start);
+  let begin = startSure ? result.start : Math.min(live.startT, result.start);
   const finish = endSure ? result.end : Math.max(live.endT, begin);
-  const timeMs = Math.max(0, finish - begin);
+  let timeMs = Math.max(0, finish - begin);
+  // タイマーで止めた: タイムはタイマーのもの（WCA と同じ: 手を離してから置くまで）。解析のタイム（最初の手の回し始め〜最後の手の
+  // 回し終わり）は比べるために残す: lead = 手を離してから回し始めるまで、tail = 回し終えてから手を置くまで
+  let padPatch: Partial<Solve> = {};
+  const cur = timerStore.get().solves.find((x) => x.id === id);
+  if (how === "pad" && cur?.pad) {
+    padPatch = { pad: { ms: cur.pad.ms, ...(startSure && endSure ? { visionMs: Math.round(timeMs), lead: Math.round(result.start - live.startT), tail: Math.round(live.endT - result.end) } : {}) } };
+    begin = live.startT;
+    timeMs = cur.pad.ms;
+  }
   // 始まりの状態が案内と違っていた（スクランブルを間違えて回していた）: 解析は完成から後ろ向きにたどって手順を出している。
   // 記録のスクランブルを、実際の始まりの状態になるものに書き換える（再生・分割タイムが手順と合うように）
   let from = start;
@@ -423,8 +471,9 @@ async function analyzeRecordingInner(live: LiveSpan, endT: number): Promise<void
     }
   }
   updateSolve(id, {
-    analysis: startSure && endSure ? "done" : "partial",
+    analysis: startSure && endSure ? "done" : how === "pad" ? "done" : "partial",
     timeMs,
+    ...padPatch,
     ...solveFields(from, result.moves, begin, timeMs),
     ...(scramble !== undefined ? { scramble } : {}),
     ...(result.method ? { refineMethod: result.method } : {}),
@@ -505,3 +554,4 @@ controller.onTrack(onTrack);
 // スクランブル中は、ライブを前の動き（一番合う手順を回して見せる。見えている色への作り変えはしない）にする
 timerStore.subscribe((t) => controller.setLiveSnap(t.phase !== "scrambling" && t.phase !== "preparing"));
 controller.onFrameResult(onFrame);
+onPadEvent(onPad);

@@ -3,6 +3,7 @@ import { controller } from "./app/controller";
 import { PHASE_LABEL, checkLastRun, markPhase } from "./app/crashGuard";
 import { lowerRecordBitrate } from "./vision/recorder";
 import { timerStore } from "./app/timer";
+import { reconnectPad } from "./app/ganTimer";
 import "./styles.css";
 import { App } from "./ui/App";
 import { trackViewport } from "./ui/viewport";
@@ -98,3 +99,6 @@ window.__cvMounted = true;
 if (import.meta.env.PROD && "serviceWorker" in navigator && !params.has("demo")) {
   import("virtual:pwa-register").then(({ registerSW }) => registerSW({ immediate: true })).catch(() => undefined);
 }
+
+// 前につないだ GAN タイマーにつなぎ直す（ブラウザが許可済みの機器の一覧に対応しているときだけ）
+void reconnectPad();

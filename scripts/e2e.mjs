@@ -85,7 +85,7 @@ try {
     const t0 = Date.now();
     // E2E_NOHELPER=1: 認識の補助の Worker を使わない（コアが少ない端末のように）
     if (process.env.E2E_NOHELPER) await page.addInitScript(() => Object.defineProperty(navigator, "hardwareConcurrency", { get: () => 2 }));
-    await page.goto(`http://localhost:${PORT}/?demo=e2e&seed=${seed}&moves=${MOVES}&tps=${TPS}&view=${VIEW}${MODE === "timer" ? "&timer=1" : ""}`);
+    await page.goto(`http://localhost:${PORT}/?demo=e2e&seed=${seed}&moves=${MOVES}&tps=${TPS}&view=${VIEW}${MODE === "timer" ? "&timer=1" : ""}${process.env.E2E_PAD ? "&pad=1" : ""}`);
     if (MODE === "timer") {
       try {
         await page.waitForFunction(() => window.__cubevisionTimer?.get().phase === "done", null, { timeout: 240000, polling: 500 });
@@ -121,7 +121,7 @@ try {
       const ok = r.result && r.result.tracked && r.solved && r.result.timeMs > 0 && n > 5;
       const analysisOk = r.result?.analysis === "done" || process.env.E2E_ALLOW_NO_ANALYSIS;
       console.log(
-        `seed ${seed} timer: ${ok ? "OK" : "NG"} live ${(live?.timeMs / 1000).toFixed(3)}s → ${r.result?.analysis}${r.result?.refineMethod ? `(${r.result.refineMethod})` : ""} ${(r.result?.timeMs / 1000).toFixed(3)}s (truth ≈ ${(truthMs / 1000).toFixed(3)}s, ${sol.length} moves) moves ${n}${r.result?.moves.some((m) => m.inferred) ? ` 推定 ${r.result.moves.map((m, i) => (m.inferred ? i : -1)).filter((i) => i >= 0).join(",")}` : ""} tps ${r.result?.tps.toFixed(2)} splits ${JSON.stringify(r.result?.splits?.map((x) => [x.name, x.moves]))} 認識 ${r.processed} 枚（うち補助 ${r.helper}） rec ${r.rec ? `${r.rec.bitrate / 1e6}Mbps ${r.rec.frames} 枚・間引き ${r.rec.dropped}` : "-"} analysis-wait ${((Date.now() - waitFrom) / 1000).toFixed(1)}s ${logs.filter((l) => l.includes("[analysis]")).map((l) => l.replace(/^.*\[analysis\] /, "")).join(" / ")}`,
+        `seed ${seed} timer: ${ok ? "OK" : "NG"} live ${(live?.timeMs / 1000).toFixed(3)}s → ${r.result?.analysis}${r.result?.refineMethod ? `(${r.result.refineMethod})` : ""} ${(r.result?.timeMs / 1000).toFixed(3)}s (truth ≈ ${(truthMs / 1000).toFixed(3)}s, ${sol.length} moves) moves ${n}${r.result?.moves.some((m) => m.inferred) ? ` 推定 ${r.result.moves.map((m, i) => (m.inferred ? i : -1)).filter((i) => i >= 0).join(",")}` : ""} tps ${r.result?.tps.toFixed(2)} ${r.result?.pad ? `pad ${JSON.stringify(r.result.pad)} ` : ""}splits ${JSON.stringify(r.result?.splits?.map((x) => [x.name, x.moves]))} 認識 ${r.processed} 枚（うち補助 ${r.helper}） rec ${r.rec ? `${r.rec.bitrate / 1e6}Mbps ${r.rec.frames} 枚・間引き ${r.rec.dropped}` : "-"} analysis-wait ${((Date.now() - waitFrom) / 1000).toFixed(1)}s ${logs.filter((l) => l.includes("[analysis]")).map((l) => l.replace(/^.*\[analysis\] /, "")).join(" / ")}`,
       );
       if (!ok || process.env.E2E_TRACK) {
         // NG のとき: 終わった後のライブの追跡の様子（揃っていると見ているか・作り変えたか）
