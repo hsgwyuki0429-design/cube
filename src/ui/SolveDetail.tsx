@@ -169,6 +169,7 @@ export function SolveDetail() {
                 downLabel={`定点（${FACE_COLOR[face]}面下）`}
                 crossFace={face}
                 plan={start ? f2lPlan(start, mine, face) : []}
+                labels={solve.moves.map(label)}
               />
             ) : (
               <Cube3D key={`${solve.id}-x`} epoch={0} setupMoves={[]} moves={[]} orient={null} controls setupAlg={setupAlg} alg={alg} />

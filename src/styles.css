@@ -2726,3 +2726,33 @@ button.mv {
 .switch input:checked::after {
   transform: translateX(16px);
 }
+
+/* 記録の 3D: いま回した手の表記を大きく */
+.replay-stage {
+  position: relative;
+}
+.replay-move {
+  position: absolute;
+  left: 4px;
+  top: 0;
+  font-size: 34px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  pointer-events: none;
+  animation: replay-move 0.6s var(--ease-out) both;
+}
+@keyframes replay-move {
+  0% {
+    transform: translateY(6px) scale(0.7);
+    opacity: 0;
+  }
+  25% {
+    transform: none;
+    opacity: 1;
+  }
+  100% {
+    transform: none;
+    opacity: 0.35;
+  }
+}

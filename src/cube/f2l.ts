@@ -72,19 +72,23 @@ const key = (faces: number[]) =>
 const EDGE_KEY = EDGES.map((e) => e.split("").sort().join(""));
 const CORNER_KEY = CORNERS.map((e) => e.split("").sort().join(""));
 
-// 次に入るペアを光らせる cubing.js の stickering mask（experimentalStickeringMaskOrbits）。クロスのエッジ・入ったスロット・
-// 次に入るペアはふつう、ほかは暗く。F2L の途中でなければ null（全部ふつう）
+// 次に入るペアを光らせる cubing.js の stickering mask（experimentalStickeringMaskOrbits）。次に入るペアだけをふつうの色、クロスの
+// エッジと入ったスロットは暗く（場所が分かる）、ほかは灰色にする（はじめは次のペア以外を暗くしただけで、見分けにくかった）。
+// F2L の途中でなければ null（全部ふつう）
 export function f2lMask(c: number, step: F2LStep | null): string | null {
   if (!step) return null;
-  const bright = new Set<string>();
-  for (const f of [0, 1, 2, 3, 4, 5]) if (f !== c && f !== OPPOSITE[c]) bright.add(key([c, f])); // クロスのエッジ
-  for (const [a, b] of [...step.solved, step.slot]) {
-    bright.add(key([c, a, b]));
-    bright.add(key([a, b]));
+  const mark = new Map<string, string>();
+  for (const f of [0, 1, 2, 3, 4, 5]) if (f !== c && f !== OPPOSITE[c]) mark.set(key([c, f]), "D"); // クロスのエッジ
+  for (const [a, b] of step.solved) {
+    mark.set(key([c, a, b]), "D");
+    mark.set(key([a, b]), "D");
   }
-  const edges = EDGE_KEY.map((k) => (bright.has(k) ? "-" : "D")).join("");
-  const corners = CORNER_KEY.map((k) => (bright.has(k) ? "-" : "D")).join("");
-  return `EDGES:${edges},CORNERS:${corners},CENTERS:------`;
+  const [a, b] = step.slot;
+  mark.set(key([c, a, b]), "-");
+  mark.set(key([a, b]), "-");
+  const edges = EDGE_KEY.map((k) => mark.get(k) ?? "I").join("");
+  const corners = CORNER_KEY.map((k) => mark.get(k) ?? "I").join("");
+  return `EDGES:${edges},CORNERS:${corners},CENTERS:DDDDDD`;
 }
 
 // スロットの向き（キューブ固定の座標で、クロスの面に平行な方向）
