@@ -7,7 +7,7 @@
 import { useEffect, useRef } from "preact/hooks";
 import { Quaternion } from "three";
 import { controller } from "../app/controller";
-import { ORIENTATIONS, ROTATION, applyMoves, mul, solvedState, type Mat3 } from "../cube/model";
+import { ORIENTATIONS, applyMoves, mul, solvedState, type Mat3 } from "../cube/model";
 import { CubeScene, approach, matToQuat } from "./cubeScene";
 import { DEFAULT_GYRO, GyroFilter } from "./gyro";
 
@@ -17,7 +17,7 @@ export interface LiveCube3DProps {
   moves: number[];
   orient: number | null; // 持ち方の向き（カメラフレーム）。null なら白上・緑前
   follow: boolean; // 映っている傾きに追従する
-  userEye: boolean; // 自分の側から見る（インカメラ: カメラとは反対の側から見ている）
+  mirror: boolean; // 鏡像で描く（カメラのプレビューが鏡像のとき: インカメラ）
   base?: { n: number; at: number; state: number[] } | null;
   seen?: { n: number; state: number[] } | null;
 }
@@ -28,8 +28,6 @@ const POSE_TAU = 85; // 傾きを追う時定数
 const HOLD_TAU = 140; // 持ち方の向きへ戻る時定数
 // 揺れを除く設定: 止まっているときは強くならし、先読みはしない（行き過ぎて戻るのが「よく分からない」動きに見えた）
 const GYRO = { ...DEFAULT_GYRO, minCutoff: 0.5, beta: 2.2, predictMs: 0 };
-const Y2 = mul(ROTATION.y, ROTATION.y);
-const TILT_GAIN = 0.65; // 映った傾きをどれだけ 3D に移すか
 
 export function LiveCube3D(props: LiveCube3DProps) {
   const host = useRef<HTMLDivElement>(null);
@@ -46,7 +44,7 @@ export function LiveCube3D(props: LiveCube3DProps) {
   const lastPoseAt = useRef(-1e9);
   const gyro = useRef(new GyroFilter(GYRO));
 
-  const toView = (m: Mat3) => matToQuat(propsRef.current.userEye ? mul(Y2, m) : m);
+  const toView = (m: Mat3) => matToQuat(m);
   const holdQ = () => {
     const o = propsRef.current.orient;
     return propsRef.current.follow && o !== null ? toView(ORIENTATIONS[o]) : new Quaternion();
@@ -54,6 +52,7 @@ export function LiveCube3D(props: LiveCube3DProps) {
 
   useEffect(() => {
     const s = new CubeScene();
+    s.setEye(propsRef.current.follow);
     scene.current = s;
     host.current!.appendChild(s.canvas);
     const ro = new ResizeObserver(() => {
@@ -97,9 +96,8 @@ export function LiveCube3D(props: LiveCube3DProps) {
         if (count < 2) return;
       }
       cur = o;
-      // 傾きは少し弱めて使う: 3D は少し上・右から見下ろす目線で描くので、映った傾きをそのまま足すと傾きすぎて読みにくく、揺れも目立つ
-      const tilt = new Quaternion().slerp(matToQuat(m.pose.R), TILT_GAIN);
-      const q = toView(ORIENTATIONS[o]).premultiply(props.userEye ? matToQuat(Y2).multiply(tilt).multiply(matToQuat(Y2)) : tilt);
+      // カメラに映っているのと同じ向き: キューブ固定 → カメラ = 傾き R · 持ち方
+      const q = toView(mul(m.pose.R, ORIENTATIONS[o]));
       const now = performance.now();
       if (now - lastPoseAt.current > 600) gyro.current.reset();
       gyro.current.push(q, now);
@@ -108,9 +106,11 @@ export function LiveCube3D(props: LiveCube3DProps) {
       scene.current?.invalidate();
     });
     return off;
-  }, [props.follow, props.userEye]);
+  }, [props.follow]);
 
-  useEffect(() => scene.current?.invalidate(), [props.orient, props.follow, props.userEye]);
+  // 追従するときは真正面から（カメラと同じ見え方）、固定は少し上・右から
+  useEffect(() => scene.current?.setEye(props.follow), [props.follow]);
+  useEffect(() => scene.current?.invalidate(), [props.orient, props.follow]);
 
   const apply = () => {
     const s = scene.current;
@@ -156,7 +156,7 @@ export function LiveCube3D(props: LiveCube3DProps) {
   useEffect(apply, [props.epoch, props.setupMoves, props.moves, props.base?.n, props.seen?.n]);
 
   return (
-    <div class="cube3d live-cube" ref={host}>
+    <div class={`cube3d live-cube${props.mirror && props.follow ? " mirrored" : ""}`} ref={host}>
       {props.setupMoves === null && <div class="loading">3D表示を準備中…</div>}
     </div>
   );

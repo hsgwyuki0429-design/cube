@@ -102,7 +102,7 @@ export function SettingsPage() {
             <Select k="notation" options={[["relative", "持ち方基準"], ["absolute", "色基準"]]} />
           </Field>
           <Field label="3D キューブの向き">
-            <Select k="cube3dView" options={[["camera", "持った傾きに追従"], ["fixed", "固定（白上・緑前）"]]} />
+            <Select k="cube3dView" options={[["camera", "カメラの映像と同じ向き"], ["fixed", "固定（白上・緑前）"]]} />
           </Field>
         </div>
       </div>

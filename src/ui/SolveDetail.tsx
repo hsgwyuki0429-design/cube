@@ -153,7 +153,7 @@ export function SolveDetail() {
                 from={view.at}
                 poses={solve.poses}
                 onTurn={() => controller.turnSound()}
-                userEye={mirror && !demo}
+                mirror={mirror && !demo}
                 solverFlip={viewpoint === "user" && !demo}
                 downOrient={hold.o}
                 downLabel={`定点（${FACE_COLOR[face]}面下）`}
