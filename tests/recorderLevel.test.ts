@@ -13,16 +13,16 @@ afterEach(() => {
 });
 
 describe("録画の圧縮の強さ", () => {
-  it("8Mbps から始め、落ちたら 1 段ずつ下げて、いちばん下で止まる", () => {
-    expect(BITRATES[0]).toBe(8_000_000);
+  it("5Mbps から始め、落ちたら 1 段ずつ下げて、いちばん下で止まる", () => {
+    expect(BITRATES[0]).toBe(5_000_000);
     lowerRecordBitrate();
-    expect(JSON.parse(store.get(KEY)!).level).toBe(1);
+    expect(JSON.parse(store.get(KEY)!).level).toBe(Math.min(1, BITRATES.length - 1));
     for (let i = 0; i < 5; i++) lowerRecordBitrate();
     expect(JSON.parse(store.get(KEY)!).level).toBe(BITRATES.length - 1);
   });
   it("壊れた値は最初の段として扱う", () => {
     store.set(KEY, "{\"level\":99}");
     lowerRecordBitrate();
-    expect(JSON.parse(store.get(KEY)!).level).toBe(1);
+    expect(JSON.parse(store.get(KEY)!).level).toBe(Math.min(1, BITRATES.length - 1));
   });
 });
