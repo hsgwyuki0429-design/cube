@@ -93,3 +93,20 @@ export function f2lMask(c: number, step: F2LStep | null): string | null {
 
 // スロットの向き（キューブ固定の座標で、クロスの面に平行な方向）
 export const slotDir = ([a, b]: Slot): [number, number, number] => add(NORMAL[a], NORMAL[b]) as [number, number, number];
+
+// 次に入るペアを光らせる見せ方（ピースの色の組 → on / dim / gray）。次に入るペアだけふつうの色、クロスのエッジ・入ったスロット・
+// センターは暗く（場所が分かる）、ほかは灰色。F2L の途中でなければ null（全部ふつう）
+export function f2lLook(c: number, step: F2LStep | null): ((colors: number[]) => "on" | "dim" | "gray") | null {
+  if (!step) return null;
+  const k = (fs: number[]) => [...fs].sort().join(",");
+  const look = new Map<string, "on" | "dim">();
+  for (const f of [0, 1, 2, 3, 4, 5]) if (f !== c && f !== OPPOSITE[c]) look.set(k([c, f]), "dim");
+  for (const [a, b] of step.solved) {
+    look.set(k([c, a, b]), "dim");
+    look.set(k([a, b]), "dim");
+  }
+  const [a, b] = step.slot;
+  look.set(k([c, a, b]), "on");
+  look.set(k([a, b]), "on");
+  return (colors) => (colors.length === 1 ? "dim" : (look.get(k(colors)) ?? "gray"));
+}

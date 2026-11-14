@@ -13,12 +13,12 @@ import { MOVE_NAMES, applyMoves, moveIndex, parseMoves, relativeMove, rotateOrie
 import type { SolveMove } from "../app/storage";
 import { optimalXCross } from "../cube/solver";
 import type { XCrossResult } from "../cube/xcross";
-import { Cube3D } from "./Cube3D";
 import { type ReplayMove, ReplayCube } from "./ReplayCube";
 import { BackIcon, ShareIcon } from "./icons";
 import { shareSolve } from "./shareCard";
 import { AnalysisBadge, PenaltyRow, bestGain } from "./solveUi";
 
+const X_STEP_MS = 420; // X クロスの最短を回す間隔
 const FACE_COLOR = ["白", "赤", "緑", "黄", "橙", "青"];
 
 const safeMoves = (names: string[]): number[] | null => {
@@ -51,7 +51,6 @@ export function SolveDetail() {
   const solves = useStore(timerStore, (t) => t.solves);
   const solve = solves.find((s) => s.id === id) ?? null;
   const notation = useStore(settingsStore, (s) => s.notation);
-  const cube3dView = useStore(settingsStore, (s) => s.cube3dView);
   const viewpoint = useStore(settingsStore, (s) => s.viewpoint);
   const mirror = useStore(controller.store, (s) => s.mirror);
   const demo = useStore(controller.store, (s) => s.demo);
@@ -101,15 +100,7 @@ export function SolveDetail() {
 
   // 3D の持ち方（クロスの面を下）での手の名前
   const held = (ms: number[]) => ms.map((m) => MOVE_NAMES[relativeMove(m, hold.o)]).join(" ");
-  const setupBase = `${solve.scramble} ${hold.rotation}`.trim();
-  let setupAlg = setupBase;
-  let alg = "";
-  if (view.mode === "xcross" && xcross && typeof xcross === "object" && xcross.result) alg = held(xcross.result.moves);
-  else if (mine) {
-    const at = view.mode === "mine" ? view.at : 0;
-    setupAlg = `${setupBase} ${held(mine.slice(0, at))}`.trim();
-    alg = held(mine.slice(at));
-  }
+  const xMoves = view.mode === "xcross" && xcross && typeof xcross === "object" && xcross.result ? xcross.result.moves : [];
   const label = (m: { m: string; r: string }) => (notation === "relative" ? m.r : m.m);
   const splits = solve.splits ?? [];
   const at = view.mode === "mine" ? view.at : -1;
@@ -162,8 +153,7 @@ export function SolveDetail() {
                 from={view.at}
                 poses={solve.poses}
                 onTurn={() => controller.turnSound()}
-                mirror={cube3dView === "camera" && mirror && !demo}
-                userView={cube3dView === "user"}
+                userEye={mirror && !demo}
                 solverFlip={viewpoint === "user" && !demo}
                 downOrient={hold.o}
                 downLabel={`定点（${FACE_COLOR[face]}面下）`}
@@ -172,7 +162,19 @@ export function SolveDetail() {
                 labels={solve.moves.map(label)}
               />
             ) : (
-              <Cube3D key={`${solve.id}-x`} epoch={0} setupMoves={[]} moves={[]} orient={null} controls setupAlg={setupAlg} alg={alg} />
+              <ReplayCube
+                key={`${solve.id}-x`}
+                simple
+                setupAlg={solve.scramble}
+                moves={xMoves.map((m, i) => ({ move: m, s: i * X_STEP_MS, t: i * X_STEP_MS + 220, orient: null }))}
+                from={0}
+                onTurn={() => controller.turnSound()}
+                downOrient={hold.o}
+                downLabel=""
+                crossFace={face}
+                plan={[]}
+                labels={xMoves.map((m) => MOVE_NAMES[relativeMove(m, hold.o)])}
+              />
             )
           ) : (
             <p class="muted small">スクランブルがない記録です。</p>
