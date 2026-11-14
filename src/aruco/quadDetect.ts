@@ -96,33 +96,31 @@ export class QuadDetector {
     const T = this.thresh;
     const v = T.layout(w, h);
     const vs = T.vs;
-    // 明るさ max(R, G, B)（行の余りは 0）。WASM SIMD があればそちらで（同じ結果）
-    if (!T.fillMax?.(img, r)) {
-      const src = img.data;
-      // 1 画素を 1 回で読めるとき（リトルエンディアン: R が下位のバイト）
-      const px = src.byteOffset % 4 === 0 ? new Uint32Array(src.buffer, src.byteOffset, src.byteLength >> 2) : null;
-      for (let y = 0; y < h; y++) {
-        let o = y * vs;
-        if (px) {
-          let i = (r.y + y) * img.width + r.x;
-          for (let x = 0; x < w; x++, i++, o++) {
-            const p = px[i];
-            const R = p & 255;
-            const G = (p >>> 8) & 255;
-            const B = (p >>> 16) & 255;
-            v[o] = R > G ? (R > B ? R : B) : G > B ? G : B;
-          }
-        } else {
-          let i = ((r.y + y) * img.width + r.x) * 4;
-          for (let x = 0; x < w; x++, i += 4, o++) {
-            const R = src[i];
-            const G = src[i + 1];
-            const B = src[i + 2];
-            v[o] = R > G ? (R > B ? R : B) : G > B ? G : B;
-          }
+    // 明るさ max(R, G, B)（行の余りは 0）
+    const src = img.data;
+    // 1 画素を 1 回で読めるとき（リトルエンディアン: R が下位のバイト）
+    const px = src.byteOffset % 4 === 0 ? new Uint32Array(src.buffer, src.byteOffset, src.byteLength >> 2) : null;
+    for (let y = 0; y < h; y++) {
+      let o = y * vs;
+      if (px) {
+        let i = (r.y + y) * img.width + r.x;
+        for (let x = 0; x < w; x++, i++, o++) {
+          const p = px[i];
+          const R = p & 255;
+          const G = (p >>> 8) & 255;
+          const B = (p >>> 16) & 255;
+          v[o] = R > G ? (R > B ? R : B) : G > B ? G : B;
         }
-        v.fill(0, o, (y + 1) * vs);
+      } else {
+        let i = ((r.y + y) * img.width + r.x) * 4;
+        for (let x = 0; x < w; x++, i += 4, o++) {
+          const R = src[i];
+          const G = src[i + 1];
+          const B = src[i + 2];
+          v[o] = R > G ? (R > B ? R : B) : G > B ? G : B;
+        }
       }
+      v.fill(0, o, (y + 1) * vs);
     }
     if (this.rowStart.length < h + 1) this.rowStart = new Int32Array(h + 1);
     this.vbuf = v as Uint8Array<ArrayBuffer>;
@@ -884,7 +882,6 @@ export interface Thresholder {
   vs: number;
   stride: number;
   layout(w: number, h: number): Uint8Array; // 明るさを書く入れ物（vs × h）
-  fillMax?(img: ImageLike, r: Region): boolean; // layout の後で、明るさ max(R, G, B) を入れ物に書く（できなければ false）
   run(win: number, c: number): Uint32Array; // ビット列（stride / 4 × h 語）
 }
 
@@ -944,14 +941,11 @@ class WasmThresholder implements Thresholder {
   private vOff = 0;
   private maskOff = 0;
   private readonly mem: WebAssembly.Memory;
-  private rgbOff = 0;
   private readonly fn: (v: number, vs: number, w: number, h: number, win: number, c: number, col: number, mask: number, stride: number) => void;
-  private readonly maxFn: (src: number, w: number, h: number, dst: number, vs: number) => void;
   constructor(module: WebAssembly.Module) {
     const inst = new WebAssembly.Instance(module, {});
     this.mem = inst.exports.mem as WebAssembly.Memory;
     this.fn = inst.exports.thresh as never;
-    this.maxFn = inst.exports.maxrgb as never;
   }
   layout(w: number, h: number): Uint8Array {
     this.w = w;
@@ -961,27 +955,10 @@ class WasmThresholder implements Thresholder {
     const colBytes = (w + 32) * 2;
     this.vOff = (COL_OFF + colBytes + 63) & ~63;
     this.maskOff = (this.vOff + this.vs * h + 63) & ~63;
-    // RGBA を写す所（明るさを WASM で作るとき。行の終わりを越えて 64 バイトまで読む）
-    this.rgbOff = (this.maskOff + this.stride * h + 63) & ~63;
-    const need = this.rgbOff + w * 4 * h + 128;
+    const need = this.maskOff + this.stride * h + 64;
     const have = this.mem.buffer.byteLength;
     if (need > have) this.mem.grow(Math.ceil((need - have) / 65536));
     return new Uint8Array(this.mem.buffer, this.vOff, this.vs * h);
-  }
-  // RGBA を WASM のメモリに写して（行ごと。切り出しが画像の幅いっぱいなら 1 回）、16 画素ずつ max(R, G, B) にする。JS で 1 画素ずつ
-  // 作るより 3〜4 倍速い（実物の 1280×720 の切り出しで 1 フレーム 約 1ms → 0.3ms）
-  fillMax(img: ImageLike, r: Region): boolean {
-    if (!this.maxFn) return false;
-    const src = img.data;
-    const rowBytes = r.w * 4;
-    const mem = new Uint8Array(this.mem.buffer);
-    if (r.x === 0 && r.w === img.width) mem.set(src.subarray(r.y * rowBytes, (r.y + r.h) * rowBytes), this.rgbOff);
-    else for (let y = 0; y < r.h; y++) {
-      const o = ((r.y + y) * img.width + r.x) * 4;
-      mem.set(src.subarray(o, o + rowBytes), this.rgbOff + y * rowBytes);
-    }
-    this.maxFn(this.rgbOff, r.w, r.h, this.vOff, this.vs);
-    return true;
   }
   run(win: number, c: number): Uint32Array {
     this.fn(this.vOff, this.vs, this.w, this.h, win, c, COL_OFF, this.maskOff, this.stride);

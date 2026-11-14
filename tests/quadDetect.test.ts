@@ -91,34 +91,6 @@ describe("二値化: WASM と JS", () => {
     }
   });
 
-  it("明るさ max(R, G, B) も同じ（切り出し・幅の余り・画像の幅いっぱい）", () => {
-    const wasm = makeThresholder();
-    expect(wasm.simd).toBe(true);
-    const r = rng(7);
-    const W = 203;
-    const H = 61;
-    const data = new Uint8ClampedArray(W * H * 4);
-    for (let i = 0; i < data.length; i++) data[i] = Math.floor(r() * 256);
-    const img = { data, width: W, height: H };
-    for (const reg of [
-      { x: 0, y: 0, w: W, h: H },
-      { x: 5, y: 3, w: 37, h: 20 },
-      { x: 17, y: 9, w: 150, h: 50 },
-      { x: 0, y: 10, w: W, h: 7 },
-    ]) {
-      const v = wasm.layout(reg.w, reg.h);
-      v.fill(77);
-      expect(wasm.fillMax!(img, reg)).toBe(true);
-      const out = wasm.layout(reg.w, reg.h);
-      for (let y = 0; y < reg.h; y++)
-        for (let x = 0; x < wasm.vs; x++) {
-          const i = ((reg.y + y) * W + reg.x + x) * 4;
-          const want = x < reg.w ? Math.max(data[i], data[i + 1], data[i + 2]) : 0;
-          if (out[y * wasm.vs + x] !== want) throw new Error(`(${x},${y}) ${out[y * wasm.vs + x]} != ${want}`);
-        }
-    }
-  });
-
   it("検出の結果も同じ", () => {
     const { img } = scene("R U F' D2 L", [2.4, 2.4, 5.5]);
     const a = new QuadDetector("unique54").detect(img);

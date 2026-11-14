@@ -5,7 +5,6 @@
 //   LIVE_ENGINE='{"decoder":{"maxMovesPerStep":4}}'（本体のライブの設定に上書き）・LIVE_DUMP=1（観測ごと）
 import { readFileSync } from "node:fs";
 import { it } from "vitest";
-import { profile, summarize } from "./prof";
 import { ARUCO_REFS } from "../../src/aruco/palette";
 import { MOVE_NAMES, VIEW, applyMove, inverseMove, statesEqual } from "../../src/cube/model";
 import { type EngineOptions, TrackerEngine } from "../../src/track/engine";
@@ -19,7 +18,7 @@ const LAGS = [150, 300, 600];
 
 export function liveEngineOptions(over: Partial<EngineOptions> = {}): Partial<EngineOptions> {
   // 本体のライブ（src/app/controller.ts の liveEngineOptions）
-  return { ...over, observer: { ...ARUCO_OBSERVER, ...LIVE_OBSERVER, ...over.observer }, decoder: { beamWidth: 64, priorWeight: 0, confirmMargin: 1, deepHyps: 4, bridgeDepth: 5, ...over.decoder }, snapToView: over.snapToView ?? true, recover: over.recover ?? true };
+  return { ...over, observer: { ...ARUCO_OBSERVER, ...LIVE_OBSERVER, ...over.observer }, decoder: { priorWeight: 0, confirmMargin: 1, deepHyps: 4, bridgeDepth: 5, ...over.decoder }, snapToView: over.snapToView ?? true, recover: over.recover ?? true };
 }
 
 // 見えている 3 面（カメラの正面・上・右。姿勢 o）だけで比べる
@@ -53,7 +52,7 @@ function matches(start: Uint8Array, res: RefineResult, t: number, lag: number, s
   return false;
 }
 
-function replay(): number {
+it("書き出したライブの読みの追跡", () => {
   const sets = (process.env.LIVE_SETS ?? "").split(",").filter(Boolean);
   const dir = process.env.LIVE_DIR ?? ".";
   const over = JSON.parse(process.env.LIVE_ENGINE ?? "{}") as Partial<EngineOptions>;
@@ -62,7 +61,6 @@ function replay(): number {
   let seenSum = 0;
   const allRuns: number[] = [];
   const lines: string[] = [];
-  const allFrameMs: number[] = [];
   for (const set of sets) {
     const [rd, rf] = set.split(":");
     const { start, readings } = JSON.parse(readFileSync(`${dir}/${rd}`, "utf8")) as { start: number[]; readings: FrameReading[] };
@@ -73,7 +71,6 @@ function replay(): number {
     const s1 = (res.end ?? res.moves[res.moves.length - 1]?.end ?? -Infinity) + 1000;
     const acc = LAGS.map(() => ({ same: 0, counted: 0 }));
     let ms = 0;
-    const frameMs: number[] = [];
     let evals = 0;
     let obs = 0;
     let snaps = 0;
@@ -101,13 +98,9 @@ function replay(): number {
         });
         if (faces.length !== r.faces.length) r = { ...r, faces };
       }
-
       const a = performance.now();
       const u = engine.push(r);
-      const took = performance.now() - a;
-      ms += took;
-      frameMs.push(took);
-      allFrameMs.push(took);
+      ms += performance.now() - a;
       if (u) {
         obs++;
         evals += engine.decoder.lastExpanded;
@@ -183,7 +176,7 @@ function replay(): number {
     let same = 0;
     while (same < moves.length && same < res.moves.length && moves[same].move === res.moves[same].move) same++;
     lines.push(
-      `${rd.padEnd(13)} 一致 ${LAGS.map((lag, k) => `${lag}ms ${((acc[k].same / Math.max(1, acc[k].counted)) * 100).toFixed(1).padStart(5)}%`).join("・")} | 手順 ${got === truth ? "同じ" : `頭から ${same}/${res.moves.length} 手`}・見失い 0.5 秒以上 ${long.length} 回 計 ${(long.reduce((a, b) => a + b, 0) / 1000).toFixed(1)} 秒 最長 ${(Math.max(0, ...runs) / 1000).toFixed(1)} 秒・作り変え ${snaps}${engine.recoveries ? `・復帰 ${engine.recoveries}/${engine.recoverTries}（最大 ${engine.recoverMax.toFixed(0)}ms）` : ""}・${engine.decoder.status}${dropped ? `・捨てた ${dropped}` : ""} | 追跡 ${(ms / readings.length).toFixed(2)}ms/フレーム（最大 ${Math.max(0, ...frameMs).toFixed(0)}ms）・観測 ${obs}・評価 ${(evals / Math.max(1, obs)).toFixed(0)}/観測`,
+      `${rd.padEnd(13)} 一致 ${LAGS.map((lag, k) => `${lag}ms ${((acc[k].same / Math.max(1, acc[k].counted)) * 100).toFixed(1).padStart(5)}%`).join("・")} | 手順 ${got === truth ? "同じ" : `頭から ${same}/${res.moves.length} 手`}・見失い 0.5 秒以上 ${long.length} 回 計 ${(long.reduce((a, b) => a + b, 0) / 1000).toFixed(1)} 秒 最長 ${(Math.max(0, ...runs) / 1000).toFixed(1)} 秒・作り変え ${snaps}${engine.recoveries ? `・復帰 ${engine.recoveries}/${engine.recoverTries}（最大 ${engine.recoverMax.toFixed(0)}ms）` : ""}・${engine.decoder.status}${dropped ? `・捨てた ${dropped}` : ""} | 追跡 ${(ms / readings.length).toFixed(2)}ms/フレーム・観測 ${obs}・評価 ${(evals / Math.max(1, obs)).toFixed(0)}/観測`,
     );
   }
   lines.push(`合計          一致 ${LAGS.map((lag, k) => `${lag}ms ${((totals[k].same / Math.max(1, totals[k].counted)) * 100).toFixed(1).padStart(5)}%`).join("・")}`);
@@ -193,17 +186,6 @@ function replay(): number {
     lines.push(`見失い（300ms の遅れを許しても違う区間）0.5 秒以上: ${long.length} 回・計 ${(sum / 1000).toFixed(1)} 秒・中央 ${((long[long.length >> 1] ?? 0) / 1000).toFixed(2)} 秒・長い方から 1 割 ${((long[Math.floor(long.length * 0.9)] ?? 0) / 1000).toFixed(1)} 秒・0.5 秒未満 ${allRuns.length - long.length} 回`);
   }
   lines.push(`見えている 3 面だけで比べた一致の平均 ${((seenSum / Math.max(1, sets.length)) * 100).toFixed(1)}%`);
-  allFrameMs.sort((p, q) => p - q);
-  const pct = (q: number) => (allFrameMs[Math.min(allFrameMs.length - 1, Math.floor(allFrameMs.length * q))] ?? 0).toFixed(1);
-  lines.push(`追跡の 1 フレーム: 平均 ${(allFrameMs.reduce((p, q) => p + q, 0) / Math.max(1, allFrameMs.length)).toFixed(2)}ms・99% ${pct(0.99)}ms・99.9% ${pct(0.999)}ms・最大 ${pct(1)}ms・20ms 超 ${allFrameMs.filter((x) => x > 20).length} 枚 / ${allFrameMs.length}`);
   lines.push(`平均（1 本ずつの 300ms の一致の平均） ${((meanSum / Math.max(1, sets.length)) * 100).toFixed(1)}%`);
   console.log(lines.join("\n"));
-  return 0;
-}
-
-// LIVE_PROFILE=1: 追跡全体の関数ごとの時間（読みの枚数で割らない。全体の ms）
-it("書き出したライブの読みの追跡", async () => {
-  if (!process.env.LIVE_PROFILE) return void replay();
-  const { nodes, interval } = await profile(replay);
-  console.log(summarize(nodes, interval, 1, 40));
 }, 3600000);
