@@ -311,7 +311,8 @@ export function CameraView() {
                 : hidden && (st.scan?.progress ?? 0) > 0.5
                   ? `点線のマス（${hidden}）が読めていません。指をずらしてください`
                   : "そのまま動かさないでください…";
-        } else if (st.cube && !m.faces.length) text = "キューブが見えていません";
+        }
+        // スキャン以外では案内を出さない（「キューブが見えていません」を画面の真ん中に出していたのは 2026-11 にやめた）
         hint.current.textContent = text;
         hint.current.style.display = text ? "" : "none";
       }

@@ -10,7 +10,7 @@ import { StartDetector } from "./startDetect";
 import { markPhase } from "./crashGuard";
 import { ScrambleGuide, undoMoves } from "./scrambleGuide";
 import type { TrackUpdate } from "../track/engine";
-import { CHECK_STICKERS, type CheckMemo, checkStep } from "./solvedCheck";
+import { type CheckMemo, checkStep } from "./solvedCheck";
 import { mergeQuickRepeats } from "../track/merge";
 import type { RefineResult } from "../vision/refine";
 import { controller } from "./controller";
@@ -117,12 +117,9 @@ export async function newScramble(): Promise<void> {
     timerStore.set({ message: "先にキューブをスキャンしてください。" });
     return;
   }
-  // 「揃った状態から開始」の直後: まず揃っているかを見る（揃っていなければ、その状態を読み取ってからスクランブルを作る）
-  if (controller.takeStartCheck()) {
-    check = null;
-    timerStore.set({ phase: "checking", message: null, result: null, checkUnsolved: false, checkLeft: CHECK_STICKERS });
-    return;
-  }
+  // 「揃った状態から開始」の直後も確かめずにすぐスクランブルを出す（2026-11。確かめる間（checking）待たされた。
+  // 揃っているかを確かめる仕組み（solvedCheck.ts・checking）は残すが、いまは使わない）
+  controller.takeStartCheck();
   await makeScramble();
 }
 

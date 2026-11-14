@@ -137,15 +137,7 @@ function TopBar() {
   );
 }
 
-// ---- カメラの上: 追跡の様子（キューブが映っていないことは CameraView の案内が出すので、ここでは出さない） ----
-
-function TrackBadge() {
-  const t = useStore(controller.store, (s) => ({ status: s.track?.status, faces: s.stats.faces, cube: !!s.cube, camera: s.camera }));
-  if (t.camera !== "on" || !t.cube) return null;
-  if (t.status === "lost") return <div class="cam-badge glass bad">見失いました。キューブを止めて 2 面を見せてください</div>;
-  if (t.status === "uncertain") return <div class="cam-badge glass warn">確認中… 一瞬止めてください</div>;
-  return null;
-}
+// ---- カメラの上の「見失いました」「確認中…」は出さない（2026-11 にやめた。追跡の様子は上の点の色だけ） ----
 
 // ---- 右下: 3D キューブ（完成したら光の輪と 6 色の欠片） ----
 
@@ -405,7 +397,6 @@ export function PlayScreen() {
       <div class="stage-scrim top" aria-hidden="true" />
       <div class="stage-scrim bottom" aria-hidden="true" />
       <TopBar />
-      <TrackBadge />
       <div class="stage-bottom">
         <BottomStrip />
         <CubeInset />
