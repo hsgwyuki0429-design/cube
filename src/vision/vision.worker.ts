@@ -4,6 +4,7 @@ import { sightFrame } from "../track/pieces/frame";
 import { slotsPlausible } from "../track/pieces/slotCheck";
 import { type Mat3, ORIENTATIONS, mul } from "../cube/model";
 import { TrackerEngine, focusCells } from "../track/engine";
+import { LiveLog } from "../track/liveLog";
 import { StreamDecoder, decodeRecording } from "./decode";
 import type { Recording } from "./recorder";
 import { StillSkipper } from "./motion";
@@ -22,6 +23,8 @@ let cv: CV | null = null;
 let config: PipelineConfig = { ...DEFAULT_PIPELINE };
 let ctx: OffscreenCanvasRenderingContext2D | null = null;
 let engine: TrackerEngine | null = null;
+// ライブの記録（src/track/liveLog.ts。設定画面の「ライブの記録を書き出す」）: 追跡に渡した読みと結果の要点を直近 120 秒だけ残す
+const liveLog = new LiveLog();
 const memory = {}; // フレームの間で引き継ぐもの（processFrame）
 // 焦点距離の見積もり（カメラごとに違う。超広角は長辺の 0.4 倍ほど: src/vision/pose.ts）
 const focal = new FocalTracker();
@@ -210,6 +213,7 @@ function pickFrame(): QueuedFrame | null {
     if (f === best) continue;
     f.bitmap.close();
     post({ type: "frame-skipped", id: f.id, seq: f.seq });
+    if (!f.helper && engine) liveLog.skip();
     if (!f.helper && f.seq !== undefined) skipSeq(f.seq);
   }
   return best;
@@ -299,8 +303,21 @@ function track(r: Recognized): void {
   // スロットがありえないフレーム（正面・上・下が同時に見えた・センターと面の接し方に合わない）は、追跡には何も見えなかったとして渡す
   // （src/track/pieces/slotCheck.ts。実物の 7 本 × 3〜5 通りの fps で、ライブの 3D の一致が 1 本ずつの平均で 75.2 → 77.1%）
   const read0 = frameReading(r.t, result);
-  const reading = read0.faces.length && !slotsPlausible(sightFrame(r.t, result)) ? { ...read0, faces: [] } : read0;
+  const sight = read0.faces.length ? sightFrame(r.t, result) : undefined;
+  const dropped = !!sight && !slotsPlausible(sight);
+  const reading = dropped ? { ...read0, faces: [] } : read0;
   const track = engine?.push(reading) ?? undefined;
+  if (engine)
+    liveLog.add({
+      ...read0,
+      sight,
+      procMs: Math.round(r.procMs * 10) / 10,
+      ...(r.foreign ? { helper: true } : {}),
+      ...(dropped ? { dropped: true } : {}),
+      ...(track
+        ? { out: { status: track.status, obsCost: Math.round(track.obsCost * 100) / 100, moves: track.moves.length, last: track.moves.slice(-4).map((m) => m.move), base: track.base?.n ?? 0, view: track.view?.n ?? 0 } }
+        : {}),
+    });
   if (track) focus = focusCells(track.cells, track.orient);
   let looksSolved: boolean | undefined;
   let pose: FrameMessage["pose"];
@@ -342,18 +359,24 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
         return;
       case "track-start":
         engine = new TrackerEngine(Uint8Array.from(msg.state), msg.refs, msg.options, msg.orients);
+        liveLog.start(msg.state, msg.options, msg.orients);
         focus = undefined;
         return;
       case "track-options":
         engine?.setOptions(msg.options);
+        liveLog.event("options", msg.options);
         return;
       case "track-reset":
         engine?.reset(Uint8Array.from(msg.state), msg.orients);
+        if (engine) liveLog.start(msg.state, null, msg.orients);
         focus = undefined;
         return;
       case "track-stop":
         engine = null;
         focus = undefined;
+        return;
+      case "live-log":
+        post({ type: "live-log", id: msg.id, log: liveLog.toJSON() });
         return;
       case "track-query":
         post({ type: "track-snapshot", id: msg.id, track: engine ? engine.snapshot() : null });

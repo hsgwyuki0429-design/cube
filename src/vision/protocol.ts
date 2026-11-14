@@ -26,6 +26,7 @@ export type ToWorker =
   | { type: "track-reset"; state: number[]; orients?: number[] }
   | { type: "track-stop" }
   | { type: "track-query"; id: number }
+  | { type: "live-log"; id: number }
   | { type: "refine"; id: number; recording: Recording; input: RefineInput }
   // 追跡を精密解析の結果に乗り換える（t までを解き直した状態・姿勢・手順。keep はそれより前からあった手の数）
   // ソルブ中から進める精密解析: 録画の増えた分を少しずつ渡し、最後に終わりの時刻と状態を渡して結果をもらう
@@ -77,6 +78,7 @@ export type FromWorker =
   | { type: "error"; message: string }
   | FrameMessage
   | { type: "track-snapshot"; id: number; track: TrackUpdate | null }
+  | { type: "live-log"; id: number; log: unknown }
   | { type: "refine-progress"; id: number; done: number; total: number }
   | { type: "refine-phase"; id: number; phase: "flush" | "decode" | "timing" }
   | { type: "refine-result"; id: number; result: RefineResult }

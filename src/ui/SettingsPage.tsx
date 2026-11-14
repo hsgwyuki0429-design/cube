@@ -3,6 +3,7 @@ import { controller } from "../app/controller";
 import { type Settings, settingsStore, updateSettings } from "../app/settings";
 import { useStore } from "../app/store";
 import { HelpPage } from "./HelpPage";
+import { exportLiveLog } from "./liveLogExport";
 
 function Field(props: { label: string; desc?: string; children: preact.ComponentChildren }) {
   return (
@@ -116,6 +117,18 @@ export function SettingsPage() {
           <Field label="効果音">
             <Toggle k="sound" />
           </Field>
+        </div>
+      </div>
+
+      <div class="card" style={{ marginTop: 12 }}>
+        <div class="card-head">ライブの記録</div>
+        <div class="card-body">
+          <p class="small muted" style={{ margin: "0 0 10px" }}>
+            直前 2 分間にライブが読み取った内容（マーカーの ID・色・位置と、追跡の結果）をファイルにして送れます。追従がおかしかったソルブの直後に書き出してください。映像は入りません。
+          </p>
+          <button class="btn" onClick={() => void exportLiveLog()}>
+            ライブの記録を書き出す
+          </button>
         </div>
       </div>
 
