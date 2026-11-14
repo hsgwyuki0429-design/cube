@@ -90,6 +90,7 @@ const SOLVE_LEAD_MS = 500;
 const LIVE_REST_MAX_MS = 20000; // 止めた後の残りの解析の間、ライブの認識を休むのは長くてもこれだけ
 
 // 追跡の探索と観測器の設定（ライブと精密解析で共通の部分）
+const LIVE_BEAM = 64; // ライブの追跡の候補の幅（liveEngineOptions）
 const searchOptions = (s: Settings) => ({ beamWidth: s.beamWidth, maxMovesPerStep: s.maxMovesPerStep, rotationCost: s.rotationCost });
 const observerOptions = (s: Settings) => ({ stableMs: s.stableMs, ...ARUCO_OBSERVER });
 
@@ -217,7 +218,9 @@ class Controller {
   // 残りは写らない面の手で、写らない手は回さない）
   liveEngineOptions(s: Settings = settingsStore.get()): Partial<EngineOptions> {
     return {
-      decoder: { ...searchOptions(s), priorWeight: 0, confirmMargin: 1, deepHyps: 4, bridgeDepth: 5 },
+      // 候補の幅は 64（精密解析は 32）: 実物 7 本 × 1 秒 6〜20 枚・全フレームの 27 通りで、下がった本はなく、1 本ずつの平均 81.5 → 81.9%（1 秒
+      // 10 枚の IMG_5046 で 67 → 78%）。追跡は 1 フレーム +0.2ms。128 は 1 本が 75 → 34% に崩れた
+      decoder: { ...searchOptions(s), beamWidth: LIVE_BEAM, priorWeight: 0, confirmMargin: 1, deepHyps: 4, bridgeDepth: 5 },
       observer: { ...observerOptions(s), ...LIVE_OBSERVER },
       // 見え方とはっきり合わなければ、見えている色に合う状態にその場で作り変え、そこから追跡をやり直す（src/track/snap.ts）。
       // スクランブル中は使わない（setLiveSnap。手順を追って案内するので、見えていない面の分からない作り変えは道筋を乱す）
