@@ -91,6 +91,9 @@ function TimerTop() {
 // 記録: best・ao5・ao12 と直近のタイム（押すとその記録の詳しい画面）
 function Records() {
   const solves = useStore(timerStore, (s) => s.solves);
+  // スクランブルを 1 手でも回したら、次のソルブが終わるまで記録は出さない（画面をすっきりさせる）
+  const busy = useStore(timerStore, (s) => (s.phase === "scrambling" && (s.guideDone > 0 || s.guideHalf)) || s.phase === "inspection" || s.phase === "solving");
+  if (busy) return null;
   const valid = solves.filter((s) => Number.isFinite(effectiveTime(s)));
   const best = valid.length ? Math.min(...valid.map(effectiveTime)) : null;
   const bestId = valid.find((s) => effectiveTime(s) === best)?.id;
@@ -232,9 +235,11 @@ function ScrambleGuide() {
           ))}
         </div>
       ) : null}
-      <div class="move-strip wrap scramble-moves">
-        {t.guide.map((m, i) => {
-          const state = i < t.guideDone ? "done" : i === t.guideDone && !fix?.length ? (t.guideHalf ? "next half" : "next") : "";
+      {/* 今回す手とその次だけ出す（全部並べると読みにくい） */}
+      <div class="move-strip scramble-moves">
+        {t.guide.slice(t.guideDone, t.guideDone + 2).map((m, k) => {
+          const i = t.guideDone + k;
+          const state = k === 0 && !fix?.length ? (t.guideHalf ? "next half" : "next") : "after";
           return (
             <span key={i} class={`mv ${state}`} title={state.includes("half") ? "半分（90°）回しました。もう 90°" : undefined}>
               {label(m)}
