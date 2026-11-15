@@ -1102,6 +1102,20 @@ input[type="range"] {
 .stage.focus .stage-bottom {
   bottom: calc(28px + env(safe-area-inset-bottom));
 }
+/* 縦持ち: 3D キューブは右下（手・スクランブルは左） */
+.stage-bottom {
+  flex-direction: row;
+  align-items: flex-end;
+}
+.stage-bottom .strip-head {
+  flex-wrap: wrap;
+  white-space: nowrap;
+}
+@media (orientation: portrait) and (max-width: 899px) {
+  .stage-bottom .cube-inset {
+    width: clamp(120px, 36vw, 200px);
+  }
+}
 .play-strip {
   flex: 1;
   min-width: 0;
@@ -1187,7 +1201,7 @@ input[type="range"] {
   display: none;
 }
 /* 新しい手を右端に（少ないうちも左の薄くなる所に置かない）。はみ出したら左へ流れ、戻して見られる */
-.move-strip:not(.wrap) > :first-child {
+.move-strip:not(.wrap):not(.scramble-moves) > :first-child {
   margin-left: auto;
 }
 .move-strip .mv {
@@ -1235,9 +1249,21 @@ input[type="range"] {
 }
 .scramble-moves .mv.next {
   color: var(--stage-accent);
-  font-size: 30px;
+  font-size: 56px;
   background: none;
   border: 0;
+}
+/* スクランブルは今回す手（大きく）とその次（小さく）だけ */
+.scramble-moves {
+  align-items: baseline;
+  gap: 18px;
+  overflow: visible;
+  -webkit-mask-image: none;
+  mask-image: none;
+}
+.scramble-moves .mv.after {
+  color: rgba(255, 255, 255, 0.55);
+  font-size: 30px;
 }
 .mv.half {
   outline: 2px dashed var(--stage-accent);
@@ -1542,10 +1568,11 @@ input[type="range"] {
     bottom: 16px;
   }
   .stage-scrim.top {
-    left: auto;
+    right: auto;
+    left: 0;
     width: 62%;
     height: 100%;
-    background: linear-gradient(to left, rgba(0, 0, 0, 0.45), rgba(0, 0, 0, 0));
+    background: linear-gradient(to right, rgba(0, 0, 0, 0.45), rgba(0, 0, 0, 0));
   }
   .stage-scrim.bottom {
     height: 55%;
@@ -1554,32 +1581,33 @@ input[type="range"] {
   .stage-top {
     padding: max(14px, env(safe-area-inset-top)) calc(24px + env(safe-area-inset-right)) 0 calc(92px + env(safe-area-inset-left));
   }
+  /* 横持ち: タイムは左上、認識の様子は右上、3D キューブは右下 */
   .stage-bar {
-    justify-content: flex-start;
+    justify-content: flex-end;
   }
   .stage-time {
     position: absolute;
-    right: calc(24px + env(safe-area-inset-right));
+    left: calc(92px + env(safe-area-inset-left));
     top: max(14px, env(safe-area-inset-top));
     margin: 0;
-    align-items: flex-end;
+    align-items: flex-start;
     width: min(46%, 420px);
   }
   .time-main,
   .records {
-    align-items: flex-end;
-    text-align: right;
+    align-items: flex-start;
+    text-align: left;
   }
   .time-value {
     font-size: clamp(60px, 24dvh, 120px);
-    transform-origin: right center;
+    transform-origin: left center;
   }
   .time-badges {
-    justify-content: flex-end;
+    justify-content: flex-start;
   }
   .rec-times {
-    -webkit-mask-image: linear-gradient(to left, #000 80%, transparent);
-    mask-image: linear-gradient(to left, #000 80%, transparent);
+    -webkit-mask-image: linear-gradient(to right, #000 80%, transparent);
+    mask-image: linear-gradient(to right, #000 80%, transparent);
   }
   .stage-bottom,
   .stage.focus .stage-bottom {
