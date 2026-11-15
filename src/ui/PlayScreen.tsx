@@ -218,10 +218,6 @@ function ScrambleGuide() {
       <div class="strip-head">
         <span>スクランブル</span>
         <span class="strip-note">白上・緑前</span>
-        <span class="spacer" />
-        <button class="pill" onClick={cancelTimer}>
-          別のスクランブル
-        </button>
       </div>
       {fix === null ? (
         <div class="fix-note">案内からずれました。キューブを案内の状態に戻してください</div>
@@ -342,10 +338,6 @@ function TimerStrip() {
       <div class="strip-block">
         <div class="strip-head">
           <span class="rise">スクランブル完了・準備ができたら回してください</span>
-          <span class="spacer" />
-          <button class="pill" onClick={cancelTimer}>
-            別のスクランブル
-          </button>
         </div>
         <p class="strip-note">{pad ? "タイマーから手を離すと始まり、タイマーで止めると止まります。" : "最初の 1 手でタイマーが始まり、揃った瞬間に止まります。"}</p>
       </div>
