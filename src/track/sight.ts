@@ -1,6 +1,6 @@
 // 1 フレームの読みの「見え方」: 面（カメラの面のスロット）ごとに、マスに読めたステッカーの ID・マーカーを直接読んだか・マーカーの
 // 向き（格子に対して 90° 単位）・面の外枠。スロットに頼らずに面の置き方を決める（下の placeAll。ライブのスロットの確かめ slotCheck.ts・
-// ライブの記録 liveLog.ts で使う）。もとはお蔵入りにしたピースの時刻表（2026-11 に削除。CLAUDE.md）の材料。DOM もカメラも知らない
+// ライブの記録 liveLog.ts で使う）。精密解析のステッカーの動きの方程式（src/track/pieces。RefineInput.pieces）の材料でもある。DOM もカメラも知らない
 import { PARTNERS } from "../cube/stickers";
 import { type Mat3, type Pt, applyH, invert3 } from "../vision/homography";
 

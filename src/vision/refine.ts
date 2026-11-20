@@ -5,6 +5,10 @@ import { type CubeState, OPPOSITE, isSolved, moveFace, solvedState, statesEqual 
 import { type EngineOptions, TrackerEngine } from "../track/engine";
 import { mergeQuickRepeats, separateMotions, simplifyMoves } from "../track/merge";
 import { DEFAULT_OFFLINE, OfflineForward, type OfflineOptions, type OfflineResult, decodeOffline, finishDeep } from "../track/offline";
+import { type DecodeOptions as PiecesDecodeOptions, decodePieces } from "../track/pieces/decode";
+import { PERM, TOUCH, piecesOf } from "../track/pieces/model";
+import { type TableOptions as PiecesTableOptions, buildTable } from "../track/pieces/table";
+import { type SightFrame, sightFrame } from "../track/sight";
 import type { DecodedMove, TrackStatus } from "../track/types";
 import type { Lab } from "./color";
 import { type PatchFrame, facePatch, refineEnd, refineStart } from "./fineTiming";
@@ -32,6 +36,10 @@ export interface RefineInput {
   // 進める解析と同じく間引く（vision.worker.ts の INSPECT_EVERY_MS）。インスペクションで回して見せている間を全部処理すると、持ち替えを
   // 手と読み違えて完成までつながらないことがあった（録画の画質の実物のソルブ 2 本）
   inspectUntil?: number;
+  // ステッカーの動きの方程式（src/track/pieces）で先に解き直す（既定 false。比べるため）。完成までつながらなければ、これまでの解き直し
+  // （decodeOffline）に戻す。CLAUDE.md の「ステッカーの動きの方程式による解き直し」
+  pieces?: boolean;
+  piecesOptions?: { table?: Partial<PiecesTableOptions>; decode?: Partial<PiecesDecodeOptions> };
   // 検出を別の Worker に分ける（src/vision/detectPool.ts）。true はコア数から（poolSize。コアが少ない・Worker を作れないときは分けない）、
   // 数を渡すとその数（URL の ?refinepool=0・1・2）。省略時: 動画ファイルの解析は true、タイマーの解析は分けない（vision.worker.ts の Stream.par）
   parallel?: boolean | number;
@@ -199,7 +207,9 @@ export class Refiner {
   // 前向きの再構成を観測が出るたびに進めておく（result で後ろ向きとつなぐだけにする）
   private forward: OfflineForward | null;
   private fedObs = 0;
-  // ピースの時刻表の材料（フレームごとの読み: 面・ID・マーカーの向き・外枠。1 フレーム数百バイト）
+  // ステッカーの動きの方程式の材料（フレームごとの読み: 面・ID・マーカーの向き・外枠。1 フレーム数百バイト）。pieces のときだけ
+  private sights: SightFrame[] = [];
+  piecesMs = 0; // 調査用: ステッカーの動きの方程式の解き直しにかかった時間（使わなければ 0）
 
   constructor(
     private cv: CV,
@@ -289,6 +299,7 @@ export class Refiner {
   full(img: PixelSource, t: number, detected?: Marker[]): void {
     const r = processFrame(this.cv, img, t, this.config, this.memory, detected);
     this.onFrame?.(t, r);
+    if (this.input.pieces && r.faces.length) this.sights.push(sightFrame(t, r));
     // 基準: この格子で、処理に回したいちばん新しいフレームの色（1 か所で処理するときは、このフレーム）
     const latest = this.picked && this.picked.t > t ? this.picked.img : img;
     // 見えている面が減ったフレーム（回している途中・指）の後は、続けて精密に処理する: 残った面だけを基準にすると、回している面
@@ -334,6 +345,63 @@ export class Refiner {
     return { move: OPPOSITE[moveFace(m.move)] * 3, t0: m.t0, t: m.t, orient: m.orient };
   }
 
+  // ステッカーの動きの方程式（src/track/pieces）で解き直す。完成までつながらなければ null
+  private decodeByPieces(target: CubeState): OfflineResult | null {
+    const began = performance.now();
+    const table = buildTable(this.sights, this.input.piecesOptions?.table);
+    const r = decodePieces(table, Uint8Array.from(this.input.state), target, this.input.piecesOptions?.decode);
+    this.piecesMs = performance.now() - began;
+    if (!r.reachedEnd) return null;
+    const frames = table.frames;
+    // 回し始めの手がかり（t0）: 見え方の境目は粗いので、回す層のピースが回す前の位置に最後に見えたフレームまで詰める
+    // （手の時刻の判定 timing.ts は t0 から遡って動き出しを探す。早すぎると見つけられず、タイムの端が不確かになる）
+    let pos = piecesOf(Uint8Array.from(this.input.state));
+    let prevT = -Infinity;
+    const t0s = r.moves.map((m) => {
+      const bit = 1 << m.move;
+      let t0 = m.t0;
+      for (let g = frames.length - 1; g >= 0; g--) {
+        const fr = frames[g];
+        if (fr.t >= m.t) continue;
+        if (fr.t <= Math.max(m.t0, prevT)) break;
+        let seen = false;
+        for (const gr of fr.groups) {
+          if (gr.mode !== 0) continue;
+          for (let i = 0; i < gr.n && !seen; i++) {
+            const k = gr.P[i];
+            if (k < 20 && TOUCH[pos[k]] & bit && gr.A[i] === pos[k]) seen = true;
+          }
+        }
+        if (seen) {
+          t0 = fr.t;
+          break;
+        }
+      }
+      const P = PERM[m.move];
+      pos = Uint8Array.from(pos, (x) => P[x]);
+      prevT = t0;
+      return t0;
+    });
+    // 手のときの姿勢（認識のスロットと合うもの。手の時刻の判定がスロットで層を見る）: その手の後、いちばん近いフレーム
+    let orient = this.engine.decoder.best().orient;
+    for (const fr of frames)
+      if (fr.orient >= 0) {
+        orient = fr.orient;
+        break;
+      }
+    let f = 0;
+    const moves: DecodedMove[] = r.moves.map((m, i) => {
+      while (f < frames.length && frames[f].t < m.t) f++;
+      for (let k = f; k < frames.length && frames[k].t - m.t <= 500; k++)
+        if (frames[k].orient >= 0) {
+          orient = frames[k].orient;
+          break;
+        }
+      return { move: m.move, t0: t0s[i], t: m.t, orient, ...(m.inferred ? { inferred: true } : {}) };
+    });
+    return { moves, method: "meet", meetAt: -1, cost: r.cost, reachedEnd: true };
+  }
+
   // target: 最後の状態が分かっていれば（タイマーなら完成）、それにたどり着く仮説を選ぶ
   // onPhase: 段階を知らせる（解き直しの後に "timing"。落ちたときにどこで落ちたかを残すため: src/app/crashGuard.ts）。解き直しの間も
   // "decode" をときどき（呼ぶ側で間引く）: 本体は知らせが届かないと止まったとみなしてやり直す（controller.endAnalysis の STALL_MS）
@@ -342,8 +410,10 @@ export class Refiner {
     const dec = this.engine.decoder;
     const tick = onPhase ? () => onPhase("decode") : undefined;
     // 前向き（スクランブル後から）と後ろ向き（完成から）の両方で解き直し、辻褄の合う所でつなぐ
-    let off: OfflineResult = decodeOffline(this.engine.observationLog, Uint8Array.from(this.input.state), target, this.lastT, { ...this.offlineOptions(), tick }, this.forward ?? undefined);
-    if (target && off.method !== "meet" && off.method !== "backward") {
+    // ステッカーの動きの方程式（RefineInput.pieces）: 完成までつながらなければ、これまでの解き直しに戻す
+    const pieces = target && this.input.pieces ? this.decodeByPieces(target) : null;
+    let off: OfflineResult = pieces ?? decodeOffline(this.engine.observationLog, Uint8Array.from(this.input.state), target, this.lastT, { ...this.offlineOptions(), tick }, this.forward ?? undefined);
+    if (!pieces && target && off.method !== "meet" && off.method !== "backward") {
       const base = this.offlineOptions();
       const deep = decodeOffline(this.engine.observationLog, Uint8Array.from(this.input.state), target, this.lastT, { ...base, decoder: { ...base.decoder, ...DEEP_DECODER }, backwardMs: DEEP_BACKWARD_MS, tick });
       const guessed = (r: typeof off) => r.moves.filter((m) => m.inferred).length;
@@ -367,7 +437,7 @@ export class Refiner {
         }
       }
     }
-    this.method = off.method;
+    this.method = pieces ? "pieces" : off.method;
     // 届かなかったとき、後ろ向きが終わりから追えていた最後の手（タイムの終わりに使う）
     const tailLast = !solved && off.tail?.length ? off.tail[off.tail.length - 1] : null;
     onPhase?.("timing");
