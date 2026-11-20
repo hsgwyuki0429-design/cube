@@ -84,7 +84,7 @@ it("新しい追跡器とライブの追跡の比較", () => {
     const s1 = (res.moves[res.moves.length - 1]?.end ?? -Infinity) + 1000;
     for (const fps of fpss) {
       const rs = subsample(readings, fps);
-      const engine = runOld ? new TrackerEngine(st0, ARUCO_REFS, liveEngineOptions()) : null;
+      const engine = runOld ? new TrackerEngine(st0, ARUCO_REFS, liveEngineOptions(JSON.parse(process.env.SR_ENGINE ?? "{}"))) : null;
       const tracker = new SightTracker(st0, opt);
       const acc = { old: 0, neu: 0, counted: 0 };
       let msOld = 0;
@@ -94,13 +94,13 @@ it("新しい追跡器とライブの追跡の比較", () => {
         let r = rs[i];
         let a = performance.now();
         if (engine) {
-          if (r.sight && r.faces.length && !slotsPlausible(r.sight)) r = { ...r, faces: [] };
+          if (process.env.SR_SLOTCHECK !== "0" && r.sight && r.faces.length && !slotsPlausible(r.sight)) r = { ...r, faces: [] };
           engine.push(r);
         }
         msOld += performance.now() - a;
         a = performance.now();
         const ri = rs[i];
-        tracker.push(process.env.SR_SLOTCHECK !== "0" && ri.sight && ri.faces.length && !slotsPlausible(ri.sight) ? { t: ri.t, faces: [] } : sightInputOf(ri));
+        if (process.env.SR_NEW !== "0") tracker.push(process.env.SR_SLOTCHECK !== "0" && ri.sight && ri.faces.length && !slotsPlausible(ri.sight) ? { t: ri.t, faces: [] } : sightInputOf(ri));
         const dms = performance.now() - a;
         msNew += dms;
         maxNew = Math.max(maxNew, dms);
