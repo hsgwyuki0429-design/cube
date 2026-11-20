@@ -24,6 +24,8 @@ export interface OfflineOptions {
   // 前向きが終わりの状態にはっきり着いていたら、後ろ向きを解かずにその手順を使う（false で使わない）。一番の仮説が終わりの状態で、
   // 最後の観測の矛盾が maxObs 以下、終わりの状態でない一番の仮説とのコストの差が margin 以上のとき
   forwardAccept?: false | { maxObs: number; margin: number };
+  // 前向きを作り直すときに使う時間の上限（ms。止めた後の 2 回目の深い解き直し）。超えたら届かないとして返す
+  forwardMs?: number;
 }
 
 export const DEFAULT_OFFLINE: OfflineOptions = {
@@ -35,7 +37,7 @@ export const DEFAULT_OFFLINE: OfflineOptions = {
   // 候補 128: 正解がいったん候補から消えると、戻れるかは運次第だった（IMG_5048 の 2.5Mbps の 43.7 秒: 64 では戻れず 27 秒探して
   // 完成までつながらない、128 では 7 秒でつながる）。実物 4 本 × 5Mbps・2.5Mbps で 1 枚の観測（ARUCO_OBSERVER の transient）と合わせて
   // 8/8 が正解と同じ手順（64 では 7/8）、つながる場合の解き直しは 2 割ほど長い
-  decoder: { beamWidth: 128, maxMovesPerStep: 4, deepHyps: 16, lostAfter: 1000 },
+  decoder: { beamWidth: 192, maxMovesPerStep: 4, deepHyps: 16, lostAfter: 1000 },
   forwardAccept: { maxObs: 1, margin: 1 },
 };
 
@@ -121,7 +123,15 @@ export function decodeOffline(obs: Observation[], start: CubeState, end: CubeSta
     F = pre.F;
   } else {
     const p = new OfflineForward(start, options);
-    for (const o of valid) p.feed(o);
+    const deadline = performance.now() + (options.forwardMs ?? Infinity);
+    for (const o of valid) {
+      if (performance.now() > deadline) {
+        // 前向きが時間内に終わらない（見失って深く探し続けている）: 結果は出さない（呼ぶ側は前の結果を使う）
+        return { moves: p.fwd.bestMoves(), method: "forward", meetAt: -1, cost: Infinity, reachedEnd: false };
+      }
+      options.tick?.();
+      p.feed(o);
+    }
     fwd = p.fwd;
     F = p.F;
   }

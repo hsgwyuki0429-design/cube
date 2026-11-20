@@ -184,6 +184,9 @@ const BACKWARD_MS = 30000;
 // Node で 15〜25 秒かかるので、1 回目でつながったときは使わない
 const DEEP_DECODER = { beamWidth: 256, maxMovesPerStep: 4, deepHyps: Infinity };
 const DEEP_BACKWARD_MS = 60000;
+// 2 回目の前向きの時間の上限: 直る場合は数秒で終わる（1.5Mbps の実物のソルブで 3.8 秒、前向きが完成に着いて後ろ向きもいらない）。
+// 見失ったままの場合は前向きだけで 54 秒・後ろ向き 71 秒かけても届かず、止めた後の解き直しが合わせて 146 秒になっていた
+const DEEP_FORWARD_MS = 15000;
 
 export class Refiner {
   readonly engine: TrackerEngine;
@@ -410,7 +413,7 @@ export class Refiner {
     let off: OfflineResult = pieces ?? decodeOffline(this.engine.observationLog, Uint8Array.from(this.input.state), target, this.lastT, { ...this.offlineOptions(), tick }, this.forward ?? undefined);
     if (!pieces && target && off.method !== "meet" && off.method !== "backward" && off.method !== "forward-end") {
       const base = this.offlineOptions();
-      const deep = decodeOffline(this.engine.observationLog, Uint8Array.from(this.input.state), target, this.lastT, { ...base, decoder: { ...base.decoder, ...DEEP_DECODER }, backwardMs: DEEP_BACKWARD_MS, tick });
+      const deep = decodeOffline(this.engine.observationLog, Uint8Array.from(this.input.state), target, this.lastT, { ...base, decoder: { ...base.decoder, ...DEEP_DECODER }, backwardMs: DEEP_BACKWARD_MS, forwardMs: DEEP_FORWARD_MS, tick });
       const guessed = (r: typeof off) => r.moves.filter((m) => m.inferred).length;
       if (deep.reachedEnd && (!off.reachedEnd || guessed(deep) < guessed(off) || (guessed(deep) === guessed(off) && deep.method === "meet"))) off = deep;
       this.deepUsed = off === deep;
