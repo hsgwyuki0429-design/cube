@@ -22,9 +22,9 @@
 // 使わない（確認役 verifyMoves は外した）。正解づくり（tests/debug/buildTruth.debug.test.ts）と比較のベンチで使う。
 //
 // カメラも DOM も知らない（Node で動く）。
-import { type CubeState, MOVE_DEST, NORMAL, NUM_MOVES, OPPOSITE, VIEW, faceletGeometry, inverseMove, moveFace } from "../cube/model";
-import { stickerIds } from "../cube/stickers";
-import type { DecodedMove } from "./types";
+import { type CubeState, MOVE_DEST, NORMAL, NUM_MOVES, OPPOSITE, VIEW, faceletGeometry, inverseMove, moveFace } from "../../../src/cube/model";
+import { stickerIds } from "../../../src/cube/stickers";
+import type { DecodedMove } from "../../../src/track/types";
 
 export interface Sighting {
   t: number;

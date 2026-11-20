@@ -8,7 +8,7 @@ import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { it } from "vitest";
 import { type CubeState, MOVE_NAMES, VIEW, applyMove, parseMoves, solvedState } from "../../src/cube/model";
 import { stickerIds } from "../../src/cube/stickers";
-import { canonicalMoves, decodeExact } from "../../src/track/exact";
+import { canonicalMoves, decodeExact } from "./lib/exact";
 
 // これまでの正解の、ソルブの始まり（手の番号。その前に長い間がある = インスペクション）
 const SOLVE_START: Record<string, number> = { IMG_4970: 0, IMG_4971: 0, IMG_4972: 0, IMG_5046: 32, IMG_5047: 35, IMG_5048: 79, IMG_5049: 30 };

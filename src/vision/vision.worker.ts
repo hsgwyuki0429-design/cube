@@ -1,7 +1,7 @@
 // 認識 Worker: OpenCV.js（約13MB）の読み込み、1フレームの処理、追跡エンジンの実行。
 // メインスレッドは描画と UI だけを受け持つ。
-import { sightFrame } from "../track/pieces/frame";
-import { slotsPlausible } from "../track/pieces/slotCheck";
+import { sightFrame } from "../track/sight";
+import { slotsPlausible } from "../track/slotCheck";
 import { type Mat3, ORIENTATIONS, mul } from "../cube/model";
 import { TrackerEngine, focusCells } from "../track/engine";
 import { LiveLog } from "../track/liveLog";

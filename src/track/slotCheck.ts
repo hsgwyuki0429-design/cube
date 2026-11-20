@@ -4,12 +4,10 @@
 // 実物のソルブで 5 秒以上ずれたままになっていた。スロットに頼らない手がかりで確かめる:
 //   - 上と下・右と左が同時に見えることはない。センターが反対の面どうしの 2 面も同時には見えない
 //   - センターの ID（= どの面か）と、面どうしが画像の上でどの辺で接しているか（外枠の辺が重なる）から置き方が 1 つに決まるときは、
-//     スロットの割り当てがその置き方と合う姿勢があること（table.ts と同じ決め方）
+//     スロットの割り当てがその置き方と合う姿勢があること（sight.ts の placeAll）
 // DOM もカメラも知らない
-import { OPPOSITE, VIEW } from "../../cube/model";
-import type { SightFrame } from "./frame";
-import { CELL_TURN } from "./model";
-import { isCenter, placeAll, touching } from "./table";
+import { OPPOSITE, VIEW } from "../cube/model";
+import { CELL_TURN, type SightFrame, isCenter, placeAll, touching } from "./sight";
 
 const TOUCH = 0.45;
 
