@@ -487,7 +487,10 @@ class Controller {
       from: session.from,
       to: Infinity,
       engine: this.engineOptions(),
-      pipeline: this.pipelineConfig(),
+      // 回転途中の形（arucoTurn）は使わない: 本体の録画（60fps）では回している途中がぶれて形がほとんど取れず、実物 6 本 × 原画質・5Mbps で
+      // 外しても手順・推定した手・タイムの端は同じ（12 本中 11 本は同じ時刻・1 本は回し始めが 17ms）、1 フレームは 4 割軽い（5Mbps の
+      // IMG_4972 25.0 → 14.2ms・IMG_5049 27.7 → 15.5ms。tests/debug/refineAblate.debug.test.ts）。スロー撮影の動画の解析（analyzeVideo）では使う
+      pipeline: { ...this.pipelineConfig(), arucoTurn: false },
       ...(opts.timed ? {} : { keepPatchesMs: 3000 }),
     };
     const id = await this.refiner.startStream((p) => this.onAnalysisPartial(session, p));
