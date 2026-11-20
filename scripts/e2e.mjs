@@ -4,6 +4,7 @@
 //   npm run build && npm run e2e            # 既定: 2面が見える位置・2TPS・30手
 //   E2E_VIEW=corner E2E_TPS=3 npm run e2e
 //   E2E_NOHELPER=1（認識の補助の Worker を使わない）
+//   E2E_QUERY='&refinepool=0'（URL に足す。&refinepool=0 はタイマーの精密解析で検出を別の Worker に分けない）
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { chromium } from "playwright-core";
@@ -85,7 +86,7 @@ try {
     const t0 = Date.now();
     // E2E_NOHELPER=1: 認識の補助の Worker を使わない（コアが少ない端末のように）
     if (process.env.E2E_NOHELPER) await page.addInitScript(() => Object.defineProperty(navigator, "hardwareConcurrency", { get: () => 2 }));
-    await page.goto(`http://localhost:${PORT}/?demo=e2e&seed=${seed}&moves=${MOVES}&tps=${TPS}&view=${VIEW}${MODE === "timer" ? "&timer=1" : ""}${process.env.E2E_PAD ? "&pad=1" : ""}`);
+    await page.goto(`http://localhost:${PORT}/?demo=e2e&seed=${seed}&moves=${MOVES}&tps=${TPS}&view=${VIEW}${MODE === "timer" ? "&timer=1" : ""}${process.env.E2E_PAD ? "&pad=1" : ""}${process.env.E2E_QUERY ?? ""}`);
     if (MODE === "timer") {
       try {
         await page.waitForFunction(() => window.__cubevisionTimer?.get().phase === "done", null, { timeout: 240000, polling: 500 });
@@ -132,6 +133,7 @@ try {
         console.log(`  track after: ${JSON.stringify(tr)}`);
         console.log(logs.filter((l) => l.includes("[snap]")).slice(-12).join("\n"));
       }
+      if (process.env.E2E_LOGS) console.log(logs.filter((l) => new RegExp(process.env.E2E_LOGS).test(l)).slice(-20).join("\n"));
       if (process.env.E2E_VERBOSE) {
         const t0 = sol[0]?.start ?? 0;
         console.log(`  truth : ${sol.map((x) => `${name(x.move)}@${Math.round(x.start - t0)}-${Math.round(x.t - t0)}`).join(" ")}`);

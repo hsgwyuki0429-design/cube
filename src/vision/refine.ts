@@ -40,6 +40,9 @@ export interface RefineInput {
   // 原画質では実物 7 本ともこれまでと同じ手順になるが、録画の画質を落とすとこれまでの解き直しの方がつながる（CLAUDE.md）ので、まだ既定にしない
   pieces?: boolean;
   piecesOptions?: Partial<DecodeOptions>;
+  // 検出を別の Worker に分ける（src/vision/detectPool.ts）。true はコア数から（poolSize。コアが少ない・Worker を作れないときは分けない）、
+  // 数を渡すとその数（URL の ?refinepool=0・1・2）。省略時: 動画ファイルの解析は true、タイマーの解析は分けない（vision.worker.ts の Stream.par）
+  parallel?: boolean | number;
 }
 
 // 軽い検査: 全フレームを精密に処理する代わりに、前に精密に処理したフレーム（基準）の面の格子で、各マスの真ん中あたりの色を数点だけ測り

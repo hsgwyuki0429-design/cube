@@ -93,6 +93,12 @@ const LIVE_REST_MAX_MS = 20000; // 止めた後の残りの解析の間、ライ
 const searchOptions = (s: Settings) => ({ beamWidth: s.beamWidth, maxMovesPerStep: s.maxMovesPerStep, rotationCost: s.rotationCost });
 const observerOptions = (s: Settings) => ({ stableMs: s.stableMs, ...ARUCO_OBSERVER });
 
+// 精密解析の検出の Worker の数を URL で決める（?refinepool=0・1・2。比べるとき。省略時はコア数から: src/vision/detectPool.ts の poolSize）
+function refinePool(): Pick<RefineInput, "parallel"> {
+  const v = typeof location === "undefined" ? null : new URLSearchParams(location.search).get("refinepool");
+  return v === null || !/^\d+$/.test(v) ? {} : { parallel: Number(v) };
+}
+
 class Controller {
   readonly store = createStore<AppState>({
     screen: openedAruco() ? "analyze" : "play",
@@ -487,6 +493,7 @@ class Controller {
       engine: this.engineOptions(),
       pipeline: this.pipelineConfig(),
       ...(opts.timed ? {} : { keepPatchesMs: 3000 }),
+      ...refinePool(),
     };
     const id = await this.refiner.startStream((p) => this.onAnalysisPartial(session, p));
     if (id === null || this.session !== session) return abandon();
@@ -619,7 +626,7 @@ class Controller {
     onInfo?: (info: VideoFileInfo, analyzedFrames: number) => void,
   ): { result: Promise<RefineResult>; cancel: () => void } {
     const s = settingsStore.get();
-    const input: RefineInput = { state: Array.from(opts.state), refs: ARUCO_REFS, from: 0, to: Infinity, engine: this.engineOptions(), pipeline: this.pipelineConfig() };
+    const input: RefineInput = { state: Array.from(opts.state), refs: ARUCO_REFS, from: 0, to: Infinity, engine: this.engineOptions(), pipeline: this.pipelineConfig(), ...refinePool() };
     return this.videoRefiner.runVideo(file, input, opts.target, { maxSide: s.workWidth, captureFps: opts.captureFps, maxFps: opts.maxFps ?? VIDEO_MAX_FPS }, progress, onInfo);
   }
 

@@ -43,8 +43,12 @@ interface Stream {
   lastInspect: number; // 間引いている間に最後に処理したフレームの時刻
   still: StillSkipper;
   end?: { from: number; to: number; posted: number }; // 止めた後: 残りの解析の進み具合を知らせる
-  // 検出を別の Worker に分けることはしない（動画ファイルの解析だけ）: OpenCV を読み込んだ Worker は 1 個 130MB ほどを確保するので、
-  // ライブの認識・解析に加えて 2〜3 個起こすと、iPhone ではプレイ中にタブごと落ちた
+  // 検出を別の Worker に分ける（src/vision/detectPool.ts。null ならこの Worker だけで）。既定は分けない: URL の ?refinepool=1・2 で分ける
+  // （RefineInput.parallel）。以前は OpenCV を読み込んだ Worker が 1 個 130MB ほどを確保し、iPhone ではプレイ中にタブごと落ちた。
+  // 専用の検出では OpenCV を読み込まないのでメモリの理由はなくなったが、検出は精密解析の 1 フレームの半分ほどになり、ブラウザで
+  // 実物の動画（46 秒・5Mbps）の解析が 0 個 73 秒 → 1 個 67 秒・2 個 62 秒と 1〜2 割しか縮まない。ソルブ中はライブの認識と CPU を
+  // 取り合うので、実機で確かめるまで既定にしない（2026-11）
+  par: Promise<{ pool: DetectPool; feeder: ParallelFeeder } | null>;
 }
 const streams = new Map<number, Stream>();
 // 中止を頼まれた動画の解析
@@ -71,13 +75,17 @@ function releaseChunks(id: number, s: Stream): void {
   });
 }
 
-function streamFrame(id: number, s: Stream, img: PixelSource, t: number): void {
+async function streamFrame(id: number, s: Stream, img: PixelSource, t: number): Promise<void> {
   if (t < s.fullFrom) {
     if (t - s.lastInspect < INSPECT_EVERY_MS) return;
     s.lastInspect = t;
   }
+  const par = await s.par;
   // 止まっている間は飛ばして追いつく（動き出したら直前の 1 枚も処理する）
-  for (const f of s.still.next(img, t)) s.refiner.push(f.img, f.t);
+  for (const f of s.still.next(img, t)) {
+    if (par) await par.feeder.push(f.img, f.t);
+    else s.refiner.push(f.img, f.t);
+  }
   if (s.end && performance.now() - s.end.posted > 200) {
     s.end.posted = performance.now();
     post({ type: "refine-progress", id, done: Math.max(0, t - s.end.from), total: Math.max(1, s.end.to - s.end.from) });
@@ -104,6 +112,9 @@ function phasePoster(id: number): (phase: "decode" | "timing") => void {
     post({ type: "refine-phase", id, phase });
   };
 }
+
+// 検出の Worker の数（RefineInput.parallel: false は 0・数はその数・省略か true はコア数から）
+const poolFor = (input: RefineInput): number => (input.parallel === false ? 0 : typeof input.parallel === "number" ? input.parallel : poolSize());
 
 // 精密解析の検出を別の Worker に分ける（src/vision/detectPool.ts）。作れない・OpenCV を読み込めないときは null（この Worker だけで）
 async function parallelFeeder(refiner: Refiner, n = poolSize()): Promise<{ pool: DetectPool; feeder: ParallelFeeder } | null> {
@@ -414,7 +425,9 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
         let s = streams.get(msg.id);
         if (!s) {
           if (!msg.input) return;
-          s = { refiner: newRefiner(msg.input), decoder: null, fedUntil: 0, lastPartial: -Infinity, still: new StillSkipper(), fullFrom: msg.inspection ? Infinity : -Infinity, held: [], lastInspect: -Infinity };
+          const refiner = newRefiner(msg.input);
+          const par = parallelFeeder(refiner, msg.input.parallel === undefined ? 0 : poolFor(msg.input));
+          s = { refiner, decoder: null, fedUntil: 0, lastPartial: -Infinity, still: new StillSkipper(), fullFrom: msg.inspection ? Infinity : -Infinity, held: [], lastInspect: -Infinity, par };
           streams.set(msg.id, s);
         }
         const st = s;
@@ -450,16 +463,21 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
           const behind = s.fedUntil - s.refiner.lastT;
           post({ type: "refine-phase", id: msg.id, phase: "flush" });
           await s.decoder?.flush();
+          const par = await s.par;
+          await par?.feeder.flush();
+          const pool = par?.pool.size ?? 0;
+          par?.pool.close();
           const t1 = performance.now();
           post({ type: "refine-phase", id: msg.id, phase: "decode" });
           const result = s.refiner.result(msg.target ? Uint8Array.from(msg.target) : null, phasePoster(msg.id));
           // 調査用: 止めた時点の遅れ・残りの処理・解き直しの時間
-          console.info(`[analysis] behind ${behind.toFixed(0)}ms rest ${(t1 - t0).toFixed(0)}ms result ${(performance.now() - t1).toFixed(0)}ms frames ${s.refiner.frames} gated ${s.refiner.gated} copied ${s.decoder?.copied ?? 0}`);
+          console.info(`[analysis] behind ${behind.toFixed(0)}ms rest ${(t1 - t0).toFixed(0)}ms result ${(performance.now() - t1).toFixed(0)}ms frames ${s.refiner.frames} gated ${s.refiner.gated} copied ${s.decoder?.copied ?? 0} pool ${pool}`);
           post({ type: "refine-result", id: msg.id, result });
         } catch (e) {
           post({ type: "refine-error", id: msg.id, message: errorMessage(e) });
         } finally {
           s.decoder?.close();
+          void s.par.then((p) => p?.pool.close());
           streams.delete(msg.id);
         }
         return;
@@ -473,7 +491,7 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
           const refiner = newRefiner(input);
           const still = new StillSkipper();
           // 検出を別の Worker に分ける（コアが少ない・Worker を作れないときは、この Worker だけで）
-          const feeder = await parallelFeeder(refiner);
+          const feeder = await parallelFeeder(refiner, poolFor(input));
           let total = 1;
           const progress = progressPoster(id, () => total);
           await decodeVideoFile(
@@ -518,6 +536,7 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
       }
       case "stream-cancel": {
         streams.get(msg.id)?.decoder?.close();
+        void streams.get(msg.id)?.par.then((p) => p?.pool.close());
         streams.delete(msg.id);
         return;
       }
