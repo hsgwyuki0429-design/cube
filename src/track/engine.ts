@@ -30,6 +30,9 @@ export interface EngineOptions {
   snapToView?: boolean;
   // 見失ったところからの復帰（ライブ）: 見失う直前の確かな状態から、後で読めたステッカーが全部合う手順を探して仮説に足す（src/track/recover.ts）
   recover?: boolean | Partial<RecoverOptions>;
+  // 戻る仕組みをまとめる（試し）: 錨から探して見つからない・錨が古いとき、いまの上位 hyps 仮説からも maxLen 手まで、読めたステッカーが
+  // 全部合う手順を探す（デコーダの「深く探す」bridgeDepth と同じ役目を、作り変えの前の 1 か所で）
+  recoverBest?: { hyps: number; maxLen: number };
 }
 
 const TIMING_FINAL_MS = 1000; // 手の観測からこれだけたてば、その手の時刻はもう変わらない
@@ -171,6 +174,7 @@ export class TrackerEngine {
     this.repeatMs = options.repeatMs ?? 250;
     this.snapToView = !!options.snapToView;
     this.recoverOpts = options.recover ? (options.recover === true ? {} : options.recover) : null;
+    this.recoverBest = options.recoverBest ?? null;
     if (options.personal?.length && this.decoder.prior) this.decoder.prior = movePrior(options.personal);
   }
   private maxObservations: number;
@@ -179,6 +183,7 @@ export class TrackerEngine {
   private snapStreak = 0;
   // 見失ったところからの復帰: 錨 = 最後に観測とよく合っていた仮説。trouble = 合わなくなった時刻（合っている間は null）
   private recoverOpts: Partial<RecoverOptions> | null = null;
+  private recoverBest: { hyps: number; maxLen: number } | null = null;
   private anchor: { hyp: Hypothesis; t: number } | null = null;
   private troubleT: number | null = null;
   private lastTry = -Infinity;
@@ -295,16 +300,39 @@ export class TrackerEngine {
       this.troubleT = obs.t;
     }
     // 錨が古すぎる（8 手より多く回している）: あきらめて、いまの仮説を錨にする
-    if (!this.anchor || obs.t - this.anchor.t > RECOVER_MS) {
+    const anchorOk = !!this.anchor && obs.t - this.anchor.t <= RECOVER_MS;
+    if (!anchorOk) {
       if (good) {
         this.anchor = this.trusted(best) ? { hyp: best, t: obs.t } : null;
         this.troubleT = null;
       }
-      return false;
+      if (!this.recoverBest) return false;
     }
     if (obs.t - this.lastTry < RECOVER_GAP_MS) return false;
     const a = performance.now();
-    const found = recoverFrom(this.anchor.hyp.state, obs, orientsOf(obs, [best.orient, this.anchor.hyp.orient]), this.recoverOpts!);
+    const found = anchorOk ? recoverFrom(this.anchor!.hyp.state, obs, orientsOf(obs, [best.orient, this.anchor!.hyp.orient]), this.recoverOpts!) : [];
+    if (this.recoverBest && !found?.length) {
+      const seen = new Set<string>();
+      for (const h of this.decoder.hypotheses().slice(0, this.recoverBest.hyps)) {
+        const key = String.fromCharCode(...h.state);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const got = recoverFrom(h.state, obs, orientsOf(obs, [h.orient]), { ...this.recoverOpts, maxLen: this.recoverBest.maxLen });
+        if (got?.length) {
+          this.recoverMs += performance.now() - a;
+          this.lastTry = obs.t;
+          this.recoveries++;
+          this.decoder.injectPaths(h, got, obs.tPrevEnd, obs.t, 0, -RECOVER_BONUS, h.origin);
+          this.view = null;
+          this.snapStreak = 0;
+          return true;
+        }
+      }
+    }
+    if (!anchorOk) {
+      this.lastTry = obs.t;
+      return false;
+    }
     const spent = performance.now() - a;
     this.recoverMs += spent;
     this.recoverMax = Math.max(this.recoverMax, spent);
@@ -316,7 +344,7 @@ export class TrackerEngine {
     if (!found.length) return false; // 読めたステッカーが足りない: 次の観測で試す
     this.lastTry = obs.t;
     this.recoveries++;
-    this.decoder.injectPaths(this.anchor.hyp, found, this.anchor.t, obs.t, 0, -RECOVER_BONUS, this.anchor.hyp.origin);
+    this.decoder.injectPaths(this.anchor!.hyp, found, this.anchor!.t, obs.t, 0, -RECOVER_BONUS, this.anchor!.hyp.origin);
     this.view = null;
     this.snapStreak = 0;
     return true;

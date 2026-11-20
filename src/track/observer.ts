@@ -34,6 +34,10 @@ export interface ObserverOptions {
   singleFrameWeight: number; // 1フレームだけの観測の重み（1枚の誤読が1手分のコストを超えないように）
   idMismatchCost?: number; // 色は合うのに読んだステッカーと違うときのコスト（既定 1.0。1 手のコストと同じ）
   idBoost?: number; // ステッカーの ID が読めたマスの矛盾のコストの倍率（既定 1）
+  // ID が読めたマスは色を比べず、別のステッカーなら色が同じでも違っても同じコスト（この値 × 読みの重み × idBoost）にする。
+  // 省略時は色の頃のまま（色が違えば色の矛盾 1.5 前後、色が同じで別のステッカーなら idMismatchCost）
+  idFlat?: number;
+  idFrag?: number; // ID が読めたマスが 4 未満の面（欠片）の ID のコストの倍率（既定 1。欠片は面の取り違えで誤りが 1 桁多い）
   // 1 枚だけ見えた状態も観測にする（2 枚以上で安定を見るとき。精密解析）。速い手順では層が止まって読めるのは 1 枚だけのことが多く、
   // 2 枚続くのを待つと手と手の間の状態が観測にならず、観測の間に何手も詰まって見失っていた。前の観測と食い違う 1 枚を取っておき、
   // 次に読めたフレームが前の観測に戻っていれば 1 枚の誤読として捨て、取っておいた 1 枚とも前の観測とも食い違えば（その状態を
@@ -271,7 +275,13 @@ export class FaceObserver {
           }
           if (ids[cell] >= 0) idCost[cell] = (this.options.idMismatchCost ?? 1) * Math.min(1, wmean);
           const boost = idBoost ?? 1;
-          if (ids[cell] >= 0 && boost !== 1) {
+          const flat = this.options.idFlat;
+          if (ids[cell] >= 0 && flat !== undefined) {
+            const nIds = f.ids ? f.ids.filter((x) => x >= 0).length : 0;
+            const base = flat * Math.min(1, wmean) * boost * (nIds < 4 ? (this.options.idFrag ?? 1) : 1);
+            for (let c = 0; c < 6; c++) cost[cell * 6 + c] = c === labels[cell] ? 0 : base;
+            idCost[cell] = base;
+          } else if (ids[cell] >= 0 && boost !== 1) {
             for (let c = 0; c < 6; c++) cost[cell * 6 + c] *= boost;
             idCost[cell] *= boost;
           }
