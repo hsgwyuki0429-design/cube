@@ -2,7 +2,7 @@
 // 層の動きを見る。色（代表色）は層が回っても変わらないフレームで、回し始め・回し終わりをマーカーから決める
 import { describe, expect, it } from "vitest";
 import { ARUCO_REFS } from "../src/aruco/palette";
-import { DEFAULT_TIMING, type LoggedFrame, cellInLayer, moveTiming } from "../src/track/timing";
+import { DEFAULT_TIMING, type LoggedFrame, cellInLayer, edgeTiming, moveTiming } from "../src/track/timing";
 import type { Lab } from "../src/vision/color";
 
 const R = 3; // R（時計回り）
@@ -69,5 +69,25 @@ describe("手の時刻（マーカーの位置）", () => {
     const tm = moveTiming(hidden, { move: R, t0: 200, t: 367, orient: 0 }, { ...DEFAULT_TIMING, refs: ARUCO_REFS });
     expect(tm.exact).toBe(false);
     expect(tm.endExact).toBe(false);
+  });
+
+  it("端の手が inferred（どの手か決まらない）でも、層の動いた時刻が決まればタイムの端は確か", () => {
+    const opts = { ...DEFAULT_TIMING, refs: ARUCO_REFS };
+    const timing = (m: Parameters<typeof moveTiming>[1]) => moveTiming(fr, m, opts);
+    const m = { move: R, t0: 200, t: 367, orient: 0, inferred: true };
+    // これまで: inferred の手は時刻を見ない（観測の時刻のまま・exact でない）
+    expect(moveTiming(fr, m, opts).exact).toBe(false);
+    const start = edgeTiming(m, "start", timing);
+    const end = edgeTiming(m, "end", timing);
+    expect(start.sure).toBe(true);
+    expect(end.sure).toBe(true);
+    expect(start.tm!.start).toBeCloseTo((6 * DT + 7 * DT) / 2, 0);
+    expect(end.tm!.end).toBeCloseTo((9 * DT + 10 * DT) / 2, 0);
+    // 層が見えなければ確かにならない
+    const hidden = fr.map((f) => ({ ...f, faces: f.faces.map((x) => ({ ...x, masked: (x.masked ?? []).map((_, cell) => cellInLayer(0, x.slot, cell, 1)) })) }));
+    expect(edgeTiming(m, "start", (x) => moveTiming(hidden, x, opts)).sure).toBe(false);
+    expect(edgeTiming(m, "end", (x) => moveTiming(hidden, x, opts)).sure).toBe(false);
+    // 別の面の手（L: 層は動いていない）と取り違えていれば、動き出しが見つからないので確かにならない
+    expect(edgeTiming({ ...m, move: 12 }, "start", timing).sure).toBe(false);
   });
 });

@@ -173,6 +173,15 @@ export interface MoveTiming {
   moved: boolean; // 層が動き出したフレームを見つけた（exact でも、静止の終わりしか分からないことがある）
 }
 
+// タイムの端の手の時刻（「どの手か」と「いつか」を分ける）: 端の手が inferred（手順を 1 つに決められない）でも、その手の層が動き出して
+// 止まったのがフレームから分かれば、時刻は確か。開始は動き出しと回し始め（moved・exact）、終わりは動き出しと回し終わり（moved・endExact）。
+// 層を見るのは決めた手の面: 回す量の違い（U と U2）なら層の時刻は同じ。別の面の手だった（U2 と D2 の取り違え）なら、その層は動かず
+// moved にならないので確かにはならない。timing: 手の時刻（moveTiming か、覚えておく engine.timing）
+export function edgeTiming(m: DecodedMove, side: "start" | "end", timing: (m: DecodedMove) => MoveTiming | null): { tm: MoveTiming | null; sure: boolean } {
+  const tm = timing(m.inferred ? { ...m, inferred: false } : m);
+  return { tm, sure: !!tm && tm.moved && (side === "start" ? tm.exact : tm.endExact) };
+}
+
 export function moveTiming(frames: LoggedFrame[], m: DecodedMove, opts: TimingOptions = DEFAULT_TIMING): MoveTiming {
   const t0 = m.t0 ?? m.t;
   const fallback = { start: t0, end: m.t, exact: false, endExact: false, moved: false };

@@ -212,7 +212,7 @@ function strongOf(sg: Sight, strong: number): StrongSight {
   return { to, w, conflicts, center, chain, pen, penSlots: [...used] };
 }
 
-export function solvePieces(table: PieceTable, start: CubeState, end: CubeState, options: Partial<SolveOptions & DecodeOptions> = {}): DecodeResult & { stats: SolveStats; reasons: Record<string, number> } {
+export function solvePieces(table: PieceTable, start: CubeState, end: CubeState, options: Partial<SolveOptions & Omit<DecodeOptions, "onStep">> = {}): DecodeResult & { stats: SolveStats; reasons: Record<string, number> } {
   const began = performance.now();
   const opt = { ...DEFAULT_DECODE, ...DEFAULT_SOLVE, ...options, deadline: began + (options.budgetMs ?? DEFAULT_SOLVE.budgetMs) } as SolveOptions & DecodeOptions;
   const sights = buildSights(table, opt);

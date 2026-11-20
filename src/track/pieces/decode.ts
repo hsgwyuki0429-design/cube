@@ -87,6 +87,7 @@ export interface DecodeOptions {
   pinBits: number; // 錨の見え方: どの 1 手を足しても、推測に頼らない読みの食い違いがこれ（ビット）以上増えること
   deadline?: number; // この時刻（performance.now()）を過ぎたら探索をやめる（区間の解き直しで、確かめの時間の上限を守るため）
   debugVerify?: (line: string) => void; // 調査用
+  tick?: () => void; // 進み具合の知らせ（見え方を 1 つ進めるごと。呼ぶ側で 1 秒に 1 回に間引く: vision.worker.ts の phasePoster）
   onStep?: (info: { back: boolean; step: number; t: number; readings: number; depth: number; hyps: number; best: number; mis: number; expanded: number; moves: number[] }) => void; // 調査用
 }
 
@@ -819,6 +820,7 @@ export function decodePieces(table: PieceTable, start: CubeState, end: CubeState
   let fT = Number.NEGATIVE_INFINITY;
   let bT = Number.POSITIVE_INFINITY;
   while (!fDone || !bDone) {
+    opt.tick?.();
     if (!fDone && (bDone || fw.sets.length <= bw.sets.length)) {
       const r = fg.next();
       if (r.done) fDone = true;
@@ -1160,6 +1162,7 @@ export function verifyPath(sights: Sight[], start: Uint8Array, end: Uint8Array, 
     const seg = moves.filter((m) => m.sight > a && (bIdx === n ? true : m.sight <= bIdx));
     if (!seg.length) continue;
     stats.segments++;
+    opt.tick?.();
     const A = a < 0 ? start : states[a];
     const B = bIdx === n ? end : states[bIdx];
     const lastSight = bIdx === n ? -1 : bIdx;

@@ -94,11 +94,12 @@ const searchOptions = (s: Settings) => ({ beamWidth: s.beamWidth, maxMovesPerSte
 const observerOptions = (s: Settings) => ({ stableMs: s.stableMs, ...ARUCO_OBSERVER });
 
 // 精密解析の検出の Worker の数を URL で決める（?refinepool=0・1・2。比べるとき。省略時はコア数から: src/vision/detectPool.ts の poolSize）。
-// ?pieces=1: ステッカーの動きの方程式で先に解き直す（RefineInput.pieces。比べるとき。既定は使わない）
+// ?pieces=1: ステッカーの動きの方程式で先に解き直す（RefineInput.pieces。表の AND 版。?pieces=v1 は最初の版。比べるとき。既定は使わない）
 function refinePool(): Pick<RefineInput, "parallel" | "pieces"> {
   const q = typeof location === "undefined" ? null : new URLSearchParams(location.search);
   const v = q?.get("refinepool") ?? null;
-  return { ...(v === null || !/^\d+$/.test(v) ? {} : { parallel: Number(v) }), ...(q?.get("pieces") === "1" ? { pieces: true } : {}) };
+  const p = q?.get("pieces");
+  return { ...(v === null || !/^\d+$/.test(v) ? {} : { parallel: Number(v) }), ...(p === "1" || p === "and" ? { pieces: "and" as const } : p === "v1" ? { pieces: "v1" as const } : {}) };
 }
 
 class Controller {
