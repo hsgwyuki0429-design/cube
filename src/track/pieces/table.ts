@@ -63,7 +63,7 @@ export function touching(a: number[], b: number[], i: number, j: number): number
 }
 
 // 面の決まった並びの「上」（格子の辺 r）が画像で向く角度
-function upAngle(q: number[], r: number): number {
+export function upAngle(q: number[], r: number): number {
   const cx = (q[0] + q[2] + q[4] + q[6]) / 4;
   const cy = (q[1] + q[3] + q[5] + q[7]) / 4;
   const i = (r & 3) * 2;
@@ -72,7 +72,7 @@ function upAngle(q: number[], r: number): number {
 }
 // 面 i（置き方 r）の決まった並びの「上」が画像で向く角度。接している面があれば、面 i の真ん中からその面の接している辺の真ん中への
 // 向きから求める（面 i を回している途中は、面 i の格子は回る面に付いていくので、自分の格子の辺では 45° 近くまで狂う。隣の面の辺は動かない）
-function faceUp(fs: SightFace[], links: number[][], i: number, r: number): number {
+export function faceUp(fs: SightFace[], links: number[][], i: number, r: number): number {
   const q = fs[i].quad;
   const cx = (q[0] + q[2] + q[4] + q[6]) / 4;
   const cy = (q[1] + q[3] + q[5] + q[7]) / 4;
