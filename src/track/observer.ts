@@ -80,7 +80,11 @@ export const ARUCO_OBSERVER: Partial<ObserverOptions> = { minKnown: 2, minSideKn
 //     説明し、そのまま外れていった。2 倍にすると、実物の動画 3 本 × 1 秒 6〜20 枚で 3D が本当の状態と同じだった時間が 65 → 76%
 //   stableFrames: 60fps をすべて処理できるときも 2 枚続くのを待たない（速い手順では層が止まって読めるのは 1 枚。実物の速い T-perm を
 //     全フレームで 30 → 90%）
-export const LIVE_OBSERVER: Partial<ObserverOptions> = { idBoost: 2, stableFrames: 1 };
+//   idFlat: ID が読めたマスは色を比べず、別のステッカーなら同じコスト（2 × 重み × idBoost）。色の頃のままだと、色が同じで別のステッカー
+//     （1.0）の方が色の違う誤り（1.5）より安く、ID の読み違いの率は色によらないのに差があった。実物 7 本 × 1 秒 6・10・15・20 枚・
+//     全フレームの 35 通り（インスペクションの後から: tests/debug/sightReplay.debug.test.ts の SR_SOLVE=1）で 68.5 → 70.3%（1 → 66.4%・
+//     1.5 → 69.1%・2.5 → 68.7%・3 → 67.2%。欠片を軽くする idFrag は効かない）
+export const LIVE_OBSERVER: Partial<ObserverOptions> = { idBoost: 2, stableFrames: 1, idFlat: 2 };
 
 export const DEFAULT_OBSERVER: ObserverOptions = {
   stableMs: 33,
@@ -276,7 +280,7 @@ export class FaceObserver {
           if (ids[cell] >= 0) idCost[cell] = (this.options.idMismatchCost ?? 1) * Math.min(1, wmean);
           const boost = idBoost ?? 1;
           const flat = this.options.idFlat;
-          if (ids[cell] >= 0 && flat !== undefined) {
+          if (ids[cell] >= 0 && flat != null) {
             const nIds = f.ids ? f.ids.filter((x) => x >= 0).length : 0;
             const base = flat * Math.min(1, wmean) * boost * (nIds < 4 ? (this.options.idFrag ?? 1) : 1);
             for (let c = 0; c < 6; c++) cost[cell * 6 + c] = c === labels[cell] ? 0 : base;
