@@ -132,7 +132,7 @@ export interface RefineResult {
   status: TrackStatus;
   inferred: number;
   forced: number; // 完成にたどり着くために最後に足した手の数（直接は見えていない）
-  method?: string; // 再構成の方法（meet = 前後からつないだ / backward = 後ろ向きだけ / forward-finish / forward）
+  method?: string; // 再構成の方法（meet = 前後からつないだ / forward-end = 前向きが終わりの状態に着いた / backward = 後ろ向きだけ / forward-finish / forward）
   // 始まりの状態が渡されたものと違っていた（スクランブルを間違えて回していた）: 完成から後ろ向きにたどり着いた始まりの状態。
   // moves はこの状態から完成まで
   startState?: number[];
@@ -408,7 +408,7 @@ export class Refiner {
     // ピースの時刻表（試作。RefineInput.pieces）: 完成までつながらなければ、これまでの解き直しに戻す
     const pieces = target && this.input.pieces ? this.decodeByPieces(target) : null;
     let off: OfflineResult = pieces ?? decodeOffline(this.engine.observationLog, Uint8Array.from(this.input.state), target, this.lastT, { ...this.offlineOptions(), tick }, this.forward ?? undefined);
-    if (!pieces && target && off.method !== "meet" && off.method !== "backward") {
+    if (!pieces && target && off.method !== "meet" && off.method !== "backward" && off.method !== "forward-end") {
       const base = this.offlineOptions();
       const deep = decodeOffline(this.engine.observationLog, Uint8Array.from(this.input.state), target, this.lastT, { ...base, decoder: { ...base.decoder, ...DEEP_DECODER }, backwardMs: DEEP_BACKWARD_MS, tick });
       const guessed = (r: typeof off) => r.moves.filter((m) => m.inferred).length;

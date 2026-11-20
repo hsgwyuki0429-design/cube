@@ -21,6 +21,9 @@ export interface OfflineOptions {
   // 後ろ向きに使う時間の上限（ms）。超えたらそこまでの後ろ向きでつなぐ・橋渡しする・前向きを補う。録画の画質が悪く後ろ向きが見失ったまま
   // 全観測を探すと、iPhone では 20 秒を超えた（結果を出すことを優先する）
   backwardMs?: number;
+  // 前向きが終わりの状態にはっきり着いていたら、後ろ向きを解かずにその手順を使う（false で使わない）。一番の仮説が終わりの状態で、
+  // 最後の観測の矛盾が maxObs 以下、終わりの状態でない一番の仮説とのコストの差が margin 以上のとき
+  forwardAccept?: false | { maxObs: number; margin: number };
 }
 
 export const DEFAULT_OFFLINE: OfflineOptions = {
@@ -33,11 +36,12 @@ export const DEFAULT_OFFLINE: OfflineOptions = {
   // 完成までつながらない、128 では 7 秒でつながる）。実物 4 本 × 5Mbps・2.5Mbps で 1 枚の観測（ARUCO_OBSERVER の transient）と合わせて
   // 8/8 が正解と同じ手順（64 では 7/8）、つながる場合の解き直しは 2 割ほど長い
   decoder: { beamWidth: 128, maxMovesPerStep: 4, deepHyps: 16, lostAfter: 1000 },
+  forwardAccept: { maxObs: 1, margin: 1 },
 };
 
 export interface OfflineResult {
   moves: DecodedMove[];
-  method: "meet" | "bridge" | "backward" | "forward-finish" | "forward";
+  method: "meet" | "bridge" | "backward" | "forward-finish" | "forward" | "forward-end";
   // method が backward のとき: 後ろ向きにたどり着いた始まりの状態（渡された始まりの状態とは違う: スクランブルを間違えて回していた）
   startState?: CubeState;
   // 終わりに届かなかったとき: 後ろ向きが終わりから追えていた分の手順（時刻の順。タイムの終わりを決めるのに使う）
@@ -126,6 +130,18 @@ export function decodeOffline(obs: Observation[], start: CubeState, end: CubeSta
     return { moves, method: "forward", meetAt: -1, cost: fwd.costOffset, reachedEnd: end ? statesEqual(fwd.best().state, end) : true };
   };
   if (!end || !valid.length) return forwardBest();
+  // 前向きが終わりの状態にはっきり着いていれば、それを使う。止めた後の解き直しの時間のほとんどは後ろ向きで、本体の録画の画質
+  // （5Mbps・2.5Mbps）の実物 6 本 × 2 = 12 通りのうち 11 通りで前向きの一番の仮説が終わりの状態に着き、手順はどれも正解と同じだった
+  // （2.5Mbps の IMG_5049 は、後ろ向きとつないだ方が 7 手間違えていた: tests/debug/obsReplay.debug.test.ts の OBS_FWD）
+  const accept = options.forwardAccept ?? DEFAULT_OFFLINE.forwardAccept;
+  if (accept) {
+    const hs = fwd.hypotheses();
+    const top = hs[0];
+    if (top && statesEqual(top.state, end) && top.obsCost <= accept.maxObs) {
+      const other = hs.find((h) => !statesEqual(h.state, end));
+      if (!other || other.cost - top.cost >= accept.margin) return { moves: fwd.bestMoves(), method: "forward-end", meetAt: -1, cost: fwd.costOffset + top.cost, reachedEnd: true };
+    }
+  }
 
   const bwd = new MoveDecoder(end, options.decoder);
   bwd.prior = fwd.prior;

@@ -30,6 +30,15 @@ it("書き出した観測の解き直し", async () => {
       evals += pre.fwd.lastExpanded;
     }
     const b = performance.now();
+    // OBS_FWD=1: 前向きだけの結果（一番の仮説が終わりの状態か・次の仮説との差・手順）
+    if (process.env.OBS_FWD && end) {
+      const hs = pre.fwd.hypotheses();
+      const same = (s: Uint8Array) => s.every((x, i) => x === end[i]);
+      const hit = hs.findIndex((h) => same(h.state));
+      const other = hs.find((h) => !same(h.state));
+      console.log(`前向きだけ 終わりの状態の仮説 ${hit}・一番 ${hs[0].cost.toFixed(2)}・合わない一番 ${other ? other.cost.toFixed(2) : "-"}・最後の観測のコスト ${hs[0].obsCost.toFixed(2)}`);
+      if (hit >= 0) console.log(`前向きの手順 ${simplifyMoves(pre.fwd.bestMoves()).map((m) => MOVE_NAMES[m.move]).join(" ")}`);
+    }
     const res = decodeOffline(obs, start, end, raw.lastT, options, pre);
     const c = performance.now();
     return { res, fwdMs: b - a, backMs: c - b, evals };
