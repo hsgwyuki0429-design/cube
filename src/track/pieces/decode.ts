@@ -28,8 +28,8 @@ import { CENTER_SLOT, type FrameEq, type Group, type PieceTable } from "./table"
 export const PROFILE = { dfsMs: 0, dfsNodes: 0, bridgeMs: 0, bridgeNodes: 0, bridges: 0, steps: 0, capped: 0 };
 
 // 状態: ピース 20 個の位置と、センター 6 つの向き（4 = まだ分からない）
-const SIZE = NUM_PIECES + 6;
-const withCenters = (pos: Uint8Array): Uint8Array => {
+export const SIZE = NUM_PIECES + 6;
+export const withCenters = (pos: Uint8Array): Uint8Array => {
   const s = new Uint8Array(SIZE).fill(4);
   s.set(pos);
   return s;
@@ -134,12 +134,13 @@ export const DEFAULT_DECODE: DecodeOptions = {
 };
 
 // 見え方の中の 1 つのまとまり（同じ並びのまとまりは重みを足して 1 つに）
-interface SGroup {
+export interface SGroup {
   n: number;
   np: number; // ピースの読みの数（読みはピースが先、センターの向きが後）
   nc: number;
   // 置き方が推測に頼らない（センターと面の接し方で決まった面か、センターの向きを読んだ面）: 答えの確かめはこれだけで点数を付ける
   robust: boolean;
+  sure?: boolean; // 置き方がセンターと面の接し方で決まった面（table.ts の mode 0）
   mult?: number; // まとめた同じまとまりの数（置き方のコストもこの数だけ）
   P: Uint8Array;
   A: Uint8Array;
@@ -214,7 +215,7 @@ export function buildSights(table: PieceTable, options: Partial<DecodeOptions> =
           o.R[i] = Math.max(o.R[i], g.R[i]);
         }
       }
-      else acc.set(key, { n: g.n, np: 0, nc: g.prior.length, P: g.P, A: g.A, prior: g.prior, W: Float32Array.from(g.W), R: Float32Array.from(g.R), robust: g.mode === 0 || (g.mode === 1 && g.P.some((p) => p >= CENTER_SLOT)), mult: 1 });
+      else acc.set(key, { n: g.n, np: 0, nc: g.prior.length, P: g.P, A: g.A, prior: g.prior, W: Float32Array.from(g.W), R: Float32Array.from(g.R), robust: g.mode === 0 || (g.mode === 1 && g.P.some((p) => p >= CENTER_SLOT)), sure: g.mode === 0, mult: 1 });
     }
   }
   close();
@@ -233,7 +234,7 @@ function finishGroup(g: SGroup): SGroup {
 }
 
 // 状態 s で、まとまり g の食い違い（ビット）。上限 cap を超えたら打ち切る。whole: 続いた読み全体の重みで（答えの確かめの錨）
-function groupCost(g: SGroup, s: Uint8Array, cap: number, whole = false): number {
+export function groupCost(g: SGroup, s: Uint8Array, cap: number, whole = false): number {
   const n = g.n;
   const Wt = whole ? g.R : g.W;
   let best = 0;
@@ -257,7 +258,7 @@ function groupCost(g: SGroup, s: Uint8Array, cap: number, whole = false): number
 }
 
 // あと r 手ではどうしても合わない式の重み（下限）。ピースは「そのピースを合わせるのに最低何手要るか」（DIST）、センターの向きは 1 手で合う
-function groupBound(g: SGroup, s: Uint8Array, r: number): number {
+export function groupBound(g: SGroup, s: Uint8Array, r: number): number {
   const n = g.n;
   const np = g.np;
   const P = g.P;
@@ -318,13 +319,13 @@ export interface DecodeResult {
 
 
 
-interface Hyp {
+export interface Hyp {
   s: Uint8Array;
   cost: number;
   path: number;
 }
 
-interface Entry {
+export interface Entry {
   cost: number;
   path: number;
   mis: number;
@@ -332,7 +333,7 @@ interface Entry {
 }
 
 // 手の木（前向き・後ろ向きそれぞれ 1 つ）
-class Paths {
+export class Paths {
   parent = new Int32Array(4096);
   info = new Int32Array(4096);
   depth = new Int32Array(4096);
@@ -380,18 +381,18 @@ class Paths {
 }
 
 // 状態の 30 ビットのハッシュ（小さい整数）と、状態が同じか
-function hash30(s: Uint8Array): number {
+export function hash30(s: Uint8Array): number {
   let a = 0x811c9dc5;
   for (let i = 0; i < SIZE; i++) a = Math.imul(a ^ s[i], 0x01000193);
   return (a ^ (a >>> 15)) & 0x3fffffff;
 }
-function sameState(a: Uint8Array, b: Uint8Array): boolean {
+export function sameState(a: Uint8Array, b: Uint8Array): boolean {
   for (let i = 0; i < SIZE; i++) if (a[i] !== b[i]) return false;
   return true;
 }
 
 // 状態のハッシュ（53 ビットに収まる数）
-function hashOf(s: Uint8Array, len = SIZE): number {
+export function hashOf(s: Uint8Array, len = SIZE): number {
   let a = 0x811c9dc5;
   let b = 0x1b873593;
   for (let i = 0; i < len; i++) {
@@ -412,7 +413,7 @@ interface Pass {
 }
 
 // 手 m を状態に: ピースは表を引き、センターの向きは回した面だけ回す（分からなければ分からないまま）
-function turn(s: Uint8Array, m: number, t: Uint8Array): void {
+export function turn(s: Uint8Array, m: number, t: Uint8Array): void {
   const Q = PERM[m];
   for (let k = 0; k < NUM_PIECES; k++) t[k] = Q[s[k]];
   for (let k = NUM_PIECES; k < SIZE; k++) t[k] = s[k];
@@ -420,7 +421,7 @@ function turn(s: Uint8Array, m: number, t: Uint8Array): void {
   if (t[c] !== 4) t[c] = (t[c] + (m % 3) + 1) & 3;
 }
 
-function applySeq(s: Uint8Array, seq: number[]): Uint8Array {
+export function applySeq(s: Uint8Array, seq: number[]): Uint8Array {
   let t: Uint8Array = s.slice();
   for (const mv of seq) {
     const u = new Uint8Array(SIZE);
@@ -925,10 +926,11 @@ export function decodePieces(table: PieceTable, start: CubeState, end: CubeState
 }
 
 // 答えの手（見え方の番号つき）
-type M = { move: number; sight: number; guess: boolean; amb: boolean };
+// why: inferred にした理由（調査用: 区間ごとの「決まらなかった理由」の集計。solve.ts）
+export type M = { move: number; sight: number; guess: boolean; amb: boolean; why?: string };
 
 // 見え方 sg の、状態 s での食い違いと、合った読みの重み。robust: 置き方が推測に頼らないまとまりだけ
-function sightFit(sg: Sight, s: Uint8Array, robust = false, whole = false): { mis: number; support: number } {
+export function sightFit(sg: Sight, s: Uint8Array, robust = false, whole = false): { mis: number; support: number } {
   let mis = 0;
   let weight = 0;
   for (const g of sg.groups) {
@@ -941,7 +943,7 @@ function sightFit(sg: Sight, s: Uint8Array, robust = false, whole = false): { mi
 
 // 手順 seq（状態 from から）を、見え方 sights[i0..i1) の間にいちばん合うように割り振ったときの、手 + 食い違い。
 // 最後の見え方 i1 は全部の手を入れた後の状態で数える（i1 < 0 なら数えない）。割り振り（手 k の後の見え方の番号）も返す
-function placeSeq(sights: Sight[], i0: number, i1: number, last: number, from: Uint8Array, seq: number[], opt: DecodeOptions, robust = false): { cost: number; at: number[] } {
+export function placeSeq(sights: Sight[], i0: number, i1: number, last: number, from: Uint8Array, seq: number[], opt: DecodeOptions, robust = false): { cost: number; at: number[] } {
   const L = seq.length;
   const states: Uint8Array[] = [from];
   for (const m of seq) states.push(applySeq(states[states.length - 1], [m]));
@@ -1088,7 +1090,16 @@ function segmentAlternatives(sub: Sight[], A: Uint8Array, B: Uint8Array, opt: De
 }
 
 // 答えの確かめ（DecodeOptions.verify）
-function verifyPath(sights: Sight[], start: Uint8Array, end: Uint8Array, moves: M[], opt: DecodeOptions): { moves: M[]; stats: { replaced: number; unsure: number; unchecked: number; segments: number } } {
+// 答えの確かめの部品（表の AND 版 solve.ts は、手順を漏れなく探す所・区間を解き直す所を自分のものにする）
+export interface VerifyHooks {
+  between: (A: Uint8Array, B: Uint8Array, maxLen: number) => number[][]; // 状態 A から B への maxLen 手までの手順を漏れなく
+  segment: (sub: Sight[], A: Uint8Array, B: Uint8Array, opt: DecodeOptions) => number[][] | null; // 区間だけ解き直して別の手順を集める（null = 確かめられない）
+  // 区間だけ解き直して確かめた（漏れなくではない）長い区間で、確定にしてよい手（その手を入れた区間で、確かな読みだけで手が 1 つに決まった）
+  trusted?: (m: M) => boolean;
+  blockPin?: boolean; // 答えの手がない続きの見え方をまとめて錨を決める（表の AND 版）
+}
+
+export function verifyPath(sights: Sight[], start: Uint8Array, end: Uint8Array, moves: M[], opt: DecodeOptions, hooks?: VerifyHooks): { moves: M[]; stats: { replaced: number; unsure: number; unchecked: number; segments: number } } {
   const n = sights.length;
   const vStart = performance.now();
   const stats = { replaced: 0, unsure: 0, unchecked: 0, segments: 0 };
@@ -1107,19 +1118,39 @@ function verifyPath(sights: Sight[], start: Uint8Array, end: Uint8Array, moves: 
   }
   // 錨: 読みがはっきり支える見え方
   const anchors: number[] = [-1];
-  for (let i = 0; i < n; i++) {
-    const f = sightFit(sights[i], states[i], true, true);
-    if (f.support < opt.anchorBits || f.mis > opt.anchorMis) continue;
+  // 見え方の並び [i0, i1] をまとめて（その間に手がない: 状態が同じ）、どの 1 手を足しても読みと食い違うか
+  const pinnedBlock = (i0: number, i1: number): boolean => {
+    let support = 0;
+    let mis0 = 0;
+    for (let i = i0; i <= i1; i++) {
+      const f = sightFit(sights[i], states[i], true, true);
+      support += f.support;
+      mis0 += f.mis;
+    }
+    if (support < opt.anchorBits || mis0 > opt.anchorMis * (i1 - i0 + 1)) return false;
     // どの 1 手を足しても読みと食い違う（その見え方で状態が決まっている）こと。見えない層の手を足した状態も同じように合うなら、錨にしない
     // （見えない層の余分な手が錨の状態に入ったまま「確かめた」ことになった）
-    let pinned = true;
     const t = new Uint8Array(SIZE);
-    for (let m = 0; m < 18 && pinned; m++) {
-      turn(states[i], m, t);
-      if (sightFit(sights[i], t, true, true).mis - f.mis < opt.pinBits) pinned = false;
+    for (let m = 0; m < 18; m++) {
+      let mis = 0;
+      for (let i = i0; i <= i1; i++) {
+        turn(states[i], m, t);
+        mis += sightFit(sights[i], t, true, true).mis;
+      }
+      if (mis - mis0 < opt.pinBits) return false;
     }
-    if (pinned) anchors.push(i);
-  }
+    return true;
+  };
+  if (hooks?.blockPin) {
+    // 答えの手がない続きの見え方（止まっている間が読み違いで分かれた）は、まとめて状態を決める
+    const moveAt = new Set(moves.map((m) => m.sight));
+    for (let i0 = 0; i0 < n; ) {
+      let i1 = i0;
+      while (i1 + 1 < n && !moveAt.has(i1 + 1)) i1++;
+      if (pinnedBlock(i0, i0) || pinnedBlock(i0, i1)) for (let i = i0; i <= i1; i++) anchors.push(i);
+      i0 = i1 + 1;
+    }
+  } else for (let i = 0; i < n; i++) if (pinnedBlock(i, i)) anchors.push(i);
   anchors.push(n);
   const out: M[] = [];
   for (let k = 0; k + 1 < anchors.length; k++) {
@@ -1138,16 +1169,18 @@ function verifyPath(sights: Sight[], start: Uint8Array, end: Uint8Array, moves: 
     // 間の手が少なければ漏れなく、多ければ（verifyLong 手まで）その区間だけを幅を広げて前後から解き直して、別の手順を集める
     let cands: number[][] | null = null;
     const inTime = performance.now() - vStart < opt.verifyMs;
-    if (inTime && seg.length <= opt.verifyMoves) cands = sequencesBetween(A, B, mine.length + 1, 4000);
+    let exhaustive = true;
+    if (inTime && seg.length <= opt.verifyMoves) cands = hooks ? hooks.between(A, B, mine.length + 1) : sequencesBetween(A, B, mine.length + 1, 4000);
     else if (inTime && seg.length <= opt.verifyLong) {
+      exhaustive = false;
       const s0 = performance.now();
-      cands = segmentAlternatives(sights.slice(i0, i1), A, B, { ...opt, deadline: vStart + opt.verifyMs });
+      cands = (hooks ? hooks.segment : segmentAlternatives)(sights.slice(i0, i1), A, B, { ...opt, deadline: vStart + opt.verifyMs });
       opt.debugVerify?.(`  区間の解き直し ${seg.length} 手・見え方 ${i1 - i0}・${(performance.now() - s0).toFixed(0)}ms${cands ? "" : "（打ち切り）"}`);
     }
     if (!cands) {
       opt.debugVerify?.(`錨 ${a < 0 ? "始め" : (sights[a].t0 / 1000).toFixed(2)}〜${bIdx === n ? "終わり" : (sights[bIdx].t0 / 1000).toFixed(2)} 手 ${seg.length}: 確かめられない`);
       stats.unchecked += seg.length;
-      for (const m of seg) out.push({ ...m, amb: true });
+      for (const m of seg) out.push({ ...m, amb: true, why: m.why ?? (seg.length > opt.verifyLong ? "long" : "time") });
       continue;
     }
     const scored = cands.map((q) => ({ q, ...placeSeq(sights, i0, i1, lastSight, A, q, opt) }));
@@ -1176,8 +1209,10 @@ function verifyPath(sights: Sight[], start: Uint8Array, end: Uint8Array, moves: 
       const alts = scored.filter((x) => canonical(x.q).join() !== bestC).slice(0, 3).map((x) => `${nm(x.q)} ${(x.cost - best.cost).toFixed(1)}/${(robustOf(x.q) - rb).toFixed(1)}`);
       opt.debugVerify(`錨 ${a < 0 ? "始め" : (sights[a].t0 / 1000).toFixed(2)}〜${bIdx === n ? "終わり" : (sights[bIdx].t0 / 1000).toFixed(2)} 手 [${nm(mine)}]${best.q !== mine ? ` → [${nm(best.q)}]` : ""} 候補 ${scored.length} 決まらない ${unsure.size}・別: ${alts.join(" | ")}`);
     }
-    if (best.q === mine) seg.forEach((m, i) => out.push(unsure.has(i) ? { ...m, amb: true } : m));
-    else best.q.forEach((mv, i) => out.push({ move: mv, sight: Math.max(a + 1, best.at[i]), guess: false, amb: unsure.has(i) }));
+    // 漏れなく探していない（区間だけ解き直した）ときは、その区間で手が 1 つに決まった手だけを確定に
+    if (!exhaustive && hooks?.trusted) seg.forEach((m, i) => !hooks.trusted!(m) && unsure.add(i));
+    if (best.q === mine) seg.forEach((m, i) => out.push(unsure.has(i) ? { ...m, amb: true, why: m.why ?? "alt" } : m));
+    else best.q.forEach((mv, i) => out.push({ move: mv, sight: Math.max(a + 1, best.at[i]), guess: false, amb: unsure.has(i), ...(unsure.has(i) ? { why: "alt" } : {}) }));
   }
   out.sort((x, y) => x.sight - y.sight);
   return { moves: stableBySight(out, moves), stats };

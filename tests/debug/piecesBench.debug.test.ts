@@ -17,6 +17,7 @@ import { type CubeState, MOVE_NAMES, applyMove, parseMoves, solvedState, statesE
 import { PROFILE, alignment, canonical, canonicalWithIndex, decodePieces, scoreMoves } from "../../src/track/pieces/decode";
 import { PIECE_OF, piecesOf } from "../../src/track/pieces/model";
 import { KIND_CARRIED, KIND_DIRECT, KIND_FRAGMENT, LEN_BUCKETS, buildTable, lenBucket } from "../../src/track/pieces/table";
+import { SOLVE_PROFILE, solvePieces } from "../../src/track/pieces/solve";
 import { DEFAULT_OFFLINE, type OfflineResult, decodeOffline } from "../../src/track/offline";
 import type { SightFrame } from "../../src/track/sight";
 import type { Observation } from "../../src/track/types";
@@ -101,7 +102,8 @@ const KIND_NAMES = ["直接（4 マス以上の面）", "直接（1〜3 マス�
 it("ステッカーの動きの方程式で解き直す", async () => {
   const dir = process.env.PB_DIR;
   if (!dir) return;
-  const methods = (process.env.PB_METHOD ?? "both") === "both" ? ["old", "new"] : [process.env.PB_METHOD!];
+  // old = 今の解き直し（decodeOffline）・new = 前回の新しい方式（decode.ts）・and = 表の AND 版（solve.ts）。both = old,new・all = 3 つ
+  const methods = (process.env.PB_METHOD ?? "both") === "both" ? ["old", "new"] : process.env.PB_METHOD === "all" ? ["old", "new", "and"] : process.env.PB_METHOD!.split(",");
   const out: string[] = [];
   // ε の集計: [種類][長さ] → { 続いた読み, 間違い }
   const eps = Array.from({ length: 4 }, () => LEN_BUCKETS.map(() => ({ runs: 0, bad: 0, frames: 0, badFrames: 0 })));
@@ -216,6 +218,7 @@ it("ステッカーの動きの方程式で解き直す", async () => {
       let moves: { move: number; inferred?: boolean; t: number }[] = [];
       let solved = false;
       let info = "";
+      let reasons: Record<string, number> = {};
       if (method === "new") {
         const tb = buildTable(sights, JSON.parse(process.env.PB_TABLE ?? "{}"));
         const dopt = JSON.parse(process.env.PB_DEC ?? "{}");
@@ -247,6 +250,19 @@ it("ステッカーの動きの方程式で解き直す", async () => {
         }
         solved = r.reachedEnd;
         info = `${r.method}・確かめ ${JSON.stringify(r.verified)}・見え方 ${r.sights}・候補 ${r.expanded}・別の解 ${r.alternatives}${r.reachedEnd ? "" : `・前向き〜${((r.forwardTo ?? 0) / 1000).toFixed(2)}s・後ろ向き ${((r.backwardTo ?? 0) / 1000).toFixed(2)}s〜`}・表 ${tb.stats.used}/${sights.length} 枚（決まった ${tb.stats.sure}・続き ${tb.stats.chained}・決まらない ${tb.stats.free}・センターなし ${tb.stats.blind}・欠片 ${tb.stats.held}）`;
+      } else if (method === "and") {
+        const tb = buildTable(sights, JSON.parse(process.env.PB_TABLE ?? "{}"));
+        const sopt = JSON.parse(process.env.PB_SOLVE ?? "{}");
+        if (process.env.PB_VERIFY) sopt.debugVerify = (l: string) => process.stdout.write(`  確かめ ${l}\n`);
+        if (process.env.PB_STEPS)
+          sopt.onStep = (x: { back: boolean; step: number; t: number; hyps: number; best: number; eqs: number; k: number }) => process.stdout.write(`   ${x.back ? "←" : "→"} ${x.step} t=${(x.t / 1000).toFixed(3)} 式 ${x.eqs} k ${x.k} 仮説 ${x.hyps} 一番 ${x.best.toFixed(1)}\n`);
+        for (const k of Object.keys(SOLVE_PROFILE)) (SOLVE_PROFILE as Record<string, number>)[k] = 0;
+        const r = solvePieces(tb, start, end, sopt);
+        if (process.env.PB_PROF) process.stdout.write(`  内訳 ${JSON.stringify(Object.fromEntries(Object.entries(SOLVE_PROFILE).map(([k, v]) => [k, Math.round(v)])))}\n`);
+        moves = r.moves;
+        solved = r.reachedEnd;
+        reasons = r.reasons;
+        info = `${r.method}・確かめ ${JSON.stringify(r.verified)}・区間 ${JSON.stringify({ ...r.stats, ms: Math.round(r.stats.ms) })}・理由 ${JSON.stringify(r.reasons)}`;
       } else {
         const raw = JSON.parse(readFileSync(`${dir}/${name}.obs.json`, "utf8")) as { lastT: number; obs: RawObs[] };
         const obs: Observation[] = raw.obs.map((o) => ({
@@ -264,7 +280,7 @@ it("ステッカーの動きの方程式で解き直す", async () => {
       const dist = editDistance(got, want);
       const inferred = moves.filter((m) => m.inferred).length;
       const ws = solved ? wrongSure(moves, want) : { wrong: 0, ok: 0 };
-      const row = { name, method, solved, same: solved && dist === 0, dist, n: want.length, wrongSure: ws.wrong, inferred, ms: Math.round(ms), memMB: Math.round(mem), note: truth.note };
+      const row = { name, method, solved, same: solved && dist === 0, dist, n: want.length, wrongSure: ws.wrong, inferred, ms: Math.round(ms), memMB: Math.round(mem), note: truth.note, reasons };
       const line = `${name.padEnd(16)} ${method.padEnd(3)} ${solved ? "完成" : "未完"} ${row.same ? "正解と同じ" : `距離 ${String(dist).padStart(3)}`}/${want.length} 確定で間違い ${ws.wrong} 推定 ${String(inferred).padStart(2)} ${(ms / 1000).toFixed(1).padStart(5)}秒 メモリ +${row.memMB}MB ${info}${truth.note}`;
       out.push(line);
       process.stdout.write(`${line}\n`);
