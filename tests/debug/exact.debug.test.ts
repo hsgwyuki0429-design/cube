@@ -1,9 +1,9 @@
-// 確かな所から埋める解き直し（src/track/exact.ts）と確認役
+// 確かな所から埋める解き直し（tests/debug/lib/exact.ts。正解づくりの道具）と確認役
 import { describe, expect, it } from "vitest";
-import { type CubeState, VIEW, applyMove, applyMoves, parseMoves, solvedState } from "../src/cube/model";
-import { stickerIds } from "../src/cube/stickers";
-import { type Sighting, canonicalMoves, decodeExact, verifyMoves } from "../src/track/exact";
-import type { DecodedMove } from "../src/track/types";
+import { type CubeState, VIEW, applyMove, applyMoves, parseMoves, solvedState } from "../../src/cube/model";
+import { stickerIds } from "../../src/cube/stickers";
+import { type Sighting, canonicalMoves, decodeExact, verifyMoves } from "./lib/exact";
+import type { DecodedMove } from "../../src/track/types";
 
 // 姿勢 o で正面・上・右の 3 面が見えるフレームの読み
 function sighting(state: CubeState, o: number, t: number, slots = [0, 1, 2]): Sighting {

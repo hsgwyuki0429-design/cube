@@ -1,17 +1,15 @@
 // 精密解析の解き直しを、書き出した観測と読み（realVideo.debug.test.ts の REAL_OBS・REAL_RREADINGS、REAL_OBS_ONLY=1 で作る）で比べる。
 // 正解は原画質の精密解析の手順（bm/<動画>.ref.json）。手順は rescore.ts の canonical（同じ面をまとめ、反対の面の順番をそろえる）で比べる。
 //   DB_DIR=dump DB_REF=bm npx vitest run -c vitest.debug.config.ts tests/debug/decodeBench.debug.test.ts --silent=false
-//   DB_CASES=IMG_5046_1500k_60,…（省略時は DB_DIR の全部）・DB_MODE=whole|app|both・DB_METHOD=beam,anchors,frames,exact,verify
+//   DB_CASES=IMG_5046_1500k_60,…（省略時は DB_DIR の全部）・DB_MODE=whole|app|both・DB_METHOD=beam,frames,exact,verify
 //   （exact: src/track/exact.ts の decodeExact だけ。verify: 本体と同じ beam + 確認役。DB_EXACT='{"slack":8}'・DB_DEBUG=1|2|why・DB_SHOW=1）
-//   DB_OUT=結果.json（行を足していく）・DB_ANCH='{"keep":12}'（anchors.ts の設定）
+//   DB_OUT=結果.json（行を足していく）
 // app: 本体のタイマーと同じく、ソルブだけ（インスペクションの終わり近くから、正解のその時の状態で始める）。whole: 動画の最初から（速く崩す所も含む）
 import { appendFileSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import { it } from "vitest";
 import { type CubeState, MOVE_NAMES, applyMove, solvedState, statesEqual } from "../../src/cube/model";
-import { decodeAnchors } from "../../src/track/anchors";
-import { _verifyInternal, decodeExact, verifyMoves } from "../../src/track/exact";
+import { _verifyInternal, canonicalMoves as canonical, decodeExact, verifyMoves } from "./lib/exact";
 import { DEFAULT_OFFLINE, type OfflineResult, decodeOffline } from "../../src/track/offline";
-import { canonical } from "../../src/track/rescore";
 import { readingMismatch } from "./buildTruth.debug.test";
 import { simplifyMoves } from "../../src/track/merge";
 import type { Observation } from "../../src/track/types";
@@ -82,8 +80,7 @@ it("精密解析の解き直しを比べる", () => {
   const refDir = process.env.DB_REF!;
   const cases = process.env.DB_CASES ? process.env.DB_CASES.split(",") : readdirSync(dir).filter((f) => f.endsWith(".obs.json")).map((f) => f.replace(".obs.json", ""));
   const modes = (process.env.DB_MODE ?? "both") === "both" ? ["app", "whole"] : [process.env.DB_MODE!];
-  const methods = (process.env.DB_METHOD ?? "beam,anchors").split(",");
-  const anch = JSON.parse(process.env.DB_ANCH ?? "{}");
+  const methods = (process.env.DB_METHOD ?? "beam").split(",");
   const out: string[] = [];
   for (const name of cases) {
     const b = name.slice(0, 8);
@@ -198,13 +195,7 @@ it("精密解析の解き直しを比べる", () => {
           inferred = r.moves.filter((m) => m.inferred).length;
           if (process.env.DB_SHOW) process.stdout.write(`  出力 ${r.moves.map((m) => `${MOVE_NAMES[m.move]}${m.inferred ? "?" : ""}`).join(" ")}\n  正解 ${want.map((m) => MOVE_NAMES[m]).join(" ")}\n`);
           info = `${r.method}・アンカー ${r.anchors}・前向き〜${r.forwardTo === null ? "-" : (r.forwardTo / 1000).toFixed(1)}s・後ろ向き ${r.backwardTo === null ? "-" : (r.backwardTo / 1000).toFixed(1)}s〜 ${r.reason}`;
-        } else {
-          const r = decodeAnchors(sights, start, end, anch);
-          moves = r.moves.map((m) => m.move);
-          solved = r.reachedEnd;
-          inferred = r.moves.filter((m) => m.inferred).length;
-          info = `${r.method}${r.uncertain ? "・決まらない所あり" : ""}・アンカー ${r.anchors}・前向き〜${r.forwardTo === null || r.forwardTo === undefined ? "-" : (r.forwardTo / 1000).toFixed(1)}s ${r.reason ?? ""}`;
-        }
+        } else throw new Error(`知らない方法: ${method}`);
         const ms = performance.now() - a;
         // 正解に頼らない物差し: 出した手順が直接読んだマスとどれだけ食い違うか（原画質の読みで。時刻は手の終わり）
         if (process.env.DB_READS && lastTimed) {

@@ -1,7 +1,7 @@
 // ライブの記録（実機で何が起きたかを手元で再生するため）。認識の Worker が追跡に渡した読み（FrameReading）と、そのときの
 // 追跡の結果の要点・処理時間・追跡の設定の変更を、直近 KEEP_MS だけ残す。設定画面の「ライブの記録を書き出す」で書き出し、
 // tests/debug/liveLog.debug.test.ts で同じ追跡を通し直す（追跡は読みだけで決まる）。映像は残さない。DOM もカメラも知らない
-import type { SightFrame } from "./pieces/frame";
+import type { SightFrame } from "./sight";
 import type { FrameReading } from "./observer";
 
 export const LIVE_LOG_VERSION = 1;

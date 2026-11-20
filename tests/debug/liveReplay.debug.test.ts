@@ -11,8 +11,8 @@ import { type EngineOptions, TrackerEngine } from "../../src/track/engine";
 import { simplifyMoves } from "../../src/track/merge";
 import { ARUCO_OBSERVER, type FrameReading, LIVE_OBSERVER } from "../../src/track/observer";
 import type { RefineResult } from "../../src/vision/refine";
-import type { SightFrame } from "../../src/track/pieces/frame";
-import { slotsPlausible } from "../../src/track/pieces/slotCheck";
+import type { SightFrame } from "../../src/track/sight";
+import { slotsPlausible } from "../../src/track/slotCheck";
 
 const LAGS = [150, 300, 600];
 

@@ -93,6 +93,12 @@ const LIVE_REST_MAX_MS = 20000; // 止めた後の残りの解析の間、ライ
 const searchOptions = (s: Settings) => ({ beamWidth: s.beamWidth, maxMovesPerStep: s.maxMovesPerStep, rotationCost: s.rotationCost });
 const observerOptions = (s: Settings) => ({ stableMs: s.stableMs, ...ARUCO_OBSERVER });
 
+// 精密解析の検出の Worker の数を URL で決める（?refinepool=0・1・2。比べるとき。省略時はコア数から: src/vision/detectPool.ts の poolSize）
+function refinePool(): Pick<RefineInput, "parallel"> {
+  const v = typeof location === "undefined" ? null : new URLSearchParams(location.search).get("refinepool");
+  return v === null || !/^\d+$/.test(v) ? {} : { parallel: Number(v) };
+}
+
 class Controller {
   readonly store = createStore<AppState>({
     screen: openedAruco() ? "analyze" : "play",
@@ -392,7 +398,6 @@ class Controller {
   }
 
   confirmScan(): void {
-    this.startCheck = false;
     const scan = this.store.get().scan;
     if (!scan?.result || !scan.edited) return;
     const state = Uint8Array.from(scan.edited);
@@ -404,19 +409,9 @@ class Controller {
     this.startTrackingFrom(state);
   }
 
-  // 完成状態から始める（色はマーカーの ID で決まるので、スキャンしなくてよい）。本当に揃っているかはタイマーが確かめる
-  // （src/app/timer.ts の checking: 揃っていなければ 6 面を見せてもらい、読み取った状態からスクランブルを作る）
+  // 完成状態から始める（色はマーカーの ID で決まるので、スキャンしなくてよい）
   startFromSolved(): void {
-    this.startCheck = true;
     this.startTrackingFrom(solvedState());
-  }
-
-  private startCheck = false;
-  // 「揃った状態から開始」の後の最初のスクランブルか（1 回だけ true を返す）
-  takeStartCheck(): boolean {
-    const v = this.startCheck;
-    this.startCheck = false;
-    return v;
   }
 
   // ---- 追跡 ----
@@ -487,6 +482,7 @@ class Controller {
       engine: this.engineOptions(),
       pipeline: this.pipelineConfig(),
       ...(opts.timed ? {} : { keepPatchesMs: 3000 }),
+      ...refinePool(),
     };
     const id = await this.refiner.startStream((p) => this.onAnalysisPartial(session, p));
     if (id === null || this.session !== session) return abandon();
@@ -619,7 +615,7 @@ class Controller {
     onInfo?: (info: VideoFileInfo, analyzedFrames: number) => void,
   ): { result: Promise<RefineResult>; cancel: () => void } {
     const s = settingsStore.get();
-    const input: RefineInput = { state: Array.from(opts.state), refs: ARUCO_REFS, from: 0, to: Infinity, engine: this.engineOptions(), pipeline: this.pipelineConfig() };
+    const input: RefineInput = { state: Array.from(opts.state), refs: ARUCO_REFS, from: 0, to: Infinity, engine: this.engineOptions(), pipeline: this.pipelineConfig(), ...refinePool() };
     return this.videoRefiner.runVideo(file, input, opts.target, { maxSide: s.workWidth, captureFps: opts.captureFps, maxFps: opts.maxFps ?? VIDEO_MAX_FPS }, progress, onInfo);
   }
 
