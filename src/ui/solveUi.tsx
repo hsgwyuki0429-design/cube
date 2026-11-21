@@ -40,7 +40,10 @@ export function AnalysisBadge({ solve, progress }: { solve: Solve; progress?: nu
     );
   if (solve.analysis === "partial")
     return (
-      <span class="chip analysis done" title="録画の解析で手順を確定しました。タイムの端の一部（最初か最後の手が写っていなかった・手動で止めた）はリアルタイムの値です">
+      <span
+        class="chip analysis done"
+        title={`録画の解析で手順を確定しました。タイムの${solve.liveEdges?.length === 2 ? "両端" : solve.liveEdges?.[0] === "start" ? "始まり" : solve.liveEdges?.[0] === "end" ? "終わり" : "端の一部"}（その手の層が写っていなかった・手動で止めた）はリアルタイムの値です`}
+      >
         確定（一部推定）
       </span>
     );

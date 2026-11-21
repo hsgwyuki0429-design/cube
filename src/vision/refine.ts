@@ -5,6 +5,12 @@ import { type CubeState, OPPOSITE, isSolved, moveFace, solvedState, statesEqual 
 import { type EngineOptions, TrackerEngine } from "../track/engine";
 import { mergeQuickRepeats, separateMotions, simplifyMoves } from "../track/merge";
 import { DEFAULT_OFFLINE, OfflineForward, type OfflineOptions, type OfflineResult, decodeOffline, finishDeep } from "../track/offline";
+import { type DecodeOptions as PiecesDecodeOptions, decodePieces } from "../track/pieces/decode";
+import { type SolveOptions as PiecesSolveOptions, solvePieces } from "../track/pieces/solve";
+import { PERM, TOUCH, piecesOf } from "../track/pieces/model";
+import { type TableOptions as PiecesTableOptions, buildTable } from "../track/pieces/table";
+import { type SightFrame, sightFrame } from "../track/sight";
+import { edgeTiming } from "../track/timing";
 import type { DecodedMove, TrackStatus } from "../track/types";
 import type { Lab } from "./color";
 import { type PatchFrame, facePatch, refineEnd, refineStart } from "./fineTiming";
@@ -32,6 +38,11 @@ export interface RefineInput {
   // 進める解析と同じく間引く（vision.worker.ts の INSPECT_EVERY_MS）。インスペクションで回して見せている間を全部処理すると、持ち替えを
   // 手と読み違えて完成までつながらないことがあった（録画の画質の実物のソルブ 2 本）
   inspectUntil?: number;
+  // ステッカーの動きの方程式（src/track/pieces）で先に解き直す（既定 false。比べるため）。完成までつながらなければ、これまでの解き直し
+  // （decodeOffline）に戻す。CLAUDE.md の「ステッカーの動きの方程式による解き直し」。true・"and" = 区間を表の AND で解く版（solve.ts）、
+  // "v1" = 最初の版（ビームで手を 1 つずつ足す: decode.ts。比べるため）
+  pieces?: boolean | "and" | "v1";
+  piecesOptions?: { table?: Partial<PiecesTableOptions>; decode?: Partial<PiecesDecodeOptions>; solve?: Partial<PiecesSolveOptions> };
   // 検出を別の Worker に分ける（src/vision/detectPool.ts）。true はコア数から（poolSize。コアが少ない・Worker を作れないときは分けない）、
   // 数を渡すとその数（URL の ?refinepool=0・1・2）。省略時: 動画ファイルの解析は true、タイマーの解析は分けない（vision.worker.ts の Stream.par）
   parallel?: boolean | number;
@@ -133,8 +144,11 @@ export interface RefineResult {
   startState?: number[];
   // 完成までつながらなかった（solved = false）が、終わりの時刻は後ろ向きに追えた最後の手から決めた（タイムは出せる）
   gapped?: boolean;
-  startUncertain: boolean; // 最初の手が直接見えておらず、開始時刻をフレームから決められなかった
-  endUncertain: boolean; // 最後の手が直接見えておらず、終了時刻をフレームから決められなかった
+  // 「時刻が分からない」と「手が分からない」は別: 端の手が inferred でも、その層の動きがフレームから分かれば時刻は確か（edgeTiming）
+  startUncertain: boolean; // 開始時刻をフレームから決められなかった（最初の手の層が見えない・解析の範囲より前に回し始めていた…）
+  endUncertain: boolean; // 終了時刻をフレームから決められなかった
+  startMoveInferred: boolean; // 最初の手がどの手か決まらなかった（inferred）
+  endMoveInferred: boolean; // 最後の手がどの手か決まらなかった
   raw?: { move: number; t0?: number; t: number; start: number; end: number; inferred?: boolean }[]; // まとめる前の手（調査用）
 }
 
@@ -144,6 +158,13 @@ const RAW_SLACK_MS = 100;
 
 // 反対の面の層の動きを、タイムの端として採る範囲（それより離れた動きは別の手）
 const OPPOSITE_WINDOW_MS = 250;
+
+// 最初の版の設定（答えの確かめの値など）を表の AND 版にも渡す。調査用の onStep は版ごとに形が違うので除く
+function withoutStep(o?: Partial<PiecesDecodeOptions>): Partial<Omit<PiecesDecodeOptions, "onStep">> {
+  if (!o) return {};
+  const { onStep: _, ...rest } = o;
+  return rest;
+}
 
 // moves[from] から dir の向きに続く同じ軸の手のまとまりに、両方の面の手があるか
 function bothFacesAt(moves: { move: number }[], from: number, dir: 1 | -1): boolean {
@@ -199,7 +220,12 @@ export class Refiner {
   // 前向きの再構成を観測が出るたびに進めておく（result で後ろ向きとつなぐだけにする）
   private forward: OfflineForward | null;
   private fedObs = 0;
-  // ピースの時刻表の材料（フレームごとの読み: 面・ID・マーカーの向き・外枠。1 フレーム数百バイト）
+  // ステッカーの動きの方程式の材料（フレームごとの読み: 面・ID・マーカーの向き・外枠。1 フレーム数百バイト）。pieces のときだけ
+  private sights: SightFrame[] = [];
+  piecesMs = 0; // 調査用: ステッカーの動きの方程式の解き直しにかかった時間（使わなければ 0）
+  // 調査用: タイムの端を、inferred の端の手の層の動きで確かにした（startByLayer・endByLayer）。endByLooks: 完成して見え始めたフレームでも
+  // 終わりを決められた（前の決まり「端の手が inferred なら時刻も不確か」で何本が「一部推定」だったかを数えるため）
+  edgeInfo = { startByLayer: false, endByLayer: false, endByLooks: false };
 
   constructor(
     private cv: CV,
@@ -289,6 +315,7 @@ export class Refiner {
   full(img: PixelSource, t: number, detected?: Marker[]): void {
     const r = processFrame(this.cv, img, t, this.config, this.memory, detected);
     this.onFrame?.(t, r);
+    if (this.input.pieces && r.faces.length) this.sights.push(sightFrame(t, r));
     // 基準: この格子で、処理に回したいちばん新しいフレームの色（1 か所で処理するときは、このフレーム）
     const latest = this.picked && this.picked.t > t ? this.picked.img : img;
     // 見えている面が減ったフレーム（回している途中・指）の後は、続けて精密に処理する: 残った面だけを基準にすると、回している面
@@ -334,6 +361,65 @@ export class Refiner {
     return { move: OPPOSITE[moveFace(m.move)] * 3, t0: m.t0, t: m.t, orient: m.orient };
   }
 
+  // ステッカーの動きの方程式（src/track/pieces）で解き直す。完成までつながらなければ null。tick: 進み具合の知らせ（STALL_MS の見張り）
+  private decodeByPieces(target: CubeState, tick?: () => void): OfflineResult | null {
+    const began = performance.now();
+    const table = buildTable(this.sights, this.input.piecesOptions?.table);
+    const o = this.input.piecesOptions;
+    const start = Uint8Array.from(this.input.state);
+    const r = this.input.pieces === "v1" ? decodePieces(table, start, target, { ...o?.decode, tick }) : solvePieces(table, start, target, { ...withoutStep(o?.decode), ...o?.solve, tick });
+    this.piecesMs = performance.now() - began;
+    if (!r.reachedEnd) return null;
+    const frames = table.frames;
+    // 回し始めの手がかり（t0）: 見え方の境目は粗いので、回す層のピースが回す前の位置に最後に見えたフレームまで詰める
+    // （手の時刻の判定 timing.ts は t0 から遡って動き出しを探す。早すぎると見つけられず、タイムの端が不確かになる）
+    let pos = piecesOf(Uint8Array.from(this.input.state));
+    let prevT = -Infinity;
+    const t0s = r.moves.map((m) => {
+      const bit = 1 << m.move;
+      let t0 = m.t0;
+      for (let g = frames.length - 1; g >= 0; g--) {
+        const fr = frames[g];
+        if (fr.t >= m.t) continue;
+        if (fr.t <= Math.max(m.t0, prevT)) break;
+        let seen = false;
+        for (const gr of fr.groups) {
+          if (gr.mode !== 0) continue;
+          for (let i = 0; i < gr.n && !seen; i++) {
+            const k = gr.P[i];
+            if (k < 20 && TOUCH[pos[k]] & bit && gr.A[i] === pos[k]) seen = true;
+          }
+        }
+        if (seen) {
+          t0 = fr.t;
+          break;
+        }
+      }
+      const P = PERM[m.move];
+      pos = Uint8Array.from(pos, (x) => P[x]);
+      prevT = t0;
+      return t0;
+    });
+    // 手のときの姿勢（認識のスロットと合うもの。手の時刻の判定がスロットで層を見る）: その手の後、いちばん近いフレーム
+    let orient = this.engine.decoder.best().orient;
+    for (const fr of frames)
+      if (fr.orient >= 0) {
+        orient = fr.orient;
+        break;
+      }
+    let f = 0;
+    const moves: DecodedMove[] = r.moves.map((m, i) => {
+      while (f < frames.length && frames[f].t < m.t) f++;
+      for (let k = f; k < frames.length && frames[k].t - m.t <= 500; k++)
+        if (frames[k].orient >= 0) {
+          orient = frames[k].orient;
+          break;
+        }
+      return { move: m.move, t0: t0s[i], t: m.t, orient, ...(m.inferred ? { inferred: true } : {}) };
+    });
+    return { moves, method: "meet", meetAt: -1, cost: r.cost, reachedEnd: true };
+  }
+
   // target: 最後の状態が分かっていれば（タイマーなら完成）、それにたどり着く仮説を選ぶ
   // onPhase: 段階を知らせる（解き直しの後に "timing"。落ちたときにどこで落ちたかを残すため: src/app/crashGuard.ts）。解き直しの間も
   // "decode" をときどき（呼ぶ側で間引く）: 本体は知らせが届かないと止まったとみなしてやり直す（controller.endAnalysis の STALL_MS）
@@ -341,9 +427,12 @@ export class Refiner {
   result(target: CubeState | null = solvedState(), onPhase?: (phase: "decode" | "timing") => void): RefineResult {
     const dec = this.engine.decoder;
     const tick = onPhase ? () => onPhase("decode") : undefined;
+    this.piecesMs = 0;
     // 前向き（スクランブル後から）と後ろ向き（完成から）の両方で解き直し、辻褄の合う所でつなぐ
-    let off: OfflineResult = decodeOffline(this.engine.observationLog, Uint8Array.from(this.input.state), target, this.lastT, { ...this.offlineOptions(), tick }, this.forward ?? undefined);
-    if (target && off.method !== "meet" && off.method !== "backward") {
+    // ステッカーの動きの方程式（RefineInput.pieces）: 完成までつながらなければ、これまでの解き直しに戻す
+    const pieces = target && this.input.pieces ? this.decodeByPieces(target, tick) : null;
+    let off: OfflineResult = pieces ?? decodeOffline(this.engine.observationLog, Uint8Array.from(this.input.state), target, this.lastT, { ...this.offlineOptions(), tick }, this.forward ?? undefined);
+    if (!pieces && target && off.method !== "meet" && off.method !== "backward") {
       const base = this.offlineOptions();
       const deep = decodeOffline(this.engine.observationLog, Uint8Array.from(this.input.state), target, this.lastT, { ...base, decoder: { ...base.decoder, ...DEEP_DECODER }, backwardMs: DEEP_BACKWARD_MS, tick });
       const guessed = (r: typeof off) => r.moves.filter((m) => m.inferred).length;
@@ -367,7 +456,7 @@ export class Refiner {
         }
       }
     }
-    this.method = off.method;
+    this.method = pieces ? (this.input.pieces === "v1" ? "pieces-v1" : "pieces") : off.method;
     // 届かなかったとき、後ろ向きが終わりから追えていた最後の手（タイムの終わりに使う）
     const tailLast = !solved && off.tail?.length ? off.tail[off.tail.length - 1] : null;
     onPhase?.("timing");
@@ -430,6 +519,26 @@ export class Refiner {
     const firstObs = this.engine.observationLog.find((o) => o.faces.length);
     const beforeWindow = !!first && !!firstObs && (first.t0 ?? first.t) <= firstObs.t;
     const refs = this.engine.colors.refs;
+    // 「どの手か」と「いつか」を分ける: 端の手が inferred（手順を 1 つに決められない: 回す量・見えない区間の並び）でも、その手の層が
+    // 動き出して止まったのがフレームから分かれば、その端の時刻は確か（edgeTiming。別の面の手と取り違えていれば層は動かず確かにならない）
+    const timingOf = (x: DecodedMove) => this.engine.timing(x);
+    let startByLayer = false;
+    let endByLayer = false;
+    if (first?.inferred && !rawStart) {
+      const e = edgeTiming(first, "start", timingOf);
+      if (e.sure && e.tm) {
+        Object.assign(first, { start: refineStart(this.patches, first, e.tm.start, refs) ?? e.tm.start, exact: true, moved: true });
+        startByLayer = true;
+      }
+    }
+    if (last?.inferred && !rawEnd) {
+      const e = edgeTiming(last, "end", timingOf);
+      if (e.sure && e.tm) {
+        Object.assign(last, { end: refineEnd(this.patches, last, e.tm.end, refs) ?? e.tm.end, endExact: true, moved: true });
+        endByLayer = true;
+        endUncertain = false;
+      }
+    }
     // 色の読みで静止フレームが見つからなかった（指で層が隠れていた）ときも、観測の時刻を手がかりに画素の差で探す
     if (first && !first.inferred && !rawStart) {
       const s = refineStart(this.patches, first, first.start, refs);
@@ -458,13 +567,15 @@ export class Refiner {
         if (e > last.end && e < last.end + OPPOSITE_WINDOW_MS) Object.assign(last, { end: e, endExact: true });
       }
     }
+    let endByLooks = false;
     if (last?.inferred && solved) {
       // 最後の手が見えていない（完成にたどり着くために足した手）: 直接見えた最後の手の後で、
-      // 完成して見え始めたフレームを回し終わりとする
+      // 完成して見え始めたフレームを回し終わりとする（層の動きで決まっていればそちら）
       const seen = [...timed].reverse().find((m) => !m.inferred);
       const after = seen ? seen.end : this.input.from;
       const i = this.looks.findIndex((x, k) => x.t > after && x.solved && this.looks[k + 1]?.solved !== false);
-      if (i > 0) {
+      endByLooks = i > 0;
+      if (i > 0 && !endByLayer) {
         last.end = (this.looks[i - 1].t + this.looks[i].t) / 2;
         last.start = Math.min(last.start, last.end);
         endUncertain = false;
@@ -479,6 +590,7 @@ export class Refiner {
       gapEnd = e ?? r.end;
       gapEndSure = !tailLast.inferred && (e !== null || r.endExact);
     }
+    this.edgeInfo = { startByLayer, endByLayer, endByLooks };
     const merged = mergeQuickRepeats(timed, undefined, undefined, separateMotions).map((m) => ({ move: m.move, orient: m.orient, start: m.start, end: Math.max(m.start, m.end), exact: m.exact, ...(m.inferred ? { inferred: true } : {}) }));
     return {
       moves: merged,
@@ -494,8 +606,10 @@ export class Refiner {
       method: this.method,
       // 端の手の層が見えず、時刻をフレームから決められなかった（観測の時刻のまま）ときも不確か。見えない層（低く構えて U・B が
       // 写らないなど）の手は、観測の時刻が数百 ms ずれることがある
-      startUncertain: !!first?.inferred || beforeWindow || !first?.exact || rawStartUnsure,
+      startUncertain: (!!first?.inferred && !startByLayer) || beforeWindow || !first?.exact || rawStartUnsure,
       endUncertain: gapEnd !== null ? !gapEndSure : endUncertain || (!!last && !last.inferred && !last.endExact) || rawEndUnsure,
+      startMoveInferred: !!first?.inferred,
+      endMoveInferred: !!last?.inferred,
       raw: timed.map((m) => ({ move: m.move, t0: m.t0, t: m.t, start: m.start, end: m.end, inferred: m.inferred })),
     };
   }

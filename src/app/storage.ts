@@ -25,6 +25,9 @@ export interface Solve {
   // 録画の精密解析: pending = 解析中（表示は速報値）/ done = 全フレームから確定 / failed = 解析できず速報値のまま
   // partial = 解析で手順は確定したが、タイムの端の一部はリアルタイムの値（端の手が写っていない・手動で止めた）
   analysis?: "pending" | "done" | "partial" | "failed";
+  // partial のとき、時刻をフレームから決められずリアルタイムの値を使った端（「時刻が分からない」）。端の手がどの手か決まらない
+  // （「手が分からない」）は moves の inferred で、時刻とは別: 端の手が inferred でも層の動きが見えていれば時刻は確か
+  liveEdges?: ("start" | "end")[];
   provisionalMs?: number; // 解析前の速報値
   video?: boolean; // 動画ファイル（スロー撮影など）を読み込んで解析した記録
   // GAN タイマー（Bluetooth）で計った: ms = タイマーのタイム（timeMs と同じ）・visionMs = 精密解析のタイム（最初の手の回し始め〜最後の手の

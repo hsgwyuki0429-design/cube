@@ -443,8 +443,10 @@ async function analyzeRecordingInner(live: LiveSpan, endT: number): Promise<void
       console.warn("スクランブルを作り直せませんでした", e);
     }
   }
+  const liveEdges: ("start" | "end")[] = how === "pad" ? [] : [...(startSure ? [] : ["start" as const]), ...(endSure ? [] : ["end" as const])];
   updateSolve(id, {
     analysis: startSure && endSure ? "done" : how === "pad" ? "done" : "partial",
+    ...(liveEdges.length ? { liveEdges } : {}),
     timeMs,
     ...padPatch,
     ...solveFields(from, result.moves, begin, timeMs),
