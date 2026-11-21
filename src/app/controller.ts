@@ -99,7 +99,7 @@ function refinePool(): Pick<RefineInput, "parallel" | "pieces"> {
   const q = typeof location === "undefined" ? null : new URLSearchParams(location.search);
   const v = q?.get("refinepool") ?? null;
   const p = q?.get("pieces");
-  return { ...(v === null || !/^\d+$/.test(v) ? {} : { parallel: Number(v) }), ...(p === "1" || p === "and" ? { pieces: "and" as const } : p === "v1" ? { pieces: "v1" as const } : {}) };
+  return { ...(v === null || !/^\d+$/.test(v) ? {} : { parallel: Number(v) }), ...(p === "1" || p === "and" ? { pieces: "and" as const } : p === "v1" ? { pieces: "v1" as const } : p === "prop" ? { pieces: "prop" as const } : {}) };
 }
 
 class Controller {

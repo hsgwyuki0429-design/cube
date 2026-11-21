@@ -80,6 +80,8 @@ export interface SolveOptions {
   propagate: boolean;
   propagateOptions?: Partial<PropagateOptions>;
   propCap: number; // 伝搬版の見え方ごとの仮説の数の上限（あふれたときだけ: その区間の手は inferred の候補）
+  propMasks: boolean; // 伝搬版: 区間の解の候補を絞った手順だけにする（比べるための切り替え）
+  propHope: boolean; // 伝搬版: 仮説を見込みつきで比べる（比べるための切り替え）
   tick?: () => void; // 進み具合の知らせ（見え方を 1 つ進めるごと。呼ぶ側で 1 秒に 1 回に間引く: vision.worker.ts の phasePoster）
   debugVerify?: (line: string) => void;
   onStep?: (info: { back: boolean; step: number; t: number; hyps: number; best: number; eqs: number; k: number }) => void;
@@ -114,6 +116,8 @@ export const DEFAULT_SOLVE: SolveOptions = {
   siblingBits: 8,
   propagate: false,
   propCap: 1024,
+  propMasks: true,
+  propHope: true,
 };
 
 // 調査用: 時間の内訳
@@ -236,9 +240,13 @@ export function strongOf(sg: Sight, strong: number): StrongSight {
 }
 
 export function solvePieces(table: PieceTable, start: CubeState, end: CubeState, options: Partial<SolveOptions & Omit<DecodeOptions, "onStep">> = {}): DecodeResult & { stats: SolveStats; reasons: Record<string, number> } {
+  return solveSights(buildSights(table, { ...DEFAULT_DECODE, ...options } as DecodeOptions), start, end, options);
+}
+
+// 見え方（buildSights）から解く（テストは見え方を直接作る）
+export function solveSights(sights: Sight[], start: CubeState, end: CubeState, options: Partial<SolveOptions & Omit<DecodeOptions, "onStep">> = {}): DecodeResult & { stats: SolveStats; reasons: Record<string, number> } {
   const began = performance.now();
   const opt = { ...DEFAULT_DECODE, ...DEFAULT_SOLVE, ...options, deadline: began + (options.budgetMs ?? DEFAULT_SOLVE.budgetMs) } as SolveOptions & DecodeOptions;
-  const sights = buildSights(table, opt);
   const n = sights.length;
   const strong = sights.map((sg) => strongOf(sg, opt.strongBits));
   const a = withCenters(piecesOf(start));
@@ -255,8 +263,9 @@ export function solvePieces(table: PieceTable, start: CubeState, end: CubeState,
     const prop = propagate(sights, strong, a, b, { moveBits: opt.moveBits, keepBits: opt.keepBits, endBits: opt.endBits, ...opt.propagateOptions });
     stats.prop = prop.stats;
     stats.pruned = 0;
-    fh = stepHints(prop, n, false);
-    bh = stepHints(prop, n, true);
+    const use = { masks: opt.propMasks, hope: opt.propHope };
+    fh = stepHints(prop, n, false, undefined, use);
+    bh = stepHints(prop, n, true, undefined, use);
     opt.tick?.();
   }
   const fg = runSteps(sights, strong, a, b, opt, false, fw, stats, fh);

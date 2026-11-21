@@ -40,8 +40,9 @@ export interface RefineInput {
   inspectUntil?: number;
   // ステッカーの動きの方程式（src/track/pieces）で先に解き直す（既定 false。比べるため）。完成までつながらなければ、これまでの解き直し
   // （decodeOffline）に戻す。CLAUDE.md の「ステッカーの動きの方程式による解き直し」。true・"and" = 区間を表の AND で解く版（solve.ts）、
-  // "v1" = 最初の版（ビームで手を 1 つずつ足す: decode.ts。比べるため）
-  pieces?: boolean | "and" | "v1";
+  // "v1" = 最初の版（ビームで手を 1 つずつ足す: decode.ts。比べるため）、"prop" = 伝搬版（区間の動きを行き先の表で持ち、区間をまたいで
+  // 絞ってから表の AND で解く: propagate.ts。CLAUDE.md の「伝搬版」）
+  pieces?: boolean | "and" | "v1" | "prop";
   piecesOptions?: { table?: Partial<PiecesTableOptions>; decode?: Partial<PiecesDecodeOptions>; solve?: Partial<PiecesSolveOptions> };
   // 検出を別の Worker に分ける（src/vision/detectPool.ts）。true はコア数から（poolSize。コアが少ない・Worker を作れないときは分けない）、
   // 数を渡すとその数（URL の ?refinepool=0・1・2）。省略時: 動画ファイルの解析は true、タイマーの解析は分けない（vision.worker.ts の Stream.par）
@@ -367,7 +368,7 @@ export class Refiner {
     const table = buildTable(this.sights, this.input.piecesOptions?.table);
     const o = this.input.piecesOptions;
     const start = Uint8Array.from(this.input.state);
-    const r = this.input.pieces === "v1" ? decodePieces(table, start, target, { ...o?.decode, tick }) : solvePieces(table, start, target, { ...withoutStep(o?.decode), ...o?.solve, tick });
+    const r = this.input.pieces === "v1" ? decodePieces(table, start, target, { ...o?.decode, tick }) : solvePieces(table, start, target, { ...withoutStep(o?.decode), ...(this.input.pieces === "prop" ? { propagate: true } : {}), ...o?.solve, tick });
     this.piecesMs = performance.now() - began;
     if (!r.reachedEnd) return null;
     const frames = table.frames;
@@ -456,7 +457,7 @@ export class Refiner {
         }
       }
     }
-    this.method = pieces ? (this.input.pieces === "v1" ? "pieces-v1" : "pieces") : off.method;
+    this.method = pieces ? (this.input.pieces === "v1" ? "pieces-v1" : this.input.pieces === "prop" ? "pieces-prop" : "pieces") : off.method;
     // 届かなかったとき、後ろ向きが終わりから追えていた最後の手（タイムの終わりに使う）
     const tailLast = !solved && off.tail?.length ? off.tail[off.tail.length - 1] : null;
     onPhase?.("timing");

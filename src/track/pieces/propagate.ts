@@ -18,7 +18,7 @@
 import type { Sight } from "./decode";
 import { IS_CORNER, NUM_PIECES } from "./model";
 import { type StrongSight } from "./solve";
-import { IDX, MAX_TABLE_K, type SeqTable, inverseIndex, positionOf, seqTable } from "./tables";
+import { IDX, MAX_TABLE_K, type SeqTable, inverseIndex, positionOf, seqTable, sequenceIndex } from "./tables";
 
 export interface PropagateOptions {
   moveBits: number;
@@ -27,13 +27,18 @@ export interface PropagateOptions {
   // ずれ）を除いて 2 + ⌊長さ / 100ms⌋ 以下（tests/debug/propBench… の PB_KSPAN）。それより多い手は長い区間（5〜8 手、solve.ts の突き合わせ）
   kBase: number;
   kPerMs: number;
-  keepBits: number; // 区間の手順の候補・仮説の見込みで残す幅（一番よいものから）
+  keepBits: number; // 仮説の見込みで残す幅（solve.ts の keepBits と同じ）
+  // 区間の手順の候補を、区間をまたぐ式（前後のコスト）で除く幅。手順 g の下限は、ほかの区間の手のコストを数えない（g を選ぶと別の区間で
+  // 余分な手が要る、が見えない）ので、一番よい下限との差は本当のコストの差より小さく出ることがある。読み違いの式が 2 本重なっても
+  // 本当の手順を落とさないよう、確かな式 3〜4 本ぶん（IMG_5048 の 5Mbps で、20 ビットでは本当の手順を除き、8 手多い別の手順を確定のまま選んだ）
+  pruneBits: number;
   localBits: number; // 区間の式で S に残す幅（読み違い 1 本 ≈ 10〜13 ビットを外した手順まで）
   sparseMax: number; // S の手順がこれ以下なら列挙して下限で絞る（それより多い区間は行き先の表だけ）
   readCap: number; // 読み 1 本の食い違いのコストの上限（ビット）。仮説の見込みに使うので、読み違いの式を 1 本外すくらいに抑える
   centerBits: number; // センターの向きの読み 1 本の重み
   endBits: number; // 始まり・終わりの状態のピース 1 個の重み
   rounds: number; // 繰り返しの上限
+  chains: boolean; // センター 1 つの面の読みも前後のコストに入れる
 }
 
 export const DEFAULT_PROPAGATE: PropagateOptions = {
@@ -41,12 +46,14 @@ export const DEFAULT_PROPAGATE: PropagateOptions = {
   kBase: 2,
   kPerMs: 100,
   keepBits: 20,
+  pruneBits: 40,
   localBits: 19.5,
   sparseMax: 8192,
   readCap: 12,
   centerBits: 10,
   endBits: 40,
   rounds: 4,
+  chains: true,
 };
 
 // 変数の並び: ピース p の位置（種類の中の番号 0〜23）= p * 24 + i、センター f の向き = CENTER0 + f * 4 + d
@@ -121,6 +128,28 @@ function readingCosts(st: StrongSight | null, all: Uint8Array | null, opt: Propa
     if (st.center[f] < 0) continue;
     for (let d = 0; d < 4; d++) c[CENTER0 + f * 4 + d] = d === st.center[f] ? 0 : Math.min(opt.centerBits, opt.readCap);
   }
+  // センター 1 つの面（置き方はその面のセンターの向き φ で決まる: solve.ts の chain）: ピースごとに「4 通りの φ のどれかの位置」なら 0。
+  // どの φ でも読めたピースだけ（φ によって読めていないなら手がかりにならない）。φ がピースどうしで同じことは使わない（ピースごとに
+  // 独立とみなした下限のまま）
+  if (opt.chains)
+    for (const ch of st.chain) {
+      const seen = new Map<number, { ok: number; w: number; n: number }>();
+      for (const v of ch.byPhi)
+        for (let i = 0; i < v.P.length; i++) {
+          const p = v.P[i];
+          if (st.to[p] >= 0) continue;
+          const o = seen.get(p) ?? { ok: 0, w: Number.POSITIVE_INFINITY, n: 0 };
+          o.ok |= 1 << IDX[v.A[i]];
+          o.w = Math.min(o.w, v.W[i]);
+          o.n++;
+          seen.set(p, o);
+        }
+      for (const [p, o] of seen) {
+        if (o.n < ch.byPhi.length) continue;
+        const w = Math.min(o.w, opt.readCap);
+        for (let i = 0; i < 24; i++) c[p * 24 + i] = o.ok & (1 << i) ? 0 : Math.max(c[p * 24 + i], w);
+      }
+    }
   return c;
 }
 
@@ -298,11 +327,11 @@ function countAll(K: number): number {
 }
 
 // 区間の行き先の表 M: 種類 c の位置 x から行ける位置（ビット）と、面 f の回した量（4 ビット）
-interface Moves {
+export interface Moves {
   pos: Uint32Array; // [c * 24 + x]
   amt: Uint8Array; // [f]
 }
-function movesOf(set: IntervalSet): Moves {
+export function movesOf(set: IntervalSet): Moves {
   const R = reach();
   const amt = new Uint8Array(6);
   if (!set.bits) {
@@ -358,6 +387,38 @@ function forEachBit(b: Uint32Array, f: (i: number) => void): void {
       f(w * 32 + bit);
     }
   }
+}
+
+// 2 つの区間を続けたときの行き先の表: x から a で y、y から b で z（ピースごとに独立: 手順の組を並べずに区間をまたぐ式を運ぶ）。
+// センターの回した量は足し算（mod 4）
+export function composeMoves(a: Moves, b: Moves): Moves {
+  const pos = new Uint32Array(48);
+  for (let c = 0; c < 2; c++)
+    for (let x = 0; x < 24; x++) {
+      let ys = a.pos[c * 24 + x];
+      while (ys) {
+        const y = 31 - Math.clz32(ys & -ys);
+        ys &= ys - 1;
+        pos[c * 24 + x] |= b.pos[c * 24 + y];
+      }
+    }
+  const amt = new Uint8Array(6);
+  for (let f = 0; f < 6; f++) for (let d = 0; d < 4; d++) for (let e = 0; e < 4; e++) if (a.amt[f] & (1 << d) && b.amt[f] & (1 << e)) amt[f] |= 1 << ((d + e) & 3);
+  return { pos, amt };
+}
+
+// 手順の並びから区間の候補を作る（テスト・調査用）
+export function setOfSequences(K: number, seqs: readonly (readonly number[])[]): IntervalSet {
+  const bits: Uint32Array[] = [];
+  for (let k = 0; k <= K; k++) bits.push(new Uint32Array(seqTable(k).words));
+  let count = 0;
+  for (const q of seqs) {
+    const i = sequenceIndex(q);
+    if (i < 0 || q.length > K) throw new Error("表にない手順");
+    if (!(bits[q.length][i >>> 5] & (1 << (i & 31)))) count++;
+    bits[q.length][i >>> 5] |= 1 << (i & 31);
+  }
+  return { K, bits, count, local: count, free: false, minLocal: 0 };
 }
 
 // 前へ: next(y) = min_{x → y} prev(x)（ピースごと、センターは回した量で）
@@ -461,7 +522,7 @@ function pruneSet(set: IntervalSet, Ain: Float32Array, Bout: Float32Array, opt: 
   }
   let removed = 0;
   for (const x of lbs)
-    if (x.lb > best + opt.keepBits) {
+    if (x.lb > best + opt.pruneBits) {
       set.bits[x.k][x.i >>> 5] &= ~(1 << (x.i & 31));
       removed++;
     }
@@ -577,7 +638,7 @@ export interface StepHints {
   masks: (Uint32Array | null)[][];
   hope: (Float32Array | null)[];
 }
-export function stepHints(prop: Propagation, n: number, back: boolean, remapMax = 20000): StepHints {
+export function stepHints(prop: Propagation, n: number, back: boolean, remapMax = 20000, use: { masks: boolean; hope: boolean } = { masks: true, hope: true }): StepHints {
   const masks: (Uint32Array | null)[][] = [];
   const hope: (Float32Array | null)[] = [];
   for (let step = 0; step <= n; step++) {
@@ -586,7 +647,8 @@ export function stepHints(prop: Propagation, n: number, back: boolean, remapMax 
     const m: (Uint32Array | null)[] = [];
     for (let k = 0; k <= MAX_TABLE_K; k++) {
       const tb = seqTable(k);
-      if (k > set.K) m.push(new Uint32Array(tb.words));
+      if (!use.masks) m.push(null);
+      else if (k > set.K) m.push(new Uint32Array(tb.words));
       else if (!set.bits) m.push(null);
       else if (!back) m.push(set.bits[k]);
       else if (set.count > remapMax) m.push(null);
@@ -602,7 +664,7 @@ export function stepHints(prop: Propagation, n: number, back: boolean, remapMax 
     }
     masks.push(m);
     // 見え方 step の後の仮説: 前向きはノード step + 1（終わりはノード n + 1）のこれから、後ろ向きはノード n − step（始まりは 0）のこれまで
-    hope.push(back ? (step < n ? prop.behind[n - step] : null) : step < n ? prop.ahead[step + 1] : null);
+    hope.push(!use.hope ? null : back ? (step < n ? prop.behind[n - step] : null) : step < n ? prop.ahead[step + 1] : null);
   }
   return { masks, hope };
 }

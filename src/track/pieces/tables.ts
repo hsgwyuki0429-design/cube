@@ -301,3 +301,24 @@ export function inverseIndex(k: number): Int32Array {
   inverses[k] = out;
   return out;
 }
+
+// 冗長でない手順の番号（表にない手順は -1）
+const indexMaps: (Map<number, number> | null)[] = new Array(MAX_TABLE_K + 1).fill(null);
+export function sequenceIndex(seq: ArrayLike<number>): number {
+  const k = seq.length;
+  if (k > MAX_TABLE_K) return -1;
+  let map = indexMaps[k];
+  if (!map) {
+    const tb = seqTable(k);
+    map = new Map();
+    for (let i = 0; i < tb.n; i++) {
+      let c = 0;
+      for (let j = 0; j < k; j++) c = c * 18 + tb.moves[i * k + j];
+      map.set(c, i);
+    }
+    indexMaps[k] = map;
+  }
+  let c = 0;
+  for (let j = 0; j < k; j++) c = c * 18 + seq[j];
+  return map.get(c) ?? -1;
+}
