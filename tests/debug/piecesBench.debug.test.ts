@@ -14,7 +14,7 @@
 import { appendFileSync, readFileSync, readdirSync } from "node:fs";
 import { it } from "vitest";
 import { type CubeState, MOVE_NAMES, applyMove, parseMoves, solvedState, statesEqual } from "../../src/cube/model";
-import { PROFILE, alignment, canonical, canonicalWithIndex, decodePieces, scoreMoves } from "../../src/track/pieces/decode";
+import { PROFILE, alignment, buildSights, canonical, canonicalWithIndex, decodePieces, scoreMoves } from "../../src/track/pieces/decode";
 import { PIECE_OF, piecesOf } from "../../src/track/pieces/model";
 import { KIND_CARRIED, KIND_DIRECT, KIND_FRAGMENT, LEN_BUCKETS, buildTable, lenBucket } from "../../src/track/pieces/table";
 import { SOLVE_PROFILE, solvePieces } from "../../src/track/pieces/solve";
@@ -219,6 +219,7 @@ it("ステッカーの動きの方程式で解き直す", async () => {
       let solved = false;
       let info = "";
       let reasons: Record<string, number> = {};
+      let stats: unknown;
       if (method === "new") {
         const tb = buildTable(sights, JSON.parse(process.env.PB_TABLE ?? "{}"));
         const dopt = JSON.parse(process.env.PB_DEC ?? "{}");
@@ -256,12 +257,59 @@ it("ステッカーの動きの方程式で解き直す", async () => {
         if (process.env.PB_VERIFY) sopt.debugVerify = (l: string) => process.stdout.write(`  確かめ ${l}\n`);
         if (process.env.PB_STEPS)
           sopt.onStep = (x: { back: boolean; step: number; t: number; hyps: number; best: number; eqs: number; k: number }) => process.stdout.write(`   ${x.back ? "←" : "→"} ${x.step} t=${(x.t / 1000).toFixed(3)} 式 ${x.eqs} k ${x.k} 仮説 ${x.hyps} 一番 ${x.best.toFixed(1)}\n`);
+        // PB_TRACK=1: 見え方ごとに、正解の状態（手の終わりの時刻で、前後 1 手まで）が仮説に残っているか
+        if (process.env.PB_TRACK) {
+          const states = [piecesOf(truth.start)];
+          let s: CubeState = truth.start;
+          for (const m of truth.moves) states.push(piecesOf((s = applyMove(s, m.move))));
+          const same = (a: Uint8Array, b: Uint8Array) => {
+            for (let p = 0; p < 20; p++) if (a[p] !== b[p]) return false;
+            return true;
+          };
+          const sg = buildSights(tb, sopt);
+          sopt.onHyps = (back: boolean, step: number, hyps: { s: Uint8Array; cost: number }[]) => {
+            const i = back ? sg.length - 1 - step : step;
+            if (i < 0 || i >= sg.length) return;
+            const t = sg[i].t0;
+            let k = 0;
+            while (k < truth.moves.length && truth.moves[k].end <= t) k++;
+            const sorted = [...hyps].sort((x, y) => x.cost - y.cost);
+            // 正解の途中の状態のどれか（時刻のない正解もあるので全部から。いちばん近い番号）
+            let found = "";
+            let bestD = Number.POSITIVE_INFINITY;
+            for (let j = 0; j < states.length; j++) {
+              const r = sorted.findIndex((h) => same(h.s, states[j]));
+              if (r >= 0 && Math.abs(j - k) < bestD) {
+                bestD = Math.abs(j - k);
+                found = `${j} 手目の状態 ${r + 1} 番目 +${(sorted[r].cost - sorted[0].cost).toFixed(1)}`;
+              }
+            }
+            process.stdout.write(`   ${back ? "←" : "→"} ${step} t=${(t / 1000).toFixed(3)} 正解 ${k} 手目 ${found || "なし"}（仮説 ${hyps.length}）\n`);
+          };
+        }
         for (const k of Object.keys(SOLVE_PROFILE)) (SOLVE_PROFILE as Record<string, number>)[k] = 0;
-        const r = solvePieces(tb, start, end, sopt);
+        const r = process.env.PB_CPU
+          ? await (async () => {
+              const { profile, summarize } = await import("./prof");
+              const p = await profile(() => solvePieces(tb, start, end, sopt));
+              process.stdout.write(`${summarize(p.nodes, p.interval, 1, 30)}\n`);
+              return p.value;
+            })()
+          : solvePieces(tb, start, end, sopt);
         if (process.env.PB_PROF) process.stdout.write(`  内訳 ${JSON.stringify(Object.fromEntries(Object.entries(SOLVE_PROFILE).map(([k, v]) => [k, Math.round(v)])))}\n`);
         moves = r.moves;
+        if (process.env.PB_SCORE) {
+          const sc = scoreMoves(tb, start, end, truth.moves.map((m) => m.move), sopt);
+          const mine = scoreMoves(tb, start, end, r.moves.map((m) => m.move), sopt);
+          process.stdout.write(`  点数: 答え ${r.cost.toFixed(1)}（割り振り直し ${mine.cost.toFixed(1)}）・正解 ${sc.cost.toFixed(1)}\n`);
+          if (process.env.PB_SCORE === "2") {
+            const a = new Map(mine.perSight.map((x) => [x.t, x.mis]));
+            for (const x of sc.perSight) if (Math.abs(x.mis - (a.get(x.t) ?? 0)) > 0.5) process.stdout.write(`    ${(x.t / 1000).toFixed(3)} 正解 ${x.mis.toFixed(1)}（${x.k} 手目）・答え ${(a.get(x.t) ?? 0).toFixed(1)}\n`);
+          }
+        }
         solved = r.reachedEnd;
         reasons = r.reasons;
+        stats = { ...r.stats, ms: Math.round(r.stats.ms) };
         info = `${r.method}・確かめ ${JSON.stringify(r.verified)}・区間 ${JSON.stringify({ ...r.stats, ms: Math.round(r.stats.ms) })}・理由 ${JSON.stringify(r.reasons)}`;
       } else {
         const raw = JSON.parse(readFileSync(`${dir}/${name}.obs.json`, "utf8")) as { lastT: number; obs: RawObs[] };
@@ -280,7 +328,7 @@ it("ステッカーの動きの方程式で解き直す", async () => {
       const dist = editDistance(got, want);
       const inferred = moves.filter((m) => m.inferred).length;
       const ws = solved ? wrongSure(moves, want) : { wrong: 0, ok: 0 };
-      const row = { name, method, solved, same: solved && dist === 0, dist, n: want.length, wrongSure: ws.wrong, inferred, ms: Math.round(ms), memMB: Math.round(mem), note: truth.note, reasons };
+      const row = { name, method, solved, same: solved && dist === 0, dist, n: want.length, wrongSure: ws.wrong, inferred, ms: Math.round(ms), memMB: Math.round(mem), note: truth.note, reasons, ...(stats ? { stats } : {}) };
       const line = `${name.padEnd(16)} ${method.padEnd(3)} ${solved ? "完成" : "未完"} ${row.same ? "正解と同じ" : `距離 ${String(dist).padStart(3)}`}/${want.length} 確定で間違い ${ws.wrong} 推定 ${String(inferred).padStart(2)} ${(ms / 1000).toFixed(1).padStart(5)}秒 メモリ +${row.memMB}MB ${info}${truth.note}`;
       out.push(line);
       process.stdout.write(`${line}\n`);

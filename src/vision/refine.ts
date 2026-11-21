@@ -223,6 +223,9 @@ export class Refiner {
   // ステッカーの動きの方程式の材料（フレームごとの読み: 面・ID・マーカーの向き・外枠。1 フレーム数百バイト）。pieces のときだけ
   private sights: SightFrame[] = [];
   piecesMs = 0; // 調査用: ステッカーの動きの方程式の解き直しにかかった時間（使わなければ 0）
+  // 調査用: タイムの端を、inferred の端の手の層の動きで確かにした（startByLayer・endByLayer）。endByLooks: 完成して見え始めたフレームでも
+  // 終わりを決められた（前の決まり「端の手が inferred なら時刻も不確か」で何本が「一部推定」だったかを数えるため）
+  edgeInfo = { startByLayer: false, endByLayer: false, endByLooks: false };
 
   constructor(
     private cv: CV,
@@ -424,6 +427,7 @@ export class Refiner {
   result(target: CubeState | null = solvedState(), onPhase?: (phase: "decode" | "timing") => void): RefineResult {
     const dec = this.engine.decoder;
     const tick = onPhase ? () => onPhase("decode") : undefined;
+    this.piecesMs = 0;
     // 前向き（スクランブル後から）と後ろ向き（完成から）の両方で解き直し、辻褄の合う所でつなぐ
     // ステッカーの動きの方程式（RefineInput.pieces）: 完成までつながらなければ、これまでの解き直しに戻す
     const pieces = target && this.input.pieces ? this.decodeByPieces(target, tick) : null;
@@ -563,13 +567,15 @@ export class Refiner {
         if (e > last.end && e < last.end + OPPOSITE_WINDOW_MS) Object.assign(last, { end: e, endExact: true });
       }
     }
-    if (last?.inferred && solved && !endByLayer) {
+    let endByLooks = false;
+    if (last?.inferred && solved) {
       // 最後の手が見えていない（完成にたどり着くために足した手）: 直接見えた最後の手の後で、
-      // 完成して見え始めたフレームを回し終わりとする
+      // 完成して見え始めたフレームを回し終わりとする（層の動きで決まっていればそちら）
       const seen = [...timed].reverse().find((m) => !m.inferred);
       const after = seen ? seen.end : this.input.from;
       const i = this.looks.findIndex((x, k) => x.t > after && x.solved && this.looks[k + 1]?.solved !== false);
-      if (i > 0) {
+      endByLooks = i > 0;
+      if (i > 0 && !endByLayer) {
         last.end = (this.looks[i - 1].t + this.looks[i].t) / 2;
         last.start = Math.min(last.start, last.end);
         endUncertain = false;
@@ -584,6 +590,7 @@ export class Refiner {
       gapEnd = e ?? r.end;
       gapEndSure = !tailLast.inferred && (e !== null || r.endExact);
     }
+    this.edgeInfo = { startByLayer, endByLayer, endByLooks };
     const merged = mergeQuickRepeats(timed, undefined, undefined, separateMotions).map((m) => ({ move: m.move, orient: m.orient, start: m.start, end: Math.max(m.start, m.end), exact: m.exact, ...(m.inferred ? { inferred: true } : {}) }));
     return {
       moves: merged,

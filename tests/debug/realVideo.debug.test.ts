@@ -23,7 +23,7 @@
 // 精密解析が完成までつながったら、その手順と時刻を本当の動きとみなして、ライブが 3D に出した状態が本当の状態と同じだった時間の割合を出す
 // （手を回している間とその後 300ms は数えない）
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { it } from "vitest";
 import { STICKERS } from "../../src/aruco/design";
 import { ARUCO_REFS } from "../../src/aruco/palette";
@@ -389,6 +389,36 @@ it("実際のプレイ動画", async () => {
     }
     const res = cached ?? refiner!.result(end);
     if (refiner && refFile) writeFileSync(refFile, JSON.stringify(res));
+    // REAL_METHODS=old,v1,and・REAL_METHODS_OUT=ファイル: 同じ読みで解き直しの方法ごとに結果を 1 行ずつ足す（REAL_PIECES=1 と一緒に:
+    // ピースの材料を集めるため）。タイムの端の前の決まり（端の手が inferred なら時刻も不確か）での不確かさも出す
+    if (refiner && process.env.REAL_METHODS && process.env.REAL_METHODS_OUT) {
+      const inp = (refiner as unknown as { input: { pieces?: boolean | "v1" | "and" } }).input;
+      for (const m of process.env.REAL_METHODS.split(",")) {
+        inp.pieces = m === "old" ? false : (m as "v1" | "and");
+        const t0 = performance.now();
+        const r = refiner.result(end);
+        const e = refiner.edgeInfo;
+        const row = {
+          name: process.env.REAL_NAME ?? file,
+          method: m,
+          used: r.method,
+          solved: r.solved,
+          moves: r.moves.map((x) => `${MOVE_NAMES[x.move]}${x.inferred ? "?" : ""}`).join(" "),
+          inferred: r.inferred,
+          start: r.start,
+          end: r.end,
+          startUncertain: r.startUncertain,
+          endUncertain: r.endUncertain,
+          startMoveInferred: r.startMoveInferred,
+          endMoveInferred: r.endMoveInferred,
+          oldStartUncertain: r.startUncertain || e.startByLayer,
+          oldEndUncertain: r.endUncertain || (e.endByLayer && !e.endByLooks),
+          ms: Math.round(performance.now() - t0),
+          piecesMs: Math.round(refiner.piecesMs),
+        };
+        appendFileSync(process.env.REAL_METHODS_OUT, JSON.stringify(row) + "\n");
+      }
+    }
     if (rstat.frames) out.push(`精密解析の読み: 精密に処理した ${rstat.frames} 枚・面なし ${((100 * rstat.empty) / rstat.frames).toFixed(1)}%・平均 ${(rstat.faces / rstat.frames).toFixed(2)} 面・ID が読めたマス 平均 ${(rstat.ids / rstat.frames).toFixed(2)}`);
     out.push(`精密解析${cached ? "（書き出した結果）" : ""} ${(refineMs / frames).toFixed(1)}ms/フレーム（渡した ${refineFrames} 枚・計 ${(refineMs / 1000).toFixed(1)} 秒）・解き直し ${(performance.now() - r0).toFixed(0)}ms・${res.method}${refiner?.deepUsed ? "（2 回目の深い解き直し）" : ""}・${res.solved ? "完成まで" : "完成に届かない"}・推定した手 ${res.moves.filter((m) => m.inferred).length}`);
     out.push(`精密解析の手順（${res.moves.length} 手） ${res.moves.map((m) => `${MOVE_NAMES[m.move]}${m.inferred ? "?" : ""}`).join(" ")}`);
