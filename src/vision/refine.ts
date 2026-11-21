@@ -1,7 +1,7 @@
 // ソルブ後の精密解析: 録画した全フレームを1枚ずつ、リアルタイムより重い設定で認識・追跡し直す。
 // 手順と、各手の開始・終了時刻（フレームの記録から求めた、誤差はフレーム間隔の半分程度）を出す。
 // OpenCV のオブジェクトは呼び出し側が渡すので、Worker でもテスト（Node）でも同じコードが動く。
-import { type CubeState, OPPOSITE, isSolved, moveFace, solvedState, statesEqual } from "../cube/model";
+import { type CubeState, OPPOSITE, applyMove, isSolved, moveFace, solvedState, statesEqual } from "../cube/model";
 import { type EngineOptions, TrackerEngine } from "../track/engine";
 import { mergeQuickRepeats, separateMotions, simplifyMoves } from "../track/merge";
 import { DEFAULT_OFFLINE, OfflineForward, type OfflineOptions, type OfflineResult, decodeOffline, finishDeep } from "../track/offline";
@@ -190,6 +190,8 @@ export function clampEarlyStart(start: number, end: number, exact: boolean, insp
 
 // 止めた時刻で打ち切った最後の手の回し終わりを、回し始めとライブが揃いを見た時刻の間で決めるとき、その間の長さの上限
 const STOP_END_SPAN_MS = 150;
+// 止めると決めたフレームまでの観測で解き直すのは、止めた時刻のこれだけ前から（ソルブ全体を解き直すと Node で 8 秒ほど延びた）
+const STOP_TAIL_MS = 3000;
 
 // 後ろ向きだけでたどり着いた始まりの状態を照らすのは、その答えの最初の手のこれだけ前までのフレーム（回し始めの動きを含めない）
 const START_GUARD_MS = 100;
@@ -484,6 +486,7 @@ export class Refiner {
   // onPhase: 段階を知らせる（解き直しの後に "timing"。落ちたときにどこで落ちたかを残すため: src/app/crashGuard.ts）。解き直しの間も
   // "decode" をときどき（呼ぶ側で間引く）: 本体は知らせが届かないと止まったとみなしてやり直す（controller.endAnalysis の STALL_MS）
   deepUsed = false; // 調査用: 2 回目の深い解き直しの結果を使った
+  stopTried = ""; // 調査用: 止めた時刻での打ち切りを試した結果（"" = 試さない・prefix・decode・decode-rejected: 理由）
   deepTimedOut = false; // 調査用: 2 回目が時間の上限で打ち切られた
   result(target: CubeState | null = solvedState(), onPhase?: (phase: "decode" | "timing") => void): RefineResult {
     const dec = this.engine.decoder;
@@ -530,6 +533,7 @@ export class Refiner {
     //      推定の手が増えず、最後の手が止めた時点の近くで回し終わるときだけ使う
     //   どちらもだめなら今のまま（ライブの誤判定に引きずられない）
     let stopCutInfo: RefineResult["stopCut"];
+    this.stopTried = "";
     const stop = this.input.stop;
     if (solved && target && isSolved(target) && stop && moves.length) {
       const timesOf = (ms: DecodedMove[]) => {
@@ -550,20 +554,29 @@ export class Refiner {
         const cut = stopCut(startState, moves, stop.at, at);
         if (cut) {
           stopCutInfo = { how: "prefix", dropped: moves.length - cut.keep };
+          this.stopTried = "prefix";
           moves = moves.slice(0, cut.keep);
           forced = moves.filter((m) => m.inferred && m.t === this.lastT).length;
         } else {
+          // 解き直すのは止めた時刻の STOP_TAIL_MS 前から（それより前の手は今の答えのまま。その時刻の状態から始める）
           const until = Math.max(stop.at, stop.until);
-          const obs = this.engine.observationLog.filter((o) => o.t <= until);
-          const again = decodeOffline(obs, Uint8Array.from(this.input.state), target, until, { ...this.offlineOptions(), tick });
+          const from = stop.at - STOP_TAIL_MS;
+          let k = moves.findIndex((m) => m.t > from);
+          if (k < 0) k = moves.length;
+          const head = moves.slice(0, k);
+          let s0: CubeState = startState;
+          for (const m of head) s0 = applyMove(s0, m.move);
+          const obs = this.engine.observationLog.filter((o) => o.t > from && o.t <= until);
+          const again = decodeOffline(obs, s0, target, until, { ...this.offlineOptions(), startCheck: undefined, tick });
           const guessed = (ms: DecodedMove[]) => ms.filter((m) => m.inferred).length;
-          if (again.reachedEnd && (again.method === "meet" || again.method === "backward") && again.moves.length && guessed(again.moves) <= guessed(moves)) {
+          this.stopTried = `decode-rejected: ${again.method}${again.reachedEnd ? "" : "・届かない"}${again.startState ? "・始まりが違う" : ""}・推定 ${guessed(again.moves)}/${guessed(moves.slice(k))}`;
+          if (again.reachedEnd && again.method === "meet" && !again.startState && again.moves.length && guessed(again.moves) <= guessed(moves.slice(k))) {
             const a2 = timesOf(again.moves);
             const end = a2(again.moves.length - 1).end;
             if (end <= stop.at + STOP_AFTER_MS && end >= stop.at - STOP_BEFORE_MS) {
               stopCutInfo = { how: "decode", dropped: after };
-              off = again;
-              moves = again.moves;
+              this.stopTried = "decode";
+              moves = [...head, ...again.moves];
               forced = 0;
             }
           }

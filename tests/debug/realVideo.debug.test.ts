@@ -439,7 +439,7 @@ it("実際のプレイ動画", async () => {
           for (const f of refiner.engine.frames.filter((f) => f.t > lm.end - 300 && f.t < lm.end + 600)) out.push(`  DBG F ${(f.t / 1000).toFixed(3)} rest=${layerAtRest(f, lm.orient, Math.floor(lm.move / 3))} faces=${f.faces.map((x) => `${x.slot}:${(x.ids ?? []).join(",")}`).join(" ")}`);
         }
         if (process.env.REAL_ENDS) out.push(`  端の手（打ち切り）: 最後 ${JSON.stringify(rc.moves.slice(-2))} raw ${JSON.stringify(rc.raw?.slice(-3))} ${JSON.stringify(refiner.edgeInfo)}`);
-        if (process.env.REAL_STOP_OUT) appendFileSync(process.env.REAL_STOP_OUT, `${JSON.stringify({ name: process.env.REAL_NAME ?? file, stop: spec, before: fmt(res), after: fmt(rc), ms })}\n`);
+        if (process.env.REAL_STOP_OUT) appendFileSync(process.env.REAL_STOP_OUT, `${JSON.stringify({ name: process.env.REAL_NAME ?? file, stop: spec, before: fmt(res), after: fmt(rc), tried: refiner.stopTried, ms })}\n`);
       }
     }
     if (rstat.frames) out.push(`精密解析の読み: 精密に処理した ${rstat.frames} 枚・面なし ${((100 * rstat.empty) / rstat.frames).toFixed(1)}%・平均 ${(rstat.faces / rstat.frames).toFixed(2)} 面・ID が読めたマス 平均 ${(rstat.ids / rstat.frames).toFixed(2)}`);
