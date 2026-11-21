@@ -50,7 +50,7 @@ export interface SolveOptions {
   keepBits: number;
   // ここから下の上限（capHyps・solLimit・maxPlans・maxMeets・maxEval・verifyLongHyps）は「上位何個」で切るためではなく、読みが少なく
   // 解が爆発する区間で時間を守るための上限: 当たった区間の手は inferred の候補にする（答えの確かめで 1 つに決まらなければ inferred）。
-  // （当たった見え方の数は piecesBench の行の stats.capped）
+  // （28 本で capHyps に当たった見え方: 1.5Mbps 5 本で 34・2.5Mbps 3 本で 4・5Mbps 2 本で 5・原画質 0。piecesBench の行の stats.capped）
   capHyps: number; // 見え方ごとの仮説の数の上限（超えた見え方だけ安い方から。その区間の手は inferred の候補）
   solLimit: number; // 1 区間の解の数の上限（超えたら安い方から: 手が分からないので inferred の候補）
   endBits: number; // 終わりの状態と違うピース 1 個のコスト
