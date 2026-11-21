@@ -10,6 +10,7 @@ import { type SolveOptions as PiecesSolveOptions, solvePieces } from "../track/p
 import { PERM, TOUCH, piecesOf } from "../track/pieces/model";
 import { type TableOptions as PiecesTableOptions, buildTable } from "../track/pieces/table";
 import { type SightFrame, sightFrame } from "../track/sight";
+import { SureLog, type StartVerdict, judgeBackwardStart } from "../track/startCheck";
 import { edgeTiming } from "../track/timing";
 import type { DecodedMove, TrackStatus } from "../track/types";
 import type { Lab } from "./color";
@@ -157,6 +158,32 @@ const EDGE_NOISE_MAX = 8; // 最初・最後の「それだけで打ち消し合
 // まとめる前の端の手の観測が、まとめた後の端の手の時刻からこれより外なら、その手の時刻をフレームから決められないときタイムの端を不確かにする
 const RAW_SLACK_MS = 100;
 
+// インスペクション中（回し始めの判定より前）の手で、その後これより長く止まったものは、タイムの端にしない（下の isolatedLead）
+export const EARLY_GAP_MS = 600;
+
+// 最初の手のうち、インスペクション中（inspectUntil より前）に回し終わり、その後 EARLY_GAP_MS より長く次の手がないもの（の数）。
+// 本当に回した手なら、その後止まっている間にリアルタイムが状態の変化を見て回し始めを判定する（startDetect: 350ms・2 観測）ので、
+// 回し始めの判定より前に離れて残った手は、インスペクション中の読み違い（持ち替え）か、案内と違うスクランブルを最初の観測で
+// 手として説明したもの（1.5Mbps の実物のソルブで、回し始めの 0.7 秒前の確定の L'。スクランブルを間違えた合成の動画で、最初の観測の
+// 確定の 4 手）。タイムの端にすると、タイムがインスペクションの分だけ長くなる。回し始めの判定の少し前から続けて回した手（リアルタイムが
+// 最初の手を取りこぼした）は、次の手まで止まらないので当てはまらない
+export function isolatedLead(moves: readonly { start: number; end: number }[], inspectUntil: number, gapMs = EARLY_GAP_MS): number {
+  let lead = 0;
+  for (let i = 0; i + 1 < moves.length && moves[i].end < inspectUntil; i++) if (moves[i + 1].start - moves[i].end >= gapMs) lead = i + 1;
+  return lead;
+}
+
+// タイムの始まりの時刻をフレームから決められなかった最初の手は、回し始めの手がかり（t0）がインスペクション中の読みのもの（まとめた
+// 手の前の方: 確定の L' と後の inferred の L2 が 1 つの L になったときの L' の t0）でありうる。不確かな開始はインスペクションの終わり
+// （inspectUntil）より前にしない（タイマーは不確かな開始がリアルタイムより早いと解析の方を使う: タイムがインスペクションの分だけ延びる）
+export function clampEarlyStart(start: number, end: number, exact: boolean, inspectUntil: number): number {
+  if (exact || !(start < inspectUntil)) return start;
+  return Math.min(end, inspectUntil);
+}
+
+// 後ろ向きだけでたどり着いた始まりの状態を照らすのは、その答えの最初の手のこれだけ前までのフレーム（回し始めの動きを含めない）
+const START_GUARD_MS = 100;
+
 // 反対の面の層の動きを、タイムの端として採る範囲（それより離れた動きは別の手）
 const OPPOSITE_WINDOW_MS = 250;
 
@@ -201,6 +228,10 @@ const BACKWARD_MS = 30000;
 // Node で 15〜25 秒かかるので、1 回目でつながったときは使わない
 const DEEP_DECODER = { beamWidth: 256, maxMovesPerStep: 4, deepHyps: Infinity };
 const DEEP_BACKWARD_MS = 60000;
+// 後ろ向きだけの答え（始まりの状態が違う）を認めなかった後の 2 回目の時間の上限（Node。iPhone では 2〜3 倍）。届かなければ 1 回目の結果
+// （終わりに届かない: タイムの終わりは後ろ向きに追えた手から）で終える。1.5Mbps の IMG_5048 で、2 回目が後ろ向き 60 秒・橋渡し・前向きを補うまで
+// 探して 1 本 133 秒かかり、それでも届かなかった
+const DEEP_AFTER_REJECT_MS = 30000;
 
 export class Refiner {
   readonly engine: TrackerEngine;
@@ -227,6 +258,9 @@ export class Refiner {
   // 調査用: タイムの端を、inferred の端の手の層の動きで確かにした（startByLayer・endByLayer）。endByLooks: 完成して見え始めたフレームでも
   // 終わりを決められた（前の決まり「端の手が inferred なら時刻も不確か」で何本が「一部推定」だったかを数えるため）
   edgeInfo = { startByLayer: false, endByLayer: false, endByLooks: false };
+  // 回し始める前に確かに読めたステッカー（後ろ向きだけでたどり着いた始まりの状態を照らす: src/track/startCheck.ts）
+  private sure = new SureLog();
+  startVerdict: StartVerdict | null = null; // 調査用: 最後に照らした結果
 
   constructor(
     private cv: CV,
@@ -261,7 +295,16 @@ export class Refiner {
   }
 
   private offlineOptions(): OfflineOptions {
-    return { decoder: { ...this.input.engine?.decoder, ...DEFAULT_OFFLINE.decoder }, personal: this.input.engine?.personal, backwardMs: BACKWARD_MS };
+    return { decoder: { ...this.input.engine?.decoder, ...DEFAULT_OFFLINE.decoder }, personal: this.input.engine?.personal, backwardMs: BACKWARD_MS, startCheck: (s, until) => this.checkBackwardStart(s, until) };
+  }
+
+  // 後ろ向きだけでたどり着いた始まりの状態を、回し始める前（その答えの最初の手の START_GUARD_MS 前まで。インスペクションの終わりが
+  // 分かっていればそこまで）の確かな読みと照らす。食い違う・確かな読みが足りなければ認めない（完成にしない）
+  private checkBackwardStart(state: CubeState, until: number): boolean {
+    const end = Math.min(until, this.inspectUntil > Number.NEGATIVE_INFINITY ? this.inspectUntil : Number.POSITIVE_INFINITY) - START_GUARD_MS;
+    const v = judgeBackwardStart(state, Uint8Array.from(this.input.state), this.sure.stable(this.input.from, end));
+    this.startVerdict = v;
+    return v.ok;
   }
 
   // 途中結果: 前向きにここまで解いた最良の仮説（遅れの表示用。ライブの追跡には反映しない）
@@ -317,6 +360,7 @@ export class Refiner {
     const r = processFrame(this.cv, img, t, this.config, this.memory, detected);
     this.onFrame?.(t, r);
     if (this.input.pieces && r.faces.length) this.sights.push(sightFrame(t, r));
+    this.sure.push(t, r.faces.map((f) => ({ slot: f.slot, ids: f.ids, w: f.weight })));
     // 基準: この格子で、処理に回したいちばん新しいフレームの色（1 か所で処理するときは、このフレーム）
     const latest = this.picked && this.picked.t > t ? this.picked.img : img;
     // 見えている面が減ったフレーム（回している途中・指）の後は、続けて精密に処理する: 残った面だけを基準にすると、回している面
@@ -425,17 +469,23 @@ export class Refiner {
   // onPhase: 段階を知らせる（解き直しの後に "timing"。落ちたときにどこで落ちたかを残すため: src/app/crashGuard.ts）。解き直しの間も
   // "decode" をときどき（呼ぶ側で間引く）: 本体は知らせが届かないと止まったとみなしてやり直す（controller.endAnalysis の STALL_MS）
   deepUsed = false; // 調査用: 2 回目の深い解き直しの結果を使った
+  deepTimedOut = false; // 調査用: 2 回目が時間の上限で打ち切られた
   result(target: CubeState | null = solvedState(), onPhase?: (phase: "decode" | "timing") => void): RefineResult {
     const dec = this.engine.decoder;
     const tick = onPhase ? () => onPhase("decode") : undefined;
     this.piecesMs = 0;
+    this.startVerdict = null;
+    this.deepTimedOut = false;
     // 前向き（スクランブル後から）と後ろ向き（完成から）の両方で解き直し、辻褄の合う所でつなぐ
     // ステッカーの動きの方程式（RefineInput.pieces）: 完成までつながらなければ、これまでの解き直しに戻す
     const pieces = target && this.input.pieces ? this.decodeByPieces(target, tick) : null;
     let off: OfflineResult = pieces ?? decodeOffline(this.engine.observationLog, Uint8Array.from(this.input.state), target, this.lastT, { ...this.offlineOptions(), tick }, this.forward ?? undefined);
     if (!pieces && target && off.method !== "meet" && off.method !== "backward") {
       const base = this.offlineOptions();
-      const deep = decodeOffline(this.engine.observationLog, Uint8Array.from(this.input.state), target, this.lastT, { ...base, decoder: { ...base.decoder, ...DEEP_DECODER }, backwardMs: DEEP_BACKWARD_MS, tick });
+      const verdict = this.startVerdict as StartVerdict | null; // 1 回目の解き直しの中で書き換わる
+      const rejected = verdict !== null && !verdict.ok;
+      const deep = decodeOffline(this.engine.observationLog, Uint8Array.from(this.input.state), target, this.lastT, { ...base, decoder: { ...base.decoder, ...DEEP_DECODER }, backwardMs: DEEP_BACKWARD_MS, tick, ...(rejected ? { deadline: performance.now() + DEEP_AFTER_REJECT_MS } : {}) });
+      this.deepTimedOut = !!deep.timedOut;
       const guessed = (r: typeof off) => r.moves.filter((m) => m.inferred).length;
       if (deep.reachedEnd && (!off.reachedEnd || guessed(deep) < guessed(off) || (guessed(deep) === guessed(off) && deep.method === "meet"))) off = deep;
       this.deepUsed = off === deep;
@@ -486,8 +536,11 @@ export class Refiner {
     };
     moves = simplifyMoves(moves, (a, b) => separateMotions(timed0(a), timed0(b)));
     const timed = moves.map(timeOf);
+    // インスペクション中に離れて残った最初の手はタイムの端にしない: 手順には残す（状態がつながるように）が inferred にし、時刻は
+    // タイムの始まり（次の手の回し始め）に寄せる
+    const lead0 = timed.length > 1 ? isolatedLead(timed, this.inspectUntil) : 0;
     // タイムの両端は画素の差で詰める（色の読みより早く動きを拾える）
-    const first = timed[0];
+    const first = timed[lead0];
     const last = timed[timed.length - 1];
     // まとめる前の端の手: 打ち消し合って消えた手（F2 B2 F2 → B2 の最後の F2）も実際に回しているので、タイムはその手の端まで。
     // 層が見えて動いたのをフレームから見つけた手だけ（そうでなければ誤読の雑音かもしれないので、まとめた後の端の手のまま。
@@ -498,7 +551,7 @@ export class Refiner {
     // 不確か（F2 B2 F2 → B2 で、最後の F2 を回している間は正面が読めなかった: B2 の終わりを「確定」にすると 276ms 短かった）
     let rawStartUnsure = false;
     let rawEndUnsure = false;
-    if (first && raw[0] && raw[0] !== moves[0] && !raw[0].inferred && raw[0].t >= this.inspectUntil) {
+    if (first && !lead0 && raw[0] && raw[0] !== moves[0] && !raw[0].inferred && raw[0].t >= this.inspectUntil) {
       const r = timeOf(raw[0]);
       if (r.exact && r.moved && r.start < first.start) {
         Object.assign(first, { start: refineStart(this.patches, r, r.start, this.engine.colors.refs) ?? r.start, exact: true });
@@ -552,7 +605,7 @@ export class Refiner {
     // 最初（最後）にある同じ軸の手のまとまりに両方の面の手があれば（D' U' など）、反対の面の層の動きも見る。
     // 同じ軸の手は順番を入れ替えても同じ状態になるので、間の状態が見えない（速い・指で隠れた）と「U D' U2」が
     // 「D' U'」と読まれ、本当は先に動いた U の層を見落とす。まとまりに反対の面の手がなければ、その層は動いていない
-    if (first && !first.inferred && !rawStart && bothFacesAt(timed, 0, 1)) {
+    if (first && !first.inferred && !rawStart && bothFacesAt(timed, lead0, 1)) {
       const o = this.opposite(first);
       const tm = this.engine.timing(o);
       if (tm?.moved) {
@@ -591,12 +644,14 @@ export class Refiner {
       gapEnd = e ?? r.end;
       gapEndSure = !tailLast.inferred && (e !== null || r.endExact);
     }
+    if (first) first.start = clampEarlyStart(first.start, first.end, first.exact, this.inspectUntil);
     this.edgeInfo = { startByLayer, endByLayer, endByLooks };
+    for (let i = 0; i < lead0; i++) Object.assign(timed[i], { inferred: true, start: first.start, end: first.start, exact: false });
     const merged = mergeQuickRepeats(timed, undefined, undefined, separateMotions).map((m) => ({ move: m.move, orient: m.orient, start: m.start, end: Math.max(m.start, m.end), exact: m.exact, ...(m.inferred ? { inferred: true } : {}) }));
     return {
       moves: merged,
       solved,
-      start: merged.length ? merged[0].start : null,
+      start: merged.length ? (lead0 ? first.start : merged[0].start) : null,
       end: gapEnd ?? (merged.length ? merged[merged.length - 1].end : null),
       ...(gapEnd !== null ? { gapped: true } : {}),
       ...(off.startState ? { startState: Array.from(off.startState) } : {}),

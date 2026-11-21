@@ -8,6 +8,7 @@ import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { it } from "vitest";
 import { type CubeState, MOVE_NAMES, VIEW, applyMove, parseMoves, solvedState } from "../../src/cube/model";
 import { stickerIds } from "../../src/cube/stickers";
+import { contradictions, stableFrames } from "../../src/track/startCheck";
 import { canonicalMoves, decodeExact } from "./lib/exact";
 
 // これまでの正解の、ソルブの始まり（手の番号。その前に長い間がある = インスペクション）
@@ -28,39 +29,8 @@ function editDistance(a: number[], b: number[]): number {
   return prev[b.length];
 }
 
-// 確かな読みのフレーム
-export function stableFrames(readings: { t: number; faces: { slot: number; ids: number[]; w?: number[] }[] }[]): { t: number; cells: [number, number][] }[] {
-  const maps = readings.map((r) => {
-    const m = new Map<number, number>();
-    for (const fc of r.faces) {
-      const n = fc.ids.filter((x, c) => x >= 0 && (fc.w?.[c] ?? 1) >= 0.85).length;
-      if (n >= 4) for (let c = 0; c < 9; c++) if (fc.ids[c] >= 0 && (fc.w?.[c] ?? 1) >= 0.85) m.set(fc.slot * 9 + c, fc.ids[c]);
-    }
-    return m;
-  });
-  const out: { t: number; cells: [number, number][] }[] = [];
-  for (let i = 2; i + 2 < maps.length; i++) {
-    const cells = [...maps[i]].filter(([p, x]) => [-2, -1, 1, 2].every((d) => maps[i + d].get(p) === x));
-    if (cells.length >= 5) out.push({ t: readings[i].t, cells });
-  }
-  return out;
-}
-
-// 手順（時刻つき）と確かな読みの食い違い: 時刻の前後 near 手の状態のどれとも合わないフレーム
-export function contradictions(start: CubeState, moves: { move: number; end: number }[], frames: { t: number; cells: [number, number][] }[], near = 3): { t: number }[] {
-  const ids = [stickerIds(start)];
-  let s = start;
-  for (const m of moves) ids.push(stickerIds((s = applyMove(s, m.move))));
-  const bad: { t: number }[] = [];
-  for (const fr of frames) {
-    const k0 = moves.filter((m) => m.end <= fr.t).length;
-    let ok = false;
-    for (let k = Math.max(0, k0 - near); k <= Math.min(ids.length - 1, k0 + near) && !ok; k++)
-      for (let o = 0; o < 24 && !ok; o++) ok = fr.cells.every(([p, x]) => ids[k][VIEW[o * 54 + p]] === x);
-    if (!ok) bad.push({ t: fr.t });
-  }
-  return bad;
-}
+// 確かな読みのフレームと、手順との食い違い（本体の精密解析の始まりの状態の確かめと同じ: src/track/startCheck.ts）
+export { contradictions, stableFrames };
 
 // 手順（時刻つき）が、直接読んだマス（4 マス以上の面）とどれだけ食い違うか（フレームごとに時刻の前後 near 手・24 姿勢で一番合う状態と）
 export function readingMismatch(start: CubeState, moves: { move: number; end: number }[], readings: { t: number; faces: { slot: number; ids: number[]; w?: number[] }[] }[], near = 2): { n: number; bad: number; badFrames: number[] } {
