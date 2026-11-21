@@ -171,6 +171,14 @@ export function isolatedLead(moves: readonly { start: number; end: number }[], i
   return lead;
 }
 
+// タイムの始まりの時刻をフレームから決められなかった最初の手は、回し始めの手がかり（t0）がインスペクション中の読みのもの（まとめた
+// 手の前の方: 確定の L' と後の inferred の L2 が 1 つの L になったときの L' の t0）でありうる。不確かな開始はインスペクションの終わり
+// （inspectUntil）より前にしない（タイマーは不確かな開始がリアルタイムより早いと解析の方を使う: タイムがインスペクションの分だけ延びる）
+export function clampEarlyStart(start: number, end: number, exact: boolean, inspectUntil: number): number {
+  if (exact || !(start < inspectUntil)) return start;
+  return Math.min(end, inspectUntil);
+}
+
 // 反対の面の層の動きを、タイムの端として採る範囲（それより離れた動きは別の手）
 const OPPOSITE_WINDOW_MS = 250;
 
@@ -608,6 +616,7 @@ export class Refiner {
       gapEnd = e ?? r.end;
       gapEndSure = !tailLast.inferred && (e !== null || r.endExact);
     }
+    if (first) first.start = clampEarlyStart(first.start, first.end, first.exact, this.inspectUntil);
     this.edgeInfo = { startByLayer, endByLayer, endByLooks };
     for (let i = 0; i < lead0; i++) Object.assign(timed[i], { inferred: true, start: first.start, end: first.start, exact: false });
     const merged = mergeQuickRepeats(timed, undefined, undefined, separateMotions).map((m) => ({ move: m.move, orient: m.orient, start: m.start, end: Math.max(m.start, m.end), exact: m.exact, ...(m.inferred ? { inferred: true } : {}) }));

@@ -5,7 +5,7 @@ import { ARUCO_REFS } from "../src/aruco/palette";
 import { type Vec3, applyMoves, inverseMove, parseMoves, solvedState } from "../src/cube/model";
 import { ARUCO_OBSERVER } from "../src/track/observer";
 import type { CV } from "../src/vision/image";
-import { EARLY_GAP_MS, Refiner, isolatedLead } from "../src/vision/refine";
+import { EARLY_GAP_MS, Refiner, clampEarlyStart, isolatedLead } from "../src/vision/refine";
 import { applyMoveStickers, renderArucoCube, solvedStickers } from "./arucoCube";
 import { loadTestOpenCv } from "./cv";
 
@@ -23,6 +23,20 @@ describe("isolatedLead", () => {
     // インスペクションの終わりが分からなければ数えない
     expect(isolatedLead([mv(12000, 12080), mv(13233, 13316)], Number.NEGATIVE_INFINITY)).toBe(0);
     expect(EARLY_GAP_MS).toBeGreaterThan(300);
+  });
+});
+
+describe("clampEarlyStart", () => {
+  it("フレームから決められなかった開始は、インスペクションの終わりより前にしない", () => {
+    // まとめた L（確定の L' の t0 = 12.0 秒、inferred の L2 の終わり 13.5 秒）、判定 12.79 秒
+    expect(clampEarlyStart(12000, 13500, false, 12790)).toBe(12790);
+    // フレームから決まった開始はそのまま（リアルタイムが最初の手を取りこぼした）
+    expect(clampEarlyStart(12000, 12100, true, 12790)).toBe(12000);
+    // 終わりより後にはしない
+    expect(clampEarlyStart(12000, 12500, false, 12790)).toBe(12500);
+    // インスペクションの終わりが分からない・後の開始はそのまま
+    expect(clampEarlyStart(12000, 13500, false, Number.NEGATIVE_INFINITY)).toBe(12000);
+    expect(clampEarlyStart(13000, 13500, false, 12790)).toBe(13000);
   });
 });
 
