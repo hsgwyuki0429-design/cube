@@ -125,6 +125,7 @@ try {
         `seed ${seed} timer: ${ok ? "OK" : "NG"} live ${(live?.timeMs / 1000).toFixed(3)}s → ${r.result?.analysis}${r.result?.refineMethod ? `(${r.result.refineMethod})` : ""} ${(r.result?.timeMs / 1000).toFixed(3)}s (truth ≈ ${(truthMs / 1000).toFixed(3)}s, ${sol.length} moves) moves ${n}${r.result?.moves.some((m) => m.inferred) ? ` 推定 ${r.result.moves.map((m, i) => (m.inferred ? i : -1)).filter((i) => i >= 0).join(",")}` : ""} tps ${r.result?.tps.toFixed(2)} ${r.result?.pad ? `pad ${JSON.stringify(r.result.pad)} ` : ""}splits ${JSON.stringify(r.result?.splits?.map((x) => [x.name, x.moves]))} 認識 ${r.processed} 枚（うち補助 ${r.helper}） rec ${r.rec ? `${r.rec.bitrate / 1e6}Mbps ${r.rec.frames} 枚・間引き ${r.rec.dropped}` : "-"} analysis-wait ${((Date.now() - waitFrom) / 1000).toFixed(1)}s ${logs.filter((l) => l.includes("[analysis]")).map((l) => l.replace(/^.*\[analysis\] /, "")).join(" / ")}`,
       );
       // 開始・停止のずれ（リアルタイムの速報値。+ = 遅い）と、インスペクションの長さ
+      console.log(`  why: ${JSON.stringify(r.result?.edges ?? null)}`);
       console.log(`  edges: start ${((r.startT - r.truthStart) / 1000).toFixed(3)}s stop ${((r.startT + (live?.timeMs ?? 0) - r.truthEnd) / 1000).toFixed(3)}s inspection ${((r.truthStart - r.inspectionStart) / 1000).toFixed(2)}s analysis ${r.result?.analysis}`);
       for (const l of logs.filter((l) => l.includes("[start]") || l.includes("[stop]"))) console.log(`  ${l}`);
       if (!ok || process.env.E2E_TRACK) {
