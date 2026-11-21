@@ -21,6 +21,10 @@ export interface OfflineOptions {
   // 後ろ向きに使う時間の上限（ms）。超えたらそこまでの後ろ向きでつなぐ・橋渡しする・前向きを補う。録画の画質が悪く後ろ向きが見失ったまま
   // 全観測を探すと、iPhone では 20 秒を超えた（結果を出すことを優先する）
   backwardMs?: number;
+  // 後ろ向きだけでたどり着いた始まりの状態（渡された始まりの状態と違う: スクランブルを間違えて回した）を認めてよいか。until: その答えの
+  // 最初の手の回し始め（それより前のフレームは始まりの状態のはず）。認めなければ backward にせず、橋渡し・前向きを補う・届かないに進む
+  // （精密解析は回し始める前に確かに読めたステッカーと照らす: src/track/startCheck.ts。渡さなければ今までどおり認める）
+  startCheck?: (state: CubeState, until: number) => boolean;
 }
 
 export const DEFAULT_OFFLINE: OfflineOptions = {
@@ -179,9 +183,14 @@ export function decodeOffline(obs: Observation[], start: CubeState, end: CubeSta
   const lostAt = (k: number) => (B[k].hyps[0]?.obsCost ?? Infinity) >= LOST_COST;
   let lostRun = false;
   for (let k = 0; k + 3 < valid.length && !lostRun; k++) lostRun = lostAt(k) && lostAt(k + 1) && lostAt(k + 2) && lostAt(k + 3);
+  // 画質が悪いと、後ろ向きが途中で別の道に入ったまま最初の観測まで着き、違う始まりの状態を返すことがある（1.5Mbps の実物のソルブ 2 本で、
+  // 確定の手が 110 手ほど正解と違った）: startCheck で回し始める前の読みと照らす
   const b0 = B[0].hyps[0];
-  if (b0 && valid.length >= 8 && !lostRun && !lostAt(0))
-    return { moves: backMoves(b0), method: "backward", meetAt: -1, cost: b0.cost + B[0].offset, reachedEnd: true, startState: Uint8Array.from(b0.state) };
+  if (b0 && valid.length >= 8 && !lostRun && !lostAt(0)) {
+    const moves = backMoves(b0);
+    const until = moves.length ? (moves[0].t0 ?? moves[0].t) : Number.POSITIVE_INFINITY;
+    if (!options.startCheck || options.startCheck(b0.state, until)) return { moves, method: "backward", meetAt: -1, cost: b0.cost + B[0].offset, reachedEnd: true, startState: Uint8Array.from(b0.state) };
+  }
   // 前後どちらも、隠れていた同じ区間で見失った: 隠れる前の前向きの仮説と、隠れた後の後ろ向きの仮説を短い手順でつなぐ
   const bridged = options.bridge === false ? null : bridge(F, B, valid, options.tick);
   if (bridged) return bridged;

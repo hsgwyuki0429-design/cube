@@ -10,6 +10,7 @@ import { type SolveOptions as PiecesSolveOptions, solvePieces } from "../track/p
 import { PERM, TOUCH, piecesOf } from "../track/pieces/model";
 import { type TableOptions as PiecesTableOptions, buildTable } from "../track/pieces/table";
 import { type SightFrame, sightFrame } from "../track/sight";
+import { SureLog, type StartVerdict, judgeBackwardStart } from "../track/startCheck";
 import { edgeTiming } from "../track/timing";
 import type { DecodedMove, TrackStatus } from "../track/types";
 import type { Lab } from "./color";
@@ -156,6 +157,9 @@ const EDGE_NOISE_MAX = 8; // 最初・最後の「それだけで打ち消し合
 // まとめる前の端の手の観測が、まとめた後の端の手の時刻からこれより外なら、その手の時刻をフレームから決められないときタイムの端を不確かにする
 const RAW_SLACK_MS = 100;
 
+// 後ろ向きだけでたどり着いた始まりの状態を照らすのは、その答えの最初の手のこれだけ前までのフレーム（回し始めの動きを含めない）
+const START_GUARD_MS = 100;
+
 // 反対の面の層の動きを、タイムの端として採る範囲（それより離れた動きは別の手）
 const OPPOSITE_WINDOW_MS = 250;
 
@@ -226,6 +230,9 @@ export class Refiner {
   // 調査用: タイムの端を、inferred の端の手の層の動きで確かにした（startByLayer・endByLayer）。endByLooks: 完成して見え始めたフレームでも
   // 終わりを決められた（前の決まり「端の手が inferred なら時刻も不確か」で何本が「一部推定」だったかを数えるため）
   edgeInfo = { startByLayer: false, endByLayer: false, endByLooks: false };
+  // 回し始める前に確かに読めたステッカー（後ろ向きだけでたどり着いた始まりの状態を照らす: src/track/startCheck.ts）
+  private sure = new SureLog();
+  startVerdict: StartVerdict | null = null; // 調査用: 最後に照らした結果
 
   constructor(
     private cv: CV,
@@ -260,7 +267,16 @@ export class Refiner {
   }
 
   private offlineOptions(): OfflineOptions {
-    return { decoder: { ...this.input.engine?.decoder, ...DEFAULT_OFFLINE.decoder }, personal: this.input.engine?.personal, backwardMs: BACKWARD_MS };
+    return { decoder: { ...this.input.engine?.decoder, ...DEFAULT_OFFLINE.decoder }, personal: this.input.engine?.personal, backwardMs: BACKWARD_MS, startCheck: (s, until) => this.checkBackwardStart(s, until) };
+  }
+
+  // 後ろ向きだけでたどり着いた始まりの状態を、回し始める前（その答えの最初の手の START_GUARD_MS 前まで。インスペクションの終わりが
+  // 分かっていればそこまで）の確かな読みと照らす。食い違う・確かな読みが足りなければ認めない（完成にしない）
+  private checkBackwardStart(state: CubeState, until: number): boolean {
+    const end = Math.min(until, this.inspectUntil > Number.NEGATIVE_INFINITY ? this.inspectUntil : Number.POSITIVE_INFINITY) - START_GUARD_MS;
+    const v = judgeBackwardStart(state, Uint8Array.from(this.input.state), this.sure.stable(this.input.from, end));
+    this.startVerdict = v;
+    return v.ok;
   }
 
   // 途中結果: 前向きにここまで解いた最良の仮説（遅れの表示用。ライブの追跡には反映しない）
@@ -316,6 +332,7 @@ export class Refiner {
     const r = processFrame(this.cv, img, t, this.config, this.memory, detected);
     this.onFrame?.(t, r);
     if (this.input.pieces && r.faces.length) this.sights.push(sightFrame(t, r));
+    this.sure.push(t, r.faces.map((f) => ({ slot: f.slot, ids: f.ids, w: f.weight })));
     // 基準: この格子で、処理に回したいちばん新しいフレームの色（1 か所で処理するときは、このフレーム）
     const latest = this.picked && this.picked.t > t ? this.picked.img : img;
     // 見えている面が減ったフレーム（回している途中・指）の後は、続けて精密に処理する: 残った面だけを基準にすると、回している面
