@@ -13,7 +13,7 @@
 // メモリは 1 回の解き直しの間に増えた最大の RSS（process.resourceUsage().maxRSS − 解き直しの前の RSS）。1 本ずつ別のプロセスで回すこと
 import { appendFileSync, readFileSync, readdirSync } from "node:fs";
 import { it } from "vitest";
-import { type CubeState, MOVE_NAMES, applyMove, parseMoves, solvedState, statesEqual } from "../../src/cube/model";
+import { type CubeState, MOVE_NAMES, OPPOSITE, applyMove, parseMoves, solvedState, statesEqual } from "../../src/cube/model";
 import { PROFILE, alignment, buildSights, canonical, canonicalWithIndex, decodePieces, scoreMoves } from "../../src/track/pieces/decode";
 import { PIECE_OF, piecesOf } from "../../src/track/pieces/model";
 import { KIND_CARRIED, KIND_DIRECT, KIND_FRAGMENT, LEN_BUCKETS, buildTable, lenBucket } from "../../src/track/pieces/table";
@@ -95,6 +95,46 @@ function wrongSure(ms: { move: number; inferred?: boolean }[], want: number[]): 
     else ok++;
   });
   return { wrong, ok };
+}
+
+// 状態で照らした「確定のまま間違えた手」: 確定の手の前と後の状態が、どちらも正解の手順の途中の状態（半回転の途中・同じ軸の 2 手の
+// 入れ替え・打ち消し合う手も含む）にこの順で出てくること。まとめた形の比べ（wrongSure）では、打ち消し合って消える確定の手（U U'）が
+// 見えない。前の手（inferred）が間違って状態がずれた後の確定の手も数えるので、多めに出る（見て確かめる）
+function wrongByState(ms: { move: number; inferred?: boolean; t?: number }[], truthMoves: { move: number }[], start: CubeState): { wrong: number; at: string[] } {
+  const key = (x: CubeState) => Array.from(x).join("");
+  const idx = new Map<string, number[]>();
+  const put = (x: CubeState, i: number) => {
+    const k = key(x);
+    const l = idx.get(k);
+    if (l) l.push(i);
+    else idx.set(k, [i]);
+  };
+  const S: CubeState[] = [start];
+  for (const m of truthMoves) S.push(applyMove(S[S.length - 1], m.move));
+  S.forEach((x, i) => put(x, i));
+  truthMoves.forEach((m, k) => {
+    const f = Math.floor(m.move / 3);
+    if (m.move % 3 === 1) {
+      put(applyMove(S[k], f * 3), k + 0.5);
+      put(applyMove(S[k], f * 3 + 2), k + 0.5);
+    }
+    const n = truthMoves[k + 1];
+    if (n && Math.floor(n.move / 3) === OPPOSITE[f]) put(applyMove(S[k], n.move), k + 0.5);
+  });
+  let s: CubeState = start;
+  let wrong = 0;
+  const at: string[] = [];
+  for (const m of ms) {
+    const a = idx.get(key(s));
+    const t = applyMove(s, m.move);
+    const b = idx.get(key(t));
+    if (!m.inferred && !(a && b && a.some((i) => b.some((j) => j >= i)))) {
+      wrong++;
+      at.push(`${MOVE_NAMES[m.move]}@${((m.t ?? 0) / 1000).toFixed(2)}`);
+    }
+    s = t;
+  }
+  return { wrong, at };
 }
 
 const KIND_NAMES = ["直接（4 マス以上の面）", "直接（1〜3 マスの欠片）", "引き継いだ ID", "センターの向き"];
@@ -328,7 +368,17 @@ it("ステッカーの動きの方程式で解き直す", async () => {
       const dist = editDistance(got, want);
       const inferred = moves.filter((m) => m.inferred).length;
       const ws = solved ? wrongSure(moves, want) : { wrong: 0, ok: 0 };
-      const row = { name, method, solved, same: solved && dist === 0, dist, n: want.length, wrongSure: ws.wrong, inferred, ms: Math.round(ms), memMB: Math.round(mem), note: truth.note, reasons, ...(stats ? { stats } : {}) };
+      // まとめた形で打ち消し合って消えた手（U U' など）のうち確定の手: まとめた形の比べ（wrongSure）には出ないので別に数える。
+      // 正解の手順にも同じ所で打ち消し合う手があれば本当に回した無駄な動きかもしれないので、正解の側の数も出す
+      const cancelled = (ms: { move: number; inferred?: boolean }[]) => {
+        const used = new Set<number>();
+        for (const x of canonicalWithIndex(ms.map((m) => m.move))) for (const k of x.idx) used.add(k);
+        return ms.map((m, k) => ({ m, k })).filter(({ k }) => !used.has(k));
+      };
+      const cancelledSure = solved ? cancelled(moves).filter(({ m }) => !m.inferred).map(({ m }) => `${MOVE_NAMES[m.move]}@${((m as { t?: number }).t ?? 0) / 1000}`) : [];
+      const cancelledTruth = cancelled(truth.moves).length;
+      const byState = solved ? wrongByState(moves, truth.moves, start) : { wrong: 0, at: [] };
+      const row = { name, method, solved, same: solved && dist === 0, dist, n: want.length, wrongSure: ws.wrong, inferred, ms: Math.round(ms), memMB: Math.round(mem), note: truth.note, reasons, cancelledSure, cancelledTruth, wrongByState: byState.wrong, wrongByStateAt: byState.at, ...(stats ? { stats } : {}) };
       const line = `${name.padEnd(16)} ${method.padEnd(3)} ${solved ? "完成" : "未完"} ${row.same ? "正解と同じ" : `距離 ${String(dist).padStart(3)}`}/${want.length} 確定で間違い ${ws.wrong} 推定 ${String(inferred).padStart(2)} ${(ms / 1000).toFixed(1).padStart(5)}秒 メモリ +${row.memMB}MB ${info}${truth.note}`;
       out.push(line);
       process.stdout.write(`${line}\n`);
