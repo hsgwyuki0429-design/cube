@@ -16,3 +16,12 @@
 
 使う: `PB_DIR=$BENCH/mat PB_TRUTH=$BENCH/truth PB_BM=$BENCH/bm npx vitest run -c vitest.debug.config.ts tests/debug/piecesBench.debug.test.ts --silent=false`。
 時間を測るときは `timed.sh`（`METHODS="old:版の worktree new:… and:…"`、1 本ずつ別のプロセスで、ほかの重い処理と並べない）→ `python3 summarize.py $BENCH/timed/rows.jsonl`
+
+## 録画の切り出しの比べ（精密解析 1b）
+
+- `crop.mjs`: 動画を「画面全体 1280」「1280 から切り出し」「元の解像度から切り出し」で圧縮する（`-threads 1`、開始をずらす数を選べる。
+  切り出しの位置は `<出力>.crop.json`）。切り出す範囲は `$BENCH/dump/<動画>_orig.read.json`（`full.sh` の読み）の面の外枠から
+- `crop-build.sh enc|mat <動画> <full|crop1280|croporig> <kbps> <ずらし>`: 圧縮（`$BENCH/cropenc`）と、ソルブだけの材料（`$BENCH/cropmat`。
+  長辺は切り出しの大きさのまま）。7 本 × 3 × 3 × 3 = 189 本は `xargs -P` で並べてよい（材料づくりは時間を測らない）
+- 解き直しは `piecesBench`（`PB_DIR=$BENCH/cropmat`）を 1 本ずつ別のプロセスで → `rows.jsonl` → `python3 cropsum.py`（`BENCH` を読む）
+- 確かめる: `cd $BENCH && sha256sum -c` に `crop-1b.sha256` を渡す（1a の元の解像度の材料 `native/` も入っている）
