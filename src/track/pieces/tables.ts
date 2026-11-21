@@ -270,3 +270,34 @@ export function sequencesBetweenStates(A: ArrayLike<number>, B: ArrayLike<number
   for (let k = 0; k <= Math.min(maxLen, MAX_MEET_K) && out.length < limit; k++) out.push(...solveExact(k, eqs, [], limit - out.length));
   return out;
 }
+
+// 手順を逆にした（逆の手を逆の順に。反対の面の 2 手は面の番号の小さい方を先に並べ直した）手順の番号: INVERSE[k][i]
+// （後ろ向きの解き直しは時間を逆にたどるので、前向きの番号で持った区間の候補を引くのに使う。propagate.ts）
+const inverses: (Int32Array | null)[] = new Array(MAX_TABLE_K + 1).fill(null);
+export function inverseIndex(k: number): Int32Array {
+  const have = inverses[k];
+  if (have) return have;
+  const tb = seqTable(k);
+  const code = (ms: ArrayLike<number>) => {
+    let c = 0;
+    for (let j = 0; j < ms.length; j++) c = c * 18 + ms[j];
+    return c;
+  };
+  const index = new Map<number, number>();
+  for (let i = 0; i < tb.n; i++) index.set(code(tb.moves.subarray(i * k, (i + 1) * k)), i);
+  const out = new Int32Array(tb.n);
+  const inv = (m: number) => ((m / 3) | 0) * 3 + [2, 1, 0][m % 3];
+  for (let i = 0; i < tb.n; i++) {
+    const r = Array.from(tb.moves.subarray(i * k, (i + 1) * k)).reverse().map(inv);
+    for (let j = 0; j + 1 < r.length; j++) {
+      const a = (r[j] / 3) | 0;
+      const b = (r[j + 1] / 3) | 0;
+      if (OPPOSITE[a] === b && a > b) [r[j], r[j + 1]] = [r[j + 1], r[j]];
+    }
+    const x = index.get(code(r));
+    if (x === undefined) throw new Error("逆の手順が表にない");
+    out[i] = x;
+  }
+  inverses[k] = out;
+  return out;
+}

@@ -37,6 +37,7 @@ import {
 import { NUM_PIECES, TOUCH, piecesOf } from "./model";
 import { CENTER_SLOT, type PieceTable, bitsOf } from "./table";
 import { type BackTable, CLS, type CenterEq, type Eq, IDX, MAX_TABLE_K, andSet, backTable, isEmpty, positionOf, seqTable, sequencesBetweenStates, solveExact } from "./tables";
+import { type PropagateOptions, type PropagateStats, type StepHints, hopeOf, propagate, stepHints } from "./propagate";
 
 export interface SolveOptions {
   moveBits: number; // 1 手のコスト（ビット）
@@ -74,6 +75,11 @@ export interface SolveOptions {
   extraK: number; // 区間の解の候補は、計画の手の数から これだけ多い手まで（弱い読みが選ぶ。確かな読みのない区間は 0〜2 手の全部）
   maxEval: number; // 1 つの仮説で点数を確かめる候補の上限
   siblingBits: number; // 1 つの仮説の子は、いちばんよい子からこれ（ビット）まで（前の版と同じ 8）
+  // 伝搬版（propagate.ts）: 区間の動きを行き先の表で持ち、区間をまたいで絞ってから解く。区間の解の候補を絞った手順だけにし、仮説は
+  // 「コスト + 見込み（前向きはこれからの読みとの食い違いの下限、後ろ向きはこれまでの）」で一番よいものから keepBits より悪いものを落とす
+  propagate: boolean;
+  propagateOptions?: Partial<PropagateOptions>;
+  propCap: number; // 伝搬版の見え方ごとの仮説の数の上限（あふれたときだけ: その区間の手は inferred の候補）
   tick?: () => void; // 進み具合の知らせ（見え方を 1 つ進めるごと。呼ぶ側で 1 秒に 1 回に間引く: vision.worker.ts の phasePoster）
   debugVerify?: (line: string) => void;
   onStep?: (info: { back: boolean; step: number; t: number; hyps: number; best: number; eqs: number; k: number }) => void;
@@ -106,6 +112,8 @@ export const DEFAULT_SOLVE: SolveOptions = {
   maxMeets: 12,
   maxEval: 48,
   siblingBits: 8,
+  propagate: false,
+  propCap: 1024,
 };
 
 // 調査用: 時間の内訳
@@ -119,6 +127,8 @@ export interface SolveStats {
   multi: number; // 最小の k の解が 2 つ以上
   capped: number; // 仮説が多すぎた見え方
   ms: number;
+  prop?: PropagateStats; // 伝搬版の区間の絞り込み
+  pruned?: number; // 伝搬版: 見込みで落とした仮説（コストだけなら残っていたもの）
 }
 
 interface Hyp {
@@ -129,7 +139,7 @@ interface Hyp {
 }
 
 // 見え方ごとの確かな式（仮説によらない部分）と、センター 1 つの面の、センターの向きごとの式
-interface StrongSight {
+export interface StrongSight {
   to: Int16Array; // ピース → 行き先（-1 = 確かな読みなし）
   w: Float32Array;
   conflicts: number; // 同じピースが違う所に読めた（重い方を使う）
@@ -141,7 +151,7 @@ interface StrongSight {
   penSlots: number[];
 }
 
-function strongOf(sg: Sight, strong: number): StrongSight {
+export function strongOf(sg: Sight, strong: number): StrongSight {
   const to = new Int16Array(NUM_PIECES).fill(-1);
   const w = new Float32Array(NUM_PIECES);
   const center = new Int8Array(6).fill(-1);
@@ -238,8 +248,19 @@ export function solvePieces(table: PieceTable, start: CubeState, end: CubeState,
   const strongRev = [...strong].reverse();
   const fw = newRun();
   const bw = newRun();
-  const fg = runSteps(sights, strong, a, b, opt, false, fw, stats);
-  const bg = runSteps(rev, strongRev, b, a, opt, true, bw, stats);
+  // 伝搬版: 区間の候補と仮説の見込み
+  let fh: StepHints | undefined;
+  let bh: StepHints | undefined;
+  if (opt.propagate) {
+    const prop = propagate(sights, strong, a, b, { moveBits: opt.moveBits, keepBits: opt.keepBits, endBits: opt.endBits, ...opt.propagateOptions });
+    stats.prop = prop.stats;
+    stats.pruned = 0;
+    fh = stepHints(prop, n, false);
+    bh = stepHints(prop, n, true);
+    opt.tick?.();
+  }
+  const fg = runSteps(sights, strong, a, b, opt, false, fw, stats, fh);
+  const bg = runSteps(rev, strongRev, b, a, opt, true, bw, stats, bh);
   let fDone = false;
   let bDone = false;
   let metT = Number.NaN;
@@ -420,7 +441,7 @@ type Plan = { k: number; cost: number; skip: number[]; long?: number[][] };
 // 表で解ける範囲（4 手まで・式を 2 本まで外す）の計画を、いちばん安いものから planBits 以内で全部（外し方・手の数ごとに 1 つ）。
 // 確かな読みが 1 本読み違っているとき、本当の手順は「外さずに合わせた別の手順」より読み違い 1 本ぶんほど高いことがある
 // （IMG_5046 の 21.0 秒: 本当は R D' R' で読み違い 1 本、外さない 4 手 U R U' D' の方が 9 ビット安かった）。exact: 外さない（終わりの状態）
-function cheapPlans(v: Variant, opt: SolveOptions, B: Uint32Array, exact = false): Plan[] {
+function cheapPlans(v: Variant, opt: SolveOptions, B: Uint32Array, exact = false, mask?: (Uint32Array | null)[]): Plan[] {
   SOLVE_PROFILE.plans++;
   const { eqs, centers } = v;
   const mb = opt.moveBits;
@@ -434,7 +455,7 @@ function cheapPlans(v: Variant, opt: SolveOptions, B: Uint32Array, exact = false
     if (p.cost < best) best = p.cost;
   };
   for (let k = 0; k <= MAX_TABLE_K; k++)
-    if (!isEmpty(andSet(k, eqs, centers, -1, B), seqTable(k).words)) {
+    if (!isEmpty(masked(andSet(k, eqs, centers, -1, B), mask?.[k], seqTable(k).words), seqTable(k).words)) {
       push({ k, cost: k * mb, skip: [] });
       break;
     }
@@ -467,6 +488,8 @@ function cheapPlans(v: Variant, opt: SolveOptions, B: Uint32Array, exact = false
       for (let w = 0; w < W; w++) {
         let bits = g[w] & ~g[D * W + w];
         if (w === W - 1 && tail) bits &= (1 << tail) - 1;
+        const mk = mask?.[k];
+        if (mk) bits &= mk[w];
         while (bits) {
           const b = 31 - Math.clz32(bits & -bits);
           bits &= bits - 1;
@@ -527,7 +550,8 @@ function cheapPlans(v: Variant, opt: SolveOptions, B: Uint32Array, exact = false
       if (c > limit()) break;
       if (doneSkip.has(i)) continue;
       let any = 0;
-      for (let w = 0; w < W && !any; w++) any = pre[i * W + w] & suf[(i + 1) * W + w];
+      const mk = mask?.[k];
+      for (let w = 0; w < W && !any; w++) any = pre[i * W + w] & suf[(i + 1) * W + w] & (mk ? mk[w] : 0xffffffff);
       if (any) {
         push({ k, cost: c, skip: [i] });
         doneSkip.add(i);
@@ -535,6 +559,12 @@ function cheapPlans(v: Variant, opt: SolveOptions, B: Uint32Array, exact = false
     }
   }
   return out.filter((p) => p.cost <= limit()).sort((x, y) => x.cost - y.cost).slice(0, opt.maxPlans);
+}
+
+// ビットの列 b に区間の候補 mask を AND する（mask がなければそのまま）
+function masked(b: Uint32Array, mask: Uint32Array | null | undefined, words: number): Uint32Array {
+  if (mask) for (let w = 0; w < words; w++) b[w] &= mask[w];
+  return b;
 }
 
 // 外す本数の数え上げのビットの列（使い回す）。SAT_PLANES − 1 本より多く外す計画は作らない（確かな読みが 1 つの見え方で 7 本以上
@@ -583,7 +613,7 @@ function realize(v: Variant, plan: Plan, opt: SolveOptions): { sols: number[][];
 
 // 1 つの見え方の区間を、仮説ごとに解く。まず全部の仮説を表の範囲で解き、5〜8 手の突き合わせは、見え方の一番よい仮説から keepBits 以内に
 // なりうる仮説だけ（突き合わせが解き直しの時間のほとんどだった）。返すのは仮説ごとの、いちばん安い計画の組（同じコストの組は全部）
-function solveStep(hyps: Hyp[], variantsOf: (h: Hyp) => Variant[], opt: SolveOptions, exact: boolean, stats: SolveStats): { h: Hyp; picks: { v: Variant; plan: Plan }[] }[] {
+function solveStep(hyps: Hyp[], variantsOf: (h: Hyp) => Variant[], opt: SolveOptions, exact: boolean, stats: SolveStats, mask?: (Uint32Array | null)[]): { h: Hyp; picks: { v: Variant; plan: Plan }[] }[] {
   SOLVE_PROFILE.calls++;
   const B = new Uint32Array(1352);
   const t0 = performance.now();
@@ -593,7 +623,7 @@ function solveStep(hyps: Hyp[], variantsOf: (h: Hyp) => Variant[], opt: SolveOpt
   const longCache = new Map<string, { maxCost: number; plan: Plan | null }>();
   const cheapOf = (v: Variant) => {
     const k = keyOf(v);
-    if (!cheapCache.has(k)) cheapCache.set(k, cheapPlans(v, opt, B, exact));
+    if (!cheapCache.has(k)) cheapCache.set(k, cheapPlans(v, opt, B, exact, mask));
     return cheapCache.get(k)!;
   };
   const jobs = hyps.map((h) => ({ h, items: variantsOf(h).map((v) => ({ v, plans: cheapOf(v) })) }));
@@ -664,7 +694,7 @@ const keyOf = (c: Cand): string | number => (c.long ? c.long.join() : c.k * 6553
 
 // 計画の解（と k + extraK 手までの解）を、手 + 読みの食い違いの下限つきで。下限は読みのあるスロットごとに、その値にした置き方の候補が
 // どれもなければ読みの重み（groupCost の下限）。手の列は確かめるときに作る（候補の数が多いので）
-function candidatesOf(s: Uint8Array, v: Variant, plan: Plan, st: StrongSight | null, opt: SolveOptions, B: Uint32Array): Cand[] {
+function candidatesOf(s: Uint8Array, v: Variant, plan: Plan, st: StrongSight | null, opt: SolveOptions, B: Uint32Array, mask?: (Uint32Array | null)[]): Cand[] {
   const out: Cand[] = [];
   const pen = st?.pen;
   const slots = st?.penSlots ?? [];
@@ -682,7 +712,7 @@ function candidatesOf(s: Uint8Array, v: Variant, plan: Plan, st: StrongSight | n
   const kMax = st ? Math.min(MAX_TABLE_K, plan.k + opt.extraK) : plan.k;
   for (let k = plan.k; k <= kMax; k++) {
     const tb = seqTable(k);
-    const bits = andSet(k, eqs, centers, -1, B);
+    const bits = masked(andSet(k, eqs, centers, -1, B), mask?.[k], tb.words);
     const img = tb.img;
     const amount = tb.amount;
     for (let w = 0; w < tb.words; w++) {
@@ -712,7 +742,7 @@ function candidatesOf(s: Uint8Array, v: Variant, plan: Plan, st: StrongSight | n
 }
 
 // 前向き（back なら後ろ向き）に見え方を 1 つずつ。結果は run に書く
-function* runSteps(sights: Sight[], strong: StrongSight[], start: Uint8Array, end: Uint8Array | null, opt: SolveOptions & DecodeOptions, back: boolean, run: Run, stats: SolveStats): Generator<number, void, void> {
+function* runSteps(sights: Sight[], strong: StrongSight[], start: Uint8Array, end: Uint8Array | null, opt: SolveOptions & DecodeOptions, back: boolean, run: Run, stats: SolveStats, hints?: StepHints): Generator<number, void, void> {
   const paths = run.paths;
   let cur: Hyp[] = [{ s: start.slice(), cost: 0, path: -1, mis: 0 }];
   const health: { t: number; v: number }[] = [];
@@ -762,7 +792,8 @@ function* runSteps(sights: Sight[], strong: StrongSight[], start: Uint8Array, en
     const B = new Uint32Array(1352);
     let parentBest = Number.POSITIVE_INFINITY;
     for (const h of cur) if (h.cost < parentBest) parentBest = h.cost;
-    for (const { h, picks } of solveStep(cur, variantsOf, opt, last, stats)) {
+    const mask = hints?.masks[step];
+    for (const { h, picks } of solveStep(cur, variantsOf, opt, last, stats, mask)) {
       if (!picks.length) {
         // 外しても解けない（読み違いが多い・仮説が違う）: 手を入れずに残す（この区間は読み違いのある区間）
         if (!last) add(h, [], "drop", true, Number.POSITIVE_INFINITY);
@@ -773,7 +804,7 @@ function* runSteps(sights: Sight[], strong: StrongSight[], start: Uint8Array, en
       for (const { v, plan } of picks) {
         eqCount = Math.max(eqCount, v.eqs.length);
         kSeen = Math.max(kSeen, plan.k);
-        const cs = candidatesOf(h.s, v, plan, last ? null : strong[step], opt, B);
+        const cs = candidatesOf(h.s, v, plan, last ? null : strong[step], opt, B, mask);
         cands.push(...cs);
         opt.onInterval?.({ back, step, state: h.s, eqs: v.eqs, centers: v.centers, k: plan.k, dropped: plan.skip.length, sols: cs.filter((c) => !c.extra).map(movesOf), extra: cs.filter((c) => c.extra).map(movesOf) });
       }
@@ -812,10 +843,30 @@ function* runSteps(sights: Sight[], strong: StrongSight[], start: Uint8Array, en
       if (multi) stats.multi++;
     }
     let all: Hyp[] = [];
-    for (const l of pool.values()) for (const h of l) if (h.cost <= best + opt.keepBits) all.push(h);
+    const hope = hints?.hope[step];
+    if (hope) {
+      // 伝搬版: コスト + 見込み（これからの・これまでの読みとの食い違いの下限）で比べる
+      let bestF = Number.POSITIVE_INFINITY;
+      const fOf = new Map<Hyp, number>();
+      for (const l of pool.values())
+        for (const h of l) {
+          const f = h.cost + hopeOf(hope, h.s);
+          fOf.set(h, f);
+          if (f < bestF) bestF = f;
+        }
+      for (const [h, f] of fOf)
+        if (f <= bestF + opt.keepBits) all.push(h);
+        else if (h.cost <= best + opt.keepBits && stats.pruned !== undefined) stats.pruned++;
+      if (all.length > opt.propCap) {
+        all.sort((x, y) => fOf.get(x)! - fOf.get(y)!);
+        all.length = opt.propCap;
+        stats.capped++;
+        for (const h of all) if (h.path >= 0 && (paths.info[h.path] >> 6) === step && !run.why.has(h.path)) run.why.set(h.path, "cap");
+      }
+    } else for (const l of pool.values()) for (const h of l) if (h.cost <= best + opt.keepBits) all.push(h);
     SOLVE_PROFILE.hyps += cur.length;
     SOLVE_PROFILE.steps++;
-    if (all.length > opt.capHyps) {
+    if (!hope && all.length > opt.capHyps) {
       all.sort((x, y) => x.cost - y.cost);
       all.length = opt.capHyps;
       stats.capped++;

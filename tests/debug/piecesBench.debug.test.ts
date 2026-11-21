@@ -291,9 +291,9 @@ it("ステッカーの動きの方程式で解き直す", async () => {
         }
         solved = r.reachedEnd;
         info = `${r.method}・確かめ ${JSON.stringify(r.verified)}・見え方 ${r.sights}・候補 ${r.expanded}・別の解 ${r.alternatives}${r.reachedEnd ? "" : `・前向き〜${((r.forwardTo ?? 0) / 1000).toFixed(2)}s・後ろ向き ${((r.backwardTo ?? 0) / 1000).toFixed(2)}s〜`}・表 ${tb.stats.used}/${sights.length} 枚（決まった ${tb.stats.sure}・続き ${tb.stats.chained}・決まらない ${tb.stats.free}・センターなし ${tb.stats.blind}・欠片 ${tb.stats.held}）`;
-      } else if (method === "and") {
+      } else if (method === "and" || method === "prop") {
         const tb = buildTable(sights, JSON.parse(process.env.PB_TABLE ?? "{}"));
-        const sopt = JSON.parse(process.env.PB_SOLVE ?? "{}");
+        const sopt = { ...JSON.parse(process.env.PB_SOLVE ?? "{}"), ...(method === "prop" ? { propagate: true, ...JSON.parse(process.env.PB_PROP ?? "{}") } : {}) };
         if (process.env.PB_VERIFY) sopt.debugVerify = (l: string) => process.stdout.write(`  確かめ ${l}\n`);
         if (process.env.PB_STEPS)
           sopt.onStep = (x: { back: boolean; step: number; t: number; hyps: number; best: number; eqs: number; k: number }) => process.stdout.write(`   ${x.back ? "←" : "→"} ${x.step} t=${(x.t / 1000).toFixed(3)} 式 ${x.eqs} k ${x.k} 仮説 ${x.hyps} 一番 ${x.best.toFixed(1)}\n`);
