@@ -6,6 +6,7 @@ import type { Lab } from "./color";
 import type { PipelineConfig } from "./pipeline";
 import type { FrameMessage, FromWorker, StreamPartial, ToWorker, VideoRefineOptions } from "./protocol";
 import type { Recording } from "./recorder";
+import type { LiveStop } from "../track/stopCut";
 import type { RefineInput, RefineResult } from "./refine";
 import type { VideoFileInfo } from "./videoFile";
 
@@ -352,12 +353,13 @@ export class RefineClient {
   }
 
   // 終わりの時刻と状態（完成なら solved）を渡し、全体の結果をもらう
-  endStream(id: number, to: number, target: ArrayLike<number> | null, progress?: (p: number) => void): Promise<RefineResult> {
+  // stop: ライブが揃ったと判断して止めた時刻（RefineInput.stop）
+  endStream(id: number, to: number, target: ArrayLike<number> | null, progress?: (p: number) => void, stop?: LiveStop): Promise<RefineResult> {
     this.partialListeners.delete(id);
     return new Promise((resolve, reject) => {
       if (!this.worker) return reject(new Error("解析の Worker がありません"));
       this.jobs.set(id, { resolve, reject, progress });
-      this.worker.postMessage({ type: "stream-end", id, to, target: target ? Array.from(target) : null } satisfies ToWorker);
+      this.worker.postMessage({ type: "stream-end", id, to, target: target ? Array.from(target) : null, ...(stop ? { stop } : {}) } satisfies ToWorker);
     });
   }
 
