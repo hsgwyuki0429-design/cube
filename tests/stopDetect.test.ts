@@ -38,6 +38,10 @@ describe("StopDetector", () => {
     expect(k).toBeGreaterThan(0);
     expect(1000 + k * 33 - 1033).toBeGreaterThanOrEqual(200);
     expect(out[k]).toBe(1033);
+    // 記録に残す理由: ID・揃いの場所にいた最少の枚数・面の数・続いたフレーム・決めるまで
+    expect(d.why).toMatchObject({ how: "ids", frames: k, hold: (k - 1) * 33 });
+    expect(d.why!.home).toBeGreaterThanOrEqual(10);
+    expect(d.why!.faces).toBeGreaterThanOrEqual(2);
   });
 
   it("持ち替えながらでも（姿勢が違っても）揃いなら止める", () => {
@@ -65,6 +69,7 @@ describe("StopDetector", () => {
     const d = new StopDetector();
     expect(run(d, Array(20).fill(solvedFront), 6000).every((x) => x === null)).toBe(true);
     expect(d.trackedSolved(6000 + 19 * 33)).toBe(true);
+    expect(d.why).toMatchObject({ how: "tracked", faces: 1 });
     // 追跡が揃いでも、見え方が揃いと食い違えば止めない
     run(d, [tpermFront], 7000);
     expect(d.trackedSolved(7000)).toBe(false);

@@ -17,7 +17,7 @@ import { mergeQuickRepeats } from "../track/merge";
 import type { RefineResult } from "../vision/refine";
 import { controller } from "./controller";
 import { settingsStore } from "./settings";
-import { type Solve, loadSolves, saveSolves } from "./storage";
+import { type Solve, type StartWhy, loadSolves, saveSolves } from "./storage";
 import { createStore } from "./store";
 
 export type TimerPhase = "idle" | "preparing" | "scrambling" | "inspection" | "solving" | "done";
@@ -70,6 +70,7 @@ let recording = false;
 let replanKey = ""; // スクランブルの案内を作り直した追跡の状態（同じ状態で何度も作り直さない）
 const startDetector = new StartDetector(); // インスペクション中に回し始めたか（src/app/startDetect.ts）
 const stopDetector = new StopDetector(); // 計測中に完成したか（src/app/stopDetect.ts）
+let startWhy: StartWhy | null = null; // 始めた理由（記録の Solve.edges）
 
 const POSTROLL_MS = 1200; // 止めた後も録画を続ける時間（最後の手の回し終わりを確かめる）
 
@@ -147,6 +148,7 @@ function onTrack(u: TrackUpdate): void {
     if (statesEqual(state, target)) {
       readyMoves = u.moves.length;
       startDetector.reset();
+      startWhy = null;
       warned8 = warned12 = false;
       controller.beep(660, 0.15);
       timerStore.set({ phase: "inspection", inspectionStart: performance.now(), guideDone: s.guide.length, guideHalf: false, guideFix: [], recomputing: false });
@@ -188,8 +190,9 @@ function onTrack(u: TrackUpdate): void {
     // 回し始めたか: 見え方が ID でスクランブルの状態から確かに変わり、層が動いたのをフレームで見たとき（src/app/startDetect.ts）
     // GAN タイマーをつないでいれば、タイマーから手を離した時に始める（src/app/ganTimer.ts）
     if (padConnected()) return;
-    const startT = startDetector.push(u, readyMoves);
+    const startT = startDetector.push(u, readyMoves, u.observation.t);
     if (startT === null) return;
+    startWhy = startDetector.why;
     beginSolve(startT, u.moves.length);
     return;
   }
@@ -214,6 +217,7 @@ function beginSolve(startT: number, liveCount: number): void {
 function onPad(e: { state: PadState; timeMs?: number }, at: number): void {
   const s = timerStore.get();
   if (e.state === PadState.RUNNING && s.phase === "inspection") {
+    startWhy = { how: "pad" };
     beginSolve(at, controller.store.get().track?.moves.length ?? readyMoves);
     return;
   }
@@ -308,6 +312,7 @@ function finish(u: TrackUpdate | null, how: StopReason, lookT?: number, pad?: Pa
     tracked: how !== "manual",
     ...(pad ? { pad: { ms: pad.ms } } : {}),
     poses: posesOf(s.startT, endT),
+    edges: { ...(startWhy ? { start: startWhy } : {}), stop: how === "look" || how === "tracked" ? (stopDetector.why ?? { how: how === "look" ? "ids" : "tracked" }) : { how } },
     ...(analyze ? { analysis: "pending" as const, provisionalMs: timeMs } : {}),
   };
   const solves = [solve, ...s.solves];

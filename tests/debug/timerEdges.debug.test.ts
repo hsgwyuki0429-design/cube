@@ -77,7 +77,7 @@ it("タイマーの開始・停止（前の判定と今の判定）", () => {
   });
   const dump = !!process.env.TE_DUMP;
   const rows: string[] = [];
-  const tot = Object.fromEntries(KINDS.map((k) => [k.kind, { early: 0, lateStart: [] as number[], falseStop: 0, noStop: 0, stopLag: [] as number[], wrongStop: 0 }]));
+  const tot = Object.fromEntries(KINDS.map((k) => [k.kind, { early: 0, lateStart: [] as number[], startErr: [] as number[], falseStop: 0, noStop: 0, stopLag: [] as number[], wrongStop: 0 }]));
   for (const set of sets) {
     const rd = JSON.parse(readFileSync(`${dir}/read-${set.name}-${set.fps}.json`, "utf8")) as { start: number[]; readings: Reading[] };
     const ref = JSON.parse(readFileSync(`${dir}/ref-${set.name}.json`, "utf8")) as RefineResult;
@@ -119,7 +119,7 @@ it("タイマーの開始・停止（前の判定と今の判定）", () => {
         newStart.frame(r.t, sight, target);
         if (u) {
           const at = newStart.push(u, readyMoves);
-          if (at !== null) start.neu = { decided: r.t, at };
+          if (at !== null) start.neu = { decided: r.t, at, note: (u.timings ?? []).slice(readyMoves).map((x, i) => `${u.moves[readyMoves + i]?.move}${x?.moved ? "m" : ""}${x?.exact ? `@${((x.start - r.t) / 1000).toFixed(2)}` : `~${(((u.moves[readyMoves + i]?.t0 ?? r.t) - r.t) / 1000).toFixed(2)}`}`).join(" ") };
         }
       }
       // ---- 停止（それぞれの開始の後）と、間違って止める判定（本当の最初の手の回し終わりの 100ms 後から、最後の手の回し終わりの 100ms 前まで）----
@@ -149,6 +149,7 @@ it("タイマーの開始・停止（前の判定と今の判定）", () => {
       const ed = e.decided === null ? null : e.decided - truthEnd;
       if (sd !== null && sd < -TOL_START) t.early++;
       else if (sd !== null) t.lateStart.push(sd);
+      if (s.at !== null) t.startErr.push(s.at - truthStart);
       if (e.decided === null) t.noStop++;
       else if (ed! < -TOL_STOP) t.falseStop++;
       else t.stopLag.push(ed!);
@@ -162,7 +163,7 @@ it("タイマーの開始・停止（前の判定と今の判定）", () => {
   const max = (a: number[]) => (a.length ? Math.max(...a) : NaN);
   for (const k of KINDS) {
     const t = tot[k.kind];
-    const startPart = k.kind === "old" || k.kind === "neu" ? `早く始まった ${t.early}/${sets.length}・始まるまでの遅れ 中央 ${(med(t.lateStart) / 1000).toFixed(2)}s 最大 ${(max(t.lateStart) / 1000).toFixed(2)}s・` : "";
+    const startPart = k.kind === "old" || k.kind === "neu" ? `早く始まった ${t.early}/${sets.length}・始まるまでの遅れ 中央 ${(med(t.lateStart) / 1000).toFixed(2)}s 最大 ${(max(t.lateStart) / 1000).toFixed(2)}s・開始の時刻の誤差 中央 ${(med(t.startErr) / 1000).toFixed(2)}s 範囲 ${(Math.min(...t.startErr) / 1000).toFixed(2)}〜${(max(t.startErr) / 1000).toFixed(2)}s・` : "";
     rows.push(`${k.label}: ${startPart}間違って止まった ${t.falseStop}・止まらなかった ${t.noStop}・止まるまで 中央 ${(med(t.stopLag) / 1000).toFixed(2)}s 最大 ${(max(t.stopLag) / 1000).toFixed(2)}s・間違って止める判定 ${t.wrongStop}`);
   }
   console.log(rows.join("\n"));

@@ -34,6 +34,32 @@ export interface Solve {
   // 回し終わり）・lead = 手を離してから回し始めるまで・tail = 回し終えてから手を置くまで（解析で両端が決まったときだけ）
   pad?: { ms: number; visionMs?: number; lead?: number; tail?: number };
   refineMethod?: string; // 精密解析の解き直しの方法（pieces = ピースの時刻表。試験中の比較用）
+  // リアルタイムのタイマーが始めた・止めた理由（src/app/startDetect.ts・stopDetect.ts）。調べるとき用で、画面には出さない
+  edges?: { start?: StartWhy; stop?: StopWhy };
+}
+
+// 開始: ids = 見え方が ID でスクランブルの状態から変わり、層が動いたのを見た / pad = GAN タイマー。
+// frames = 変わって見えたフレームの数・miss = 1 つの面で合わなかった最大の枚数・move = 層が動いたのを見た手（解析の始まりからの番号）・
+// at = 開始の時刻をどこから決めたか（first = 最初の手の動き出し / exact = 後の手の動き出し / t0 = 最初の手の前の読みが最後に見えた時刻 /
+// bound = 変わり始めたフレームから遡れる限り）・lag = 決めた時刻 − 開始の時刻（ms）
+export interface StartWhy {
+  how: "ids" | "pad";
+  frames?: number;
+  miss?: number;
+  move?: number;
+  at?: "first" | "exact" | "t0" | "bound";
+  lag?: number;
+}
+
+// 停止: ids = 揃いの見え方が続いた / tracked = 追跡の揃い（見え方で照らした）/ manual / pad。
+// home = 揃いの場所にいたステッカーの数（接し方でつながる面のまとまり）・faces = その面の数・frames = 揃いが続いたフレームの数・
+// hold = 揃いが見え始めてから止めると決めるまで（ms）
+export interface StopWhy {
+  how: "ids" | "tracked" | "manual" | "pad";
+  home?: number;
+  faces?: number;
+  frames?: number;
+  hold?: number;
 }
 
 const SOLVES_KEY = "cubevision.solves.v1";

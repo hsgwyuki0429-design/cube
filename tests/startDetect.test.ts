@@ -41,7 +41,10 @@ describe("StartDetector", () => {
     // 1 フレームだけでは始めない
     expect(d.push(update(1100, "R", [true], 1050), 0)).toBeNull();
     d.frame(1133, at(turned, 1133), target);
-    expect(d.push(update(1133, "R", [true], 1050), 0)).toBe(1050);
+    expect(d.push(update(1133, "R", [true], 1050), 0, 1133)).toBe(1050);
+    // 記録に残す理由: 2 フレーム変わって見え、最初の手（0）の層の動き出しから。決めたのは 83ms 後
+    expect(d.why).toMatchObject({ how: "ids", frames: 2, move: 0, at: "first", lag: 83 });
+    expect(d.why!.miss).toBeGreaterThanOrEqual(2);
   });
 
   it("持ち替え（全部の ID が一緒に動く）では、追跡が手を足しても始めない", () => {
@@ -86,5 +89,18 @@ describe("StartDetector", () => {
       expect(d.push(update(t, ""), 0)).toBeNull();
     }
     expect(d.push(update(t, "U", [true], t - 140), 0)).toBe(t - 140);
+  });
+
+  it("最初の手が読み違いの手（層の動き出しが分からない）なら、後の手の動き出しまで遡る", () => {
+    const d = new StartDetector();
+    const t = 7000;
+    for (let i = 0; i < 2; i++) d.frame(t + i * 33, at(turned, t + i * 33), target);
+    // 最初の手（t0 が何秒も前）は動き出しが分からず、2 手目の層が動き出したのは変わり始めたフレームの 450ms 前（変わったのに
+    // 気づくのが遅れた）。最初の手の t0 からは 300ms までしか遡らないが、動き出しが分かる手なら 600ms まで
+    const u = update(t + 33, "D R", [false, true], t - 450);
+    u.moves[0].t0 = t - 5000;
+    u.timings[0] = null;
+    expect(d.push(u, 0)).toBe(t - 450);
+    expect(d.why).toMatchObject({ move: 1, at: "exact" });
   });
 });

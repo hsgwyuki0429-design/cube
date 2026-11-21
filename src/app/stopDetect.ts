@@ -7,6 +7,7 @@
 // 止める瞬間が少し遅れても、タイムは精密解析が録画から決める。早く止めない方を優先する
 import { solvedView } from "../track/homeView";
 import type { SightFrame } from "../track/sight";
+import type { StopWhy } from "./storage";
 
 export const SOLVED_MIN = 10;
 export const SOLVED_HOLD_MS = 200;
@@ -17,7 +18,10 @@ const TRACKED_VIEW_MS = 300; // 追跡の揃いと照らす見え方は、これ
 export class StopDetector {
   private since = -1; // 揃いが見え始めたフレームの時刻（-1 = 見えていない）
   private frames = 0;
-  private last: { t: number; ok: boolean; home: number } | null = null;
+  private last: { t: number; ok: boolean; home: number; faces: number } | null = null;
+  private minHome = Infinity; // 揃いが続いた間の、揃いの場所にいたステッカーの最少の数
+  private minFaces = Infinity;
+  why: StopWhy | null = null; // 止めると決めたときの理由（記録の Solve.edges.stop）
 
   // min・holdMs: 計測で変えるとき（tests/debug/timerEdges.debug.test.ts の TE_MIN・TE_HOLD）
   constructor(private readonly opts: { min?: number; holdMs?: number } = {}) {}
@@ -26,27 +30,38 @@ export class StopDetector {
     this.since = -1;
     this.frames = 0;
     this.last = null;
+    this.why = null;
   }
 
   // 1 フレームの見え方。完成と決めたら止める時刻（揃いが見え始めたフレーム）、まだなら null
   frame(t: number, sight: SightFrame | undefined): number | null {
     if (!sight?.faces.length) return null;
     const v = solvedView(sight);
-    if (v.read) this.last = { t, ok: v.ok, home: v.home };
+    if (v.read) this.last = { t, ok: v.ok, home: v.home, faces: v.faces };
     if (!v.ok) {
       this.since = -1;
+      this.why = null;
       this.frames = 0;
       return null;
     }
     if (v.home < (this.opts.min ?? SOLVED_MIN)) return null;
-    if (this.since < 0) this.since = t;
+    if (this.since < 0) {
+      this.since = t;
+      this.minHome = this.minFaces = Infinity;
+    }
     this.frames++;
-    return this.frames >= SOLVED_HOLD_FRAMES && t - this.since >= (this.opts.holdMs ?? SOLVED_HOLD_MS) ? this.since : null;
+    this.minHome = Math.min(this.minHome, v.home);
+    this.minFaces = Math.min(this.minFaces, v.faces);
+    if (this.frames < SOLVED_HOLD_FRAMES || t - this.since < (this.opts.holdMs ?? SOLVED_HOLD_MS)) return null;
+    this.why = { how: "ids", home: this.minHome, faces: this.minFaces, frames: this.frames, hold: Math.round(t - this.since) };
+    return this.since;
   }
 
   // 追跡が揃った状態になった（t: その観測の時刻）。直近の見え方も揃いと食い違わなければ true
   trackedSolved(t: number): boolean {
     const l = this.last;
-    return !!l && l.ok && l.home >= TRACKED_MIN && Math.abs(t - l.t) <= TRACKED_VIEW_MS;
+    const ok = !!l && l.ok && l.home >= TRACKED_MIN && Math.abs(t - l.t) <= TRACKED_VIEW_MS;
+    if (ok) this.why = { how: "tracked", home: l!.home, faces: l!.faces };
+    return ok;
   }
 }
