@@ -157,6 +157,29 @@ const EDGE_NOISE_MAX = 8; // 最初・最後の「それだけで打ち消し合
 // まとめる前の端の手の観測が、まとめた後の端の手の時刻からこれより外なら、その手の時刻をフレームから決められないときタイムの端を不確かにする
 const RAW_SLACK_MS = 100;
 
+// インスペクション中（回し始めの判定より前）の手で、その後これより長く止まったものは、タイムの端にしない（下の isolatedLead）
+export const EARLY_GAP_MS = 600;
+
+// 最初の手のうち、インスペクション中（inspectUntil より前）に回し終わり、その後 EARLY_GAP_MS より長く次の手がないもの（の数）。
+// 本当に回した手なら、その後止まっている間にリアルタイムが状態の変化を見て回し始めを判定する（startDetect: 350ms・2 観測）ので、
+// 回し始めの判定より前に離れて残った手は、インスペクション中の読み違い（持ち替え）か、案内と違うスクランブルを最初の観測で
+// 手として説明したもの（1.5Mbps の実物のソルブで、回し始めの 0.7 秒前の確定の L'。スクランブルを間違えた合成の動画で、最初の観測の
+// 確定の 4 手）。タイムの端にすると、タイムがインスペクションの分だけ長くなる。回し始めの判定の少し前から続けて回した手（リアルタイムが
+// 最初の手を取りこぼした）は、次の手まで止まらないので当てはまらない
+export function isolatedLead(moves: readonly { start: number; end: number }[], inspectUntil: number, gapMs = EARLY_GAP_MS): number {
+  let lead = 0;
+  for (let i = 0; i + 1 < moves.length && moves[i].end < inspectUntil; i++) if (moves[i + 1].start - moves[i].end >= gapMs) lead = i + 1;
+  return lead;
+}
+
+// タイムの始まりの時刻をフレームから決められなかった最初の手は、回し始めの手がかり（t0）がインスペクション中の読みのもの（まとめた
+// 手の前の方: 確定の L' と後の inferred の L2 が 1 つの L になったときの L' の t0）でありうる。不確かな開始はインスペクションの終わり
+// （inspectUntil）より前にしない（タイマーは不確かな開始がリアルタイムより早いと解析の方を使う: タイムがインスペクションの分だけ延びる）
+export function clampEarlyStart(start: number, end: number, exact: boolean, inspectUntil: number): number {
+  if (exact || !(start < inspectUntil)) return start;
+  return Math.min(end, inspectUntil);
+}
+
 // 後ろ向きだけでたどり着いた始まりの状態を照らすのは、その答えの最初の手のこれだけ前までのフレーム（回し始めの動きを含めない）
 const START_GUARD_MS = 100;
 
@@ -512,8 +535,11 @@ export class Refiner {
     };
     moves = simplifyMoves(moves, (a, b) => separateMotions(timed0(a), timed0(b)));
     const timed = moves.map(timeOf);
+    // インスペクション中に離れて残った最初の手はタイムの端にしない: 手順には残す（状態がつながるように）が inferred にし、時刻は
+    // タイムの始まり（次の手の回し始め）に寄せる
+    const lead0 = timed.length > 1 ? isolatedLead(timed, this.inspectUntil) : 0;
     // タイムの両端は画素の差で詰める（色の読みより早く動きを拾える）
-    const first = timed[0];
+    const first = timed[lead0];
     const last = timed[timed.length - 1];
     // まとめる前の端の手: 打ち消し合って消えた手（F2 B2 F2 → B2 の最後の F2）も実際に回しているので、タイムはその手の端まで。
     // 層が見えて動いたのをフレームから見つけた手だけ（そうでなければ誤読の雑音かもしれないので、まとめた後の端の手のまま。
@@ -524,7 +550,7 @@ export class Refiner {
     // 不確か（F2 B2 F2 → B2 で、最後の F2 を回している間は正面が読めなかった: B2 の終わりを「確定」にすると 276ms 短かった）
     let rawStartUnsure = false;
     let rawEndUnsure = false;
-    if (first && raw[0] && raw[0] !== moves[0] && !raw[0].inferred && raw[0].t >= this.inspectUntil) {
+    if (first && !lead0 && raw[0] && raw[0] !== moves[0] && !raw[0].inferred && raw[0].t >= this.inspectUntil) {
       const r = timeOf(raw[0]);
       if (r.exact && r.moved && r.start < first.start) {
         Object.assign(first, { start: refineStart(this.patches, r, r.start, this.engine.colors.refs) ?? r.start, exact: true });
@@ -578,7 +604,7 @@ export class Refiner {
     // 最初（最後）にある同じ軸の手のまとまりに両方の面の手があれば（D' U' など）、反対の面の層の動きも見る。
     // 同じ軸の手は順番を入れ替えても同じ状態になるので、間の状態が見えない（速い・指で隠れた）と「U D' U2」が
     // 「D' U'」と読まれ、本当は先に動いた U の層を見落とす。まとまりに反対の面の手がなければ、その層は動いていない
-    if (first && !first.inferred && !rawStart && bothFacesAt(timed, 0, 1)) {
+    if (first && !first.inferred && !rawStart && bothFacesAt(timed, lead0, 1)) {
       const o = this.opposite(first);
       const tm = this.engine.timing(o);
       if (tm?.moved) {
@@ -617,12 +643,14 @@ export class Refiner {
       gapEnd = e ?? r.end;
       gapEndSure = !tailLast.inferred && (e !== null || r.endExact);
     }
+    if (first) first.start = clampEarlyStart(first.start, first.end, first.exact, this.inspectUntil);
     this.edgeInfo = { startByLayer, endByLayer, endByLooks };
+    for (let i = 0; i < lead0; i++) Object.assign(timed[i], { inferred: true, start: first.start, end: first.start, exact: false });
     const merged = mergeQuickRepeats(timed, undefined, undefined, separateMotions).map((m) => ({ move: m.move, orient: m.orient, start: m.start, end: Math.max(m.start, m.end), exact: m.exact, ...(m.inferred ? { inferred: true } : {}) }));
     return {
       moves: merged,
       solved,
-      start: merged.length ? merged[0].start : null,
+      start: merged.length ? (lead0 ? first.start : merged[0].start) : null,
       end: gapEnd ?? (merged.length ? merged[merged.length - 1].end : null),
       ...(gapEnd !== null ? { gapped: true } : {}),
       ...(off.startState ? { startState: Array.from(off.startState) } : {}),

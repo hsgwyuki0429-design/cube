@@ -246,7 +246,11 @@ facelet の直接置換テーブルを手書きすると必ず間違える。**3
 - **タイム = 最初の手の回し始め 〜 最後の手の回し終わり**。層が見えず時刻をフレームから決められない・まとめる前の端の手
   （打ち消し合って消えた手も実際に回している）が 100ms より外にありそう（`RAW_SLACK_MS`）なら、その端は不確か。**誤ったタイムを「確定」に
   しない**ことを優先する。「どの手か」と「いつか」は分ける: 端の手が inferred でも、その手の層が動き出して止まったのがフレームから
-  分かれば時刻は確か（`edgeTiming`。`RefineResult.startMoveInferred`・`endMoveInferred`、記録の `Solve.liveEdges`）
+  分かれば時刻は確か（`edgeTiming`。`RefineResult.startMoveInferred`・`endMoveInferred`、記録の `Solve.liveEdges`）。
+  インスペクション中（回し始めの判定 `inspectUntil` より前）に回し終わり、その後 600ms（`EARLY_GAP_MS`）より長く次の手がない最初の手は、
+  タイムの端にしない（`isolatedLead`: 手順には残すが inferred にし、時刻を回し始めに寄せる）。本当に回した手なら止まっている間にリアルタイムが
+  回し始めを判定するので、離れて残った手は持ち替えの読み違いか、案内と違うスクランブルを最初の観測で手として説明したもの。
+  開始の時刻をフレームから決められなかった最初の手の開始は、インスペクションの終わりより前にしない（`clampEarlyStart`）
 - **メモリ**: 復号したフレームは `VideoFrame.copyTo` で YUV のまま取り出す（canvas の getImageData を繰り返すと iPhone で落ちた）。
   橋渡しの表は直近の観測分だけ持つ。解析が終わったら解析の Worker を閉じる
 - **動画ファイルの解析**（`src/ui/VideoAnalysis.tsx`・`controller.analyzeVideo`）: スロー撮影（120・240fps）の動画を同じ `Refiner` に通す。
