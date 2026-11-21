@@ -18,7 +18,8 @@ import { PROFILE, alignment, buildSights, canonical, canonicalWithIndex, decodeP
 import { PIECE_OF, piecesOf } from "../../src/track/pieces/model";
 import { KIND_CARRIED, KIND_DIRECT, KIND_FRAGMENT, LEN_BUCKETS, buildTable, lenBucket } from "../../src/track/pieces/table";
 import { SOLVE_PROFILE, solvePieces } from "../../src/track/pieces/solve";
-import { DEFAULT_OFFLINE, type OfflineResult, decodeOffline } from "../../src/track/offline";
+import { DEFAULT_OFFLINE, type OfflineOptions, type OfflineResult, decodeOffline } from "../../src/track/offline";
+import { judgeBackwardStart, stableFrames } from "../../src/track/startCheck";
 import type { SightFrame } from "../../src/track/sight";
 import type { Observation } from "../../src/track/types";
 
@@ -69,11 +70,22 @@ function truthOf(name: string, rdStart: number[]): { start: CubeState; moves: { 
 }
 
 // 今の解き直し: 本体の精密解析と同じ（src/vision/refine.ts の result: 1 回目、前後がつながらなければ深い 2 回目）
-function oldDecode(obs: Observation[], start: CubeState, end: CubeState, lastT: number): OfflineResult {
-  const base = { decoder: { beamWidth: 32, maxMovesPerStep: 3, rotationCost: 1.5, ...DEFAULT_OFFLINE.decoder }, backwardMs: 30000 };
+// 後ろ向きだけでたどり着いた始まりの状態は、回し始める前の確かな読みと照らす（Refiner.checkBackwardStart と同じ。インスペクションの
+// 終わりは書き出しにないので、答えの最初の手まで）
+function oldDecode(obs: Observation[], start: CubeState, end: CubeState, lastT: number, readings?: Reading[]): OfflineResult {
+  let rejected = false;
+  const startCheck: OfflineOptions["startCheck"] = readings
+    ? (s, until) => {
+        const ok = judgeBackwardStart(s, start, stableFrames(readings.filter((r) => r.t < until - 100))).ok;
+        if (!ok) rejected = true;
+        return ok;
+      }
+    : undefined;
+  const base = { decoder: { beamWidth: 32, maxMovesPerStep: 3, rotationCost: 1.5, ...DEFAULT_OFFLINE.decoder }, backwardMs: 30000, startCheck };
   let off = decodeOffline(obs, start, end, lastT, base);
   if (off.method !== "meet" && off.method !== "backward") {
-    const deep = decodeOffline(obs, start, end, lastT, { ...base, decoder: { ...base.decoder, beamWidth: 256, maxMovesPerStep: 4, deepHyps: Infinity }, backwardMs: 60000 });
+    // 後ろ向きだけの答えを認めなかった後は 30 秒まで（refine.ts の DEEP_AFTER_REJECT_MS）
+    const deep = decodeOffline(obs, start, end, lastT, { ...base, decoder: { ...base.decoder, beamWidth: 256, maxMovesPerStep: 4, deepHyps: Infinity }, backwardMs: 60000, ...(rejected ? { deadline: performance.now() + 30000 } : {}) });
     const guessed = (r: OfflineResult) => r.moves.filter((m) => m.inferred).length;
     if (deep.reachedEnd && (!off.reachedEnd || guessed(deep) < guessed(off) || (guessed(deep) === guessed(off) && deep.method === "meet"))) off = deep;
   }
@@ -357,7 +369,7 @@ it("ステッカーの動きの方程式で解き直す", async () => {
           ...o,
           faces: o.faces.map((f) => ({ slot: f.slot, cost: Float32Array.from(f.cost), labels: Int8Array.from(f.labels), ...(f.ids ? { ids: Int16Array.from(f.ids), idCost: Float32Array.from(f.idCost!) } : {}) })),
         }));
-        const r = oldDecode(obs, start, end, raw.lastT);
+        const r = oldDecode(obs, start, end, raw.lastT, process.env.PB_NOSTARTCHECK ? undefined : rd.readings);
         moves = r.moves;
         solved = r.reachedEnd && !(r.startState && !statesEqual(r.startState, start));
         info = `${r.method}・観測 ${obs.length}`;
