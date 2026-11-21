@@ -11,6 +11,7 @@ import { PERM, TOUCH, piecesOf } from "../track/pieces/model";
 import { type TableOptions as PiecesTableOptions, buildTable } from "../track/pieces/table";
 import { type SightFrame, sightFrame } from "../track/sight";
 import { SureLog, type StartVerdict, judgeBackwardStart } from "../track/startCheck";
+import { type LiveStop, STOP_AFTER_MS, STOP_BEFORE_MS, stopCut } from "../track/stopCut";
 import { edgeTiming } from "../track/timing";
 import type { DecodedMove, TrackStatus } from "../track/types";
 import type { Lab } from "./color";
@@ -47,6 +48,10 @@ export interface RefineInput {
   // 検出を別の Worker に分ける（src/vision/detectPool.ts）。true はコア数から（poolSize。コアが少ない・Worker を作れないときは分けない）、
   // 数を渡すとその数（URL の ?refinepool=0・1・2）。省略時: 動画ファイルの解析は true、タイマーの解析は分けない（vision.worker.ts の Stream.par）
   parallel?: boolean | number;
+  // ライブが揃ったと判断して止めた時刻（ms。at = 見え方の揃いが見え始めたフレーム: Solve.edges.stop の hold の始まり、until = 止めると
+  // 決めたフレーム）。完成までつながったら、手順をこの時刻より前の最後の揃いで打ち切る（src/track/stopCut.ts。止めた後の手は数えない）。
+  // 手動・GAN タイマーで止めたときは渡さない
+  stop?: LiveStop;
 }
 
 // 軽い検査: 全フレームを精密に処理する代わりに、前に精密に処理したフレーム（基準）の面の格子で、各マスの真ん中あたりの色を数点だけ測り
@@ -150,6 +155,9 @@ export interface RefineResult {
   endUncertain: boolean; // 終了時刻をフレームから決められなかった
   startMoveInferred: boolean; // 最初の手がどの手か決まらなかった（inferred）
   endMoveInferred: boolean; // 最後の手がどの手か決まらなかった
+  // 止めた時刻（RefineInput.stop）で手順を打ち切った（src/track/stopCut.ts）。how = prefix（手順の途中の揃いで切った）/ decode（止めると
+  // 決めたフレームまでの観測で解き直した）、dropped = 止めた時刻より後に回し終わる手として外した手の数（まとめる前）。打ち切らなければ無い
+  stopCut?: { how: "prefix" | "decode"; dropped: number };
   raw?: { move: number; t0?: number; t: number; start: number; end: number; inferred?: boolean }[]; // まとめる前の手（調査用）
 }
 
@@ -179,6 +187,9 @@ export function clampEarlyStart(start: number, end: number, exact: boolean, insp
   if (exact || !(start < inspectUntil)) return start;
   return Math.min(end, inspectUntil);
 }
+
+// 止めた時刻で打ち切った最後の手の回し終わりを、回し始めとライブが揃いを見た時刻の間で決めるとき、その間の長さの上限
+const STOP_END_SPAN_MS = 150;
 
 // 後ろ向きだけでたどり着いた始まりの状態を照らすのは、その答えの最初の手のこれだけ前までのフレーム（回し始めの動きを含めない）
 const START_GUARD_MS = 100;
@@ -291,6 +302,11 @@ export class Refiner {
   // 解析する範囲の終わりを決める（ソルブ中から解析していて、止めた時刻が分かったとき）
   setEnd(to: number): void {
     this.input.to = to;
+  }
+
+  // ライブが揃ったと判断して止めた時刻（RefineInput.stop）
+  setStop(stop: LiveStop | undefined): void {
+    this.input.stop = stop;
   }
 
   private offlineOptions(): OfflineOptions {
@@ -506,6 +522,54 @@ export class Refiner {
         }
       }
     }
+    // ライブが揃ったと判断して止めた時刻より後の手は数えない（WCA と同じ: 止めた時点でタイムが決まる）。完成までつながり、止めた後に
+    // 回し終わる手があるときだけ（src/track/stopCut.ts）:
+    //   1) 手順の途中で、止めた時点の前後に揃いがあれば、そこで切る
+    //   2) なければ、止めると決めたフレームまで（揃って見えていた所まで）の観測だけで、完成を終わりとして解き直す。止めた後の往復
+    //      （IMG_5049 の上の層の D'・D）を、前の手とまとめて最後の手として読んでいると、手順の途中に揃いが出てこない。前後がつながり、
+    //      推定の手が増えず、最後の手が止めた時点の近くで回し終わるときだけ使う
+    //   どちらもだめなら今のまま（ライブの誤判定に引きずられない）
+    let stopCutInfo: RefineResult["stopCut"];
+    const stop = this.input.stop;
+    if (solved && target && isSolved(target) && stop && moves.length) {
+      const timesOf = (ms: DecodedMove[]) => {
+        const cache = new Map<number, { start: number; end: number }>();
+        return (i: number) => {
+          let r = cache.get(i);
+          if (!r) {
+            const tm = this.engine.timing(ms[i]);
+            cache.set(i, (r = { start: tm?.start ?? ms[i].t0 ?? ms[i].t, end: tm?.end ?? ms[i].t }));
+          }
+          return r;
+        };
+      };
+      const at = timesOf(moves);
+      const after = moves.filter((_, i) => at(i).end > stop.at + STOP_AFTER_MS).length;
+      if (after > 0) {
+        const startState = off.reachedEnd && off.startState ? off.startState : Uint8Array.from(this.input.state);
+        const cut = stopCut(startState, moves, stop.at, at);
+        if (cut) {
+          stopCutInfo = { how: "prefix", dropped: moves.length - cut.keep };
+          moves = moves.slice(0, cut.keep);
+          forced = moves.filter((m) => m.inferred && m.t === this.lastT).length;
+        } else {
+          const until = Math.max(stop.at, stop.until);
+          const obs = this.engine.observationLog.filter((o) => o.t <= until);
+          const again = decodeOffline(obs, Uint8Array.from(this.input.state), target, until, { ...this.offlineOptions(), tick });
+          const guessed = (ms: DecodedMove[]) => ms.filter((m) => m.inferred).length;
+          if (again.reachedEnd && (again.method === "meet" || again.method === "backward") && again.moves.length && guessed(again.moves) <= guessed(moves)) {
+            const a2 = timesOf(again.moves);
+            const end = a2(again.moves.length - 1).end;
+            if (end <= stop.at + STOP_AFTER_MS && end >= stop.at - STOP_BEFORE_MS) {
+              stopCutInfo = { how: "decode", dropped: after };
+              off = again;
+              moves = again.moves;
+              forced = 0;
+            }
+          }
+        }
+      }
+    }
     this.method = pieces ? (this.input.pieces === "v1" ? "pieces-v1" : "pieces") : off.method;
     // 届かなかったとき、後ろ向きが終わりから追えていた最後の手（タイムの終わりに使う）
     const tailLast = !solved && off.tail?.length ? off.tail[off.tail.length - 1] : null;
@@ -634,6 +698,17 @@ export class Refiner {
         endUncertain = false;
       }
     }
+    // 止めた時刻で打ち切った（stopCut）のに、最後の手の回し終わりが層の動きから決まらない（IMG_5049: 上の層が見えにくい向きで、
+    // 回し終わりの後のフレームはほとんど読めない）: 回し始めがフレームから決まっていて、ライブが揃いを見た時刻（stop.at）がその
+    // STOP_END_SPAN_MS 以内なら、回し終わりはその間にある。間の真ん中にする（誤差は間の半分まで）
+    if (stopCutInfo && stop && last && !last.inferred && !last.endExact && last.exact && solved) {
+      const from = Math.max(last.start, timed.length > 1 ? timed[timed.length - 2].end : last.start);
+      if (stop.at >= from && stop.at - from <= STOP_END_SPAN_MS) {
+        last.end = (from + stop.at) / 2;
+        last.endExact = true;
+        endByLooks = true;
+      }
+    }
     // 完成までつながらなかった: 終わりの時刻は、後ろ向きに追えた最後の手の回し終わり（フレームから決まったときだけ確か）
     let gapEnd: number | null = null;
     let gapEndSure = false;
@@ -665,6 +740,7 @@ export class Refiner {
       endUncertain: gapEnd !== null ? !gapEndSure : endUncertain || (!!last && !last.inferred && !last.endExact) || rawEndUnsure,
       startMoveInferred: !!first?.inferred,
       endMoveInferred: !!last?.inferred,
+      ...(stopCutInfo ? { stopCut: stopCutInfo } : {}),
       raw: timed.map((m) => ({ move: m.move, t0: m.t0, t: m.t, start: m.start, end: m.end, inferred: m.inferred })),
     };
   }

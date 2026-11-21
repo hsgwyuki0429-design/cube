@@ -33,6 +33,7 @@ import { PARTNERS, stickerIds } from "../../src/cube/stickers";
 import { MoveDecoder, observationCost } from "../../src/track/decoder";
 import { TrackerEngine } from "../../src/track/engine";
 import { simplifyMoves } from "../../src/track/merge";
+import { layerAtRest } from "../../src/track/timing";
 import { ARUCO_OBSERVER, type FrameReading, LIVE_OBSERVER } from "../../src/track/observer";
 import { DEFAULT_OFFLINE, reversedObservations } from "../../src/track/offline";
 import { liveStats } from "../../src/vision/arucoFrame";
@@ -417,6 +418,28 @@ it("実際のプレイ動画", async () => {
           piecesMs: Math.round(refiner.piecesMs),
         };
         appendFileSync(process.env.REAL_METHODS_OUT, JSON.stringify(row) + "\n");
+      }
+    }
+    // REAL_STOP=44.97 または 44.93,45.13（秒。ライブが揃ったと判断して止めた: 揃いが見え始めたフレーム・止めると決めたフレーム）。
+    // "|" で区切って複数: 同じ読みで、止めた時刻で打ち切った結果も出す（RefineInput.stop。src/track/stopCut.ts）。REAL_STOP_OUT=ファイルに、
+    // 打ち切らない結果と打ち切った結果を 1 行ずつ足す。REAL_TIMING_DBG=1: 打ち切った最後の手の前後のフレーム
+    if (refiner && process.env.REAL_STOP) {
+      const fmt = (r: RefineResult) => ({ solved: r.solved, method: r.method, n: r.moves.length, moves: r.moves.map((x) => `${MOVE_NAMES[x.move]}${x.inferred ? "?" : ""}`).join(" "), inferred: r.inferred, start: r.start, end: r.end, startUncertain: r.startUncertain, endUncertain: r.endUncertain, startState: r.startState ?? null, stopCut: r.stopCut ?? null });
+      for (const spec of process.env.REAL_STOP.split("|")) {
+        const [a, b] = spec.split(",").map((x) => Number(x) * 1000);
+        refiner.setStop({ at: a, until: b ?? a });
+        const t0 = performance.now();
+        const rc = refiner.result(end);
+        refiner.setStop(undefined);
+        const ms = Math.round(performance.now() - t0);
+        out.push(`止めた時刻（${spec} 秒）で打ち切った精密解析（${ms}ms）: ${rc.stopCut ? JSON.stringify(rc.stopCut) : "打ち切らない"}・${rc.moves.length} 手・終了 ${rc.end === null ? "-" : (rc.end / 1000).toFixed(3)}s${rc.endUncertain ? "（不確か）" : ""}・推定 ${rc.inferred}`);
+        out.push(`  手順 ${fmt(rc).moves}`);
+        if (process.env.REAL_TIMING_DBG) {
+          const lm = rc.moves[rc.moves.length - 1];
+          for (const f of refiner.engine.frames.filter((f) => f.t > lm.end - 300 && f.t < lm.end + 600)) out.push(`  DBG F ${(f.t / 1000).toFixed(3)} rest=${layerAtRest(f, lm.orient, Math.floor(lm.move / 3))} faces=${f.faces.map((x) => `${x.slot}:${(x.ids ?? []).join(",")}`).join(" ")}`);
+        }
+        if (process.env.REAL_ENDS) out.push(`  端の手（打ち切り）: 最後 ${JSON.stringify(rc.moves.slice(-2))} raw ${JSON.stringify(rc.raw?.slice(-3))} ${JSON.stringify(refiner.edgeInfo)}`);
+        if (process.env.REAL_STOP_OUT) appendFileSync(process.env.REAL_STOP_OUT, `${JSON.stringify({ name: process.env.REAL_NAME ?? file, stop: spec, before: fmt(res), after: fmt(rc), ms })}\n`);
       }
     }
     if (rstat.frames) out.push(`精密解析の読み: 精密に処理した ${rstat.frames} 枚・面なし ${((100 * rstat.empty) / rstat.frames).toFixed(1)}%・平均 ${(rstat.faces / rstat.frames).toFixed(2)} 面・ID が読めたマス 平均 ${(rstat.ids / rstat.frames).toFixed(2)}`);

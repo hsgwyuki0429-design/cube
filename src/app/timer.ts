@@ -14,6 +14,7 @@ import { ScrambleGuide, undoMoves } from "./scrambleGuide";
 import type { TrackUpdate } from "../track/engine";
 import type { FrameMessage } from "../vision/protocol";
 import { mergeQuickRepeats } from "../track/merge";
+import type { LiveStop } from "../track/stopCut";
 import type { RefineResult } from "../vision/refine";
 import { controller } from "./controller";
 import { settingsStore } from "./settings";
@@ -322,7 +323,12 @@ function finish(u: TrackUpdate | null, how: StopReason, lookT?: number, pad?: Pa
   recording = false;
   timerStore.set({ phase: "done", result: solve, solves, analysisProgress: 0 });
   // 速報値の開始・終了（止めた後のフレームで更新し、精密解析で決めきれなかった端に使う）
-  const live: LiveSpan = { id: solve.id, start: startState, startT: s.startT, endT, how };
+  // ライブが揃ったと判断して止めた時刻: 見え方で止めたら揃いが見え始めたフレーム、追跡で止めたらその観測の時刻。精密解析はその前の
+  // 最後の揃いで手順を打ち切る（止めた後の手は数えない: src/track/stopCut.ts）。手動・GAN タイマーは渡さない（タイマーの時刻のまま）
+  // （at〜until は揃って見えていたフレーム: until は止めると決めたフレーム）
+  const hold = stopDetector.why?.hold ?? 0;
+  const stop: LiveStop | undefined = how === "look" && lookT !== undefined ? { at: lookT, until: lookT + hold } : how === "tracked" && u ? { at: u.observation.t, until: u.observation.t } : undefined;
+  const live: LiveSpan = { id: solve.id, start: startState, startT: s.startT, endT, how, ...(stop ? { stop } : {}) };
   window.setTimeout(async () => {
     // 速報値を、止めた後のフレーム（最後の手が止まったところ）も使って更新する
     if (how === "tracked") await refreshLive(live, s.startIndex, endIndex);
@@ -338,6 +344,7 @@ interface LiveSpan {
   startT: number;
   endT: number;
   how: StopReason;
+  stop?: LiveStop; // ライブが揃ったと判断して止めた時刻（RefineInput.stop）
 }
 
 async function refreshLive(live: LiveSpan, from: number, to: number): Promise<void> {
@@ -377,7 +384,7 @@ async function analyzeRecordingInner(live: LiveSpan, endT: number): Promise<void
   const rec = controller.recorder;
   const to = endT + POSTROLL_MS - 100;
   // インスペクションから進めてきた解析に、止めた所までの録画を渡し切り、完成の状態で解き直す
-  const pending = await controller.endAnalysis(to, solvedState(), (p) => timerStore.set({ analysisProgress: p }));
+  const pending = await controller.endAnalysis(to, solvedState(), (p) => timerStore.set({ analysisProgress: p }), live.stop);
   // 調査用（E2E テストが読む）
   const debug: { recording: unknown; result?: RefineResult } = { recording: { frames: rec.frames, dropped: rec.dropped, bitrate: rec.bitrate } };
   (window as unknown as { __cubevisionAnalysis?: unknown }).__cubevisionAnalysis = debug;
@@ -446,6 +453,8 @@ async function analyzeRecordingInner(live: LiveSpan, endT: number): Promise<void
     }
   }
   const liveEdges: ("start" | "end")[] = how === "pad" ? [] : [...(startSure ? [] : ["start" as const]), ...(endSure ? [] : ["end" as const])];
+  // 止めた後の手として外した手の数を、止めた理由に残す（記録の Solve.edges.stop.cut）
+  const edges = result.stopCut && cur?.edges?.stop ? { edges: { ...cur.edges, stop: { ...cur.edges.stop, cut: result.stopCut.dropped, cutBy: result.stopCut.how } } } : {};
   updateSolve(id, {
     analysis: startSure && endSure ? "done" : how === "pad" ? "done" : "partial",
     ...(liveEdges.length ? { liveEdges } : {}),
@@ -454,6 +463,7 @@ async function analyzeRecordingInner(live: LiveSpan, endT: number): Promise<void
     ...solveFields(from, result.moves, begin, timeMs),
     ...(scramble !== undefined ? { scramble } : {}),
     ...(result.method ? { refineMethod: result.method } : {}),
+    ...edges,
     tracked: true,
   });
 }

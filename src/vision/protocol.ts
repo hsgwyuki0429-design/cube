@@ -3,6 +3,7 @@ import type { StickerScheme } from "../aruco/codes";
 import type { Marker } from "../aruco/detect";
 import type { DetectHint } from "./arucoFrame";
 import type { EngineOptions, TrackUpdate } from "../track/engine";
+import type { LiveStop } from "../track/stopCut";
 import type { DecodedMove } from "../track/types";
 import type { Lab } from "./color";
 import type { Pt } from "./homography";
@@ -34,7 +35,7 @@ export type ToWorker =
   | { type: "stream-feed"; id: number; input?: RefineInput; recording: Recording; inspection?: boolean }
   // 回し始めた（リアルタイムの開始の判定）: 時刻 from から後のフレームは全部処理する
   | { type: "stream-solving"; id: number; from: number }
-  | { type: "stream-end"; id: number; to: number; target: number[] | null }
+  | { type: "stream-end"; id: number; to: number; target: number[] | null; stop?: LiveStop }
   | { type: "stream-cancel"; id: number }
   // フリーで完成した（時刻 t に状態 target）: そこまでを前後から解き直す
   // 動画ファイル（スロー撮影など）を精密解析する。target: 最後の状態（タイマーなら完成。分からなければ null）

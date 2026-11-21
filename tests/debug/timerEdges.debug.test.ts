@@ -8,7 +8,7 @@
 //   開始: 決めた時刻 − 本当の回し始め（遅れ。負 = 回す前に始めた: 間違って始まった）、開始の時刻の誤差
 //   停止: 決めた時刻 − 本当の回し終わり（遅れ。負 = 間違って止まった）、止まらなかった。間違って止める判定の回数は、本当の最初の手を
 //         回し終えてから最後の手の回し終わりまで判定を回し続け、止めると決めた回数（決めたらやり直す）
-import { readFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 import { it } from "vitest";
 import { ARUCO_REFS } from "../../src/aruco/palette";
 import { type CubeState, applyMove } from "../../src/cube/model";
@@ -53,7 +53,7 @@ class Stopper {
     this.newS.reset();
   }
   // 止めると決めたら止める時刻と経路
-  push(t: number, sight: SightFrame | undefined, looks: boolean | undefined, u: TrackUpdate | null, status: string | undefined): { at: number; how: string } | null {
+  push(t: number, sight: SightFrame | undefined, looks: boolean | undefined, u: TrackUpdate | null, status: string | undefined): { at: number; how: string; stop?: { at: number; until: number } } | null {
     const k = this.kind;
     const lastEnd = (x: TrackUpdate) => (x.moves.length ? x.moves[x.moves.length - 1].t : t);
     if (k === "old" || k === "oldLook") {
@@ -63,8 +63,9 @@ class Stopper {
       return null;
     }
     const a = this.newS.frame(t, sight);
-    if (a !== null) return { at: a, how: "ID" };
-    if (k === "neu" && u?.solved && this.newS.trackedSolved(u.observation.t)) return { at: lastEnd(u), how: "追跡" };
+    if (a !== null) return { at: a, how: "ID", stop: { at: a, until: t } };
+    // stop: 本体のタイマーが精密解析に渡す止めた時刻（timer.ts の finish: 追跡で止めたらその観測の時刻）
+    if (k === "neu" && u?.solved && this.newS.trackedSolved(u.observation.t)) return { at: lastEnd(u), how: "追跡", stop: { at: u.observation.t, until: u.observation.t } };
     return null;
   }
 }
@@ -128,6 +129,8 @@ it("タイマーの開始・停止（前の判定と今の判定）", () => {
         if (st.decided !== null && r.t > st.decided && x.edge.decided === null) {
           const e = x.s.push(r.t, sight, looks, u, status);
           if (e) x.edge = { decided: r.t, at: e.at, note: e.how };
+          // TE_STOPS_OUT=ファイル: 今の判定で止めた時刻を 1 行ずつ（realVideo の REAL_STOP に渡す）
+          if (e && x.kind === "neu" && e.stop && process.env.TE_STOPS_OUT) appendFileSync(process.env.TE_STOPS_OUT, `${JSON.stringify({ name: set.name, fps: set.fps, how: e.how, ...e.stop })}\n`);
         }
         if (r.t >= ref.moves[first].end + 100 && r.t < truthEnd - TOL_STOP) {
           const e = x.probe.push(r.t, sight, looks, u, status);
