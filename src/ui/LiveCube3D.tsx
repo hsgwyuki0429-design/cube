@@ -1,20 +1,24 @@
 // プレイ画面のライブの 3D キューブ。見えているキューブと同じ状態・同じ傾きを、自分の目線（少し上・右から見下ろす）で描く。
 //
-// - 状態: 一番合う仮説の手順を受け取り、足された手は 1 手ずつ回して見せる。前の手の解釈が変わった・手が溜まったら、回さずに
-//   その状態へ切り替える（見えているキューブとずれたまま回し続けない）。作り変え（base・seen）はその場でその状態にする
+// - 状態: 一番合う仮説の手順を受け取り、足された手は 1 手ずつ回して見せる。回して見せるのは、その手の層が動いたのをフレームで
+//   見た手だけ（moveSeen）で、見ていない手（傾けただけで面の割り当てが一瞬入れ替わったのを手で説明したものなど）は回さずに塗り替える。
+//   前の手の解釈が変わった・手が溜まったら、回さずにその状態へ切り替える（見えているキューブとずれたまま回し続けない）。
+//   作り変え（base・seen）はその場でその状態にする。見せ方の決まりは src/ui/liveShow.ts
 // - 傾き（ジャイロ）: 認識の毎フレームの姿勢（キューブ固定 → カメラ）を、インカメラなら自分の側から見た向き（y2）に直し、
 //   揺れをならして（src/ui/gyro.ts）なめらかに追う。姿勢が届かなくなったら、持ち方の向き（90° ごと）に戻す
 import { useEffect, useRef } from "preact/hooks";
 import { Quaternion } from "three";
 import { controller } from "../app/controller";
-import { ORIENTATIONS, applyMoves, mul, solvedState, type Mat3 } from "../cube/model";
+import { ORIENTATIONS, mul, type Mat3 } from "../cube/model";
 import { CubeScene, approach, matToQuat } from "./cubeScene";
 import { DEFAULT_GYRO, GyroFilter } from "./gyro";
+import { LiveShow } from "./liveShow";
 
 export interface LiveCube3DProps {
   epoch: number;
   setupMoves: number[] | null;
   moves: number[];
+  moveSeen: boolean[]; // moves と同じ並び: その手の層が動いたのをフレームで見た（回して見せる。見ていない手は回さずに塗り替える）
   orient: number | null; // 持ち方の向き（カメラフレーム）。null なら白上・緑前
   follow: boolean; // 映っている傾きに追従する
   mirror: boolean; // 鏡像で描く（カメラのプレビューが鏡像のとき: インカメラ）
@@ -22,7 +26,6 @@ export interface LiveCube3DProps {
   seen?: { n: number; state: number[] } | null;
 }
 
-const LIVE_BACKLOG = 2; // 回さずに待たせておく手の数の上限
 const NO_POSE_MS = 700; // これより姿勢が届かなければ持ち方の向きに戻す
 const POSE_TAU = 85; // 傾きを追う時定数
 const HOLD_TAU = 140; // 持ち方の向きへ戻る時定数
@@ -32,9 +35,7 @@ const GYRO = { ...DEFAULT_GYRO, minCutoff: 0.5, beta: 2.2, predictMs: 0 };
 export function LiveCube3D(props: LiveCube3DProps) {
   const host = useRef<HTMLDivElement>(null);
   const scene = useRef<CubeScene | null>(null);
-  const keyRef = useRef("");
-  const startRef = useRef<Uint8Array>(solvedState());
-  const shown = useRef<number[]>([]);
+  const show = useRef(new LiveShow());
   const propsRef = useRef(props);
   propsRef.current = props;
 
@@ -61,6 +62,10 @@ export function LiveCube3D(props: LiveCube3DProps) {
     });
     ro.observe(host.current!);
     shownQ.current.copy(holdQ());
+    // デモ（合成カメラ）では、回して見せた手・塗り替えた手を残す（scripts/e2e.mjs が本当の手と比べる）
+    s.onTurn = (move, instant) => {
+      if (controller.synthetic) (window.__cubevisionTurns ??= []).push({ move, t: performance.now(), instant });
+    };
     s.onFrame = (now, dt, root) => {
       const p = propsRef.current;
       const live = p.follow && now - lastPoseAt.current < NO_POSE_MS;
@@ -75,8 +80,7 @@ export function LiveCube3D(props: LiveCube3DProps) {
       ro.disconnect();
       s.dispose();
       scene.current = null;
-      keyRef.current = "";
-      shown.current = [];
+      show.current.reset();
     };
   }, []);
 
@@ -114,46 +118,10 @@ export function LiveCube3D(props: LiveCube3DProps) {
 
   const apply = () => {
     const s = scene.current;
-    if (!s || props.setupMoves === null) return;
-    const v = props.seen;
-    const b = props.base;
-    let key = `${props.epoch}`;
-    let start: ArrayLike<number> | null = null;
-    let moves = props.moves;
-    if (v) {
-      key += `:v${v.n}`;
-      start = v.state;
-      moves = [];
-    } else if (b) {
-      key += `:b${b.n}`;
-      start = b.state;
-      moves = props.moves.slice(b.at);
-    }
-    if (keyRef.current !== key) {
-      // 始まりが変わった（スキャン・やり直し・作り変え）: 回さずにその状態にする
-      keyRef.current = key;
-      startRef.current = start ? Uint8Array.from(start) : applyMoves(solvedState(), props.setupMoves);
-      s.setState(applyMoves(startRef.current, moves));
-      shown.current = [...moves];
-      return;
-    }
-    const old = shown.current;
-    let k = 0;
-    while (k < old.length && k < moves.length && old[k] === moves[k]) k++;
-    const done = old.length - s.waiting(); // 回し終えた（回している）手の数
-    if (k < done || moves.length - done > LIVE_BACKLOG) {
-      // 解釈が変わった・手が溜まった: 最後の 1 手の前までは回さずに合わせ、足された最後の手だけ回して見せる
-      const appended = k >= old.length && moves.length > k;
-      const upto = appended ? moves.length - 1 : moves.length;
-      s.setState(applyMoves(startRef.current, moves.slice(0, upto)));
-      s.setQueue(moves.slice(upto));
-    } else {
-      s.setQueue(moves.slice(done));
-    }
-    shown.current = [...moves];
+    if (s) show.current.apply(s, { epoch: props.epoch, setupMoves: props.setupMoves, moves: props.moves, moveSeen: props.moveSeen, base: props.base, view: props.seen });
   };
 
-  useEffect(apply, [props.epoch, props.setupMoves, props.moves, props.base?.n, props.seen?.n]);
+  useEffect(apply, [props.epoch, props.setupMoves, props.moves, props.moveSeen, props.base?.n, props.seen?.n]);
 
   return (
     <div class={`cube3d live-cube${props.mirror && props.follow ? " mirrored" : ""}`} ref={host}>
