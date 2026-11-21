@@ -25,6 +25,9 @@ export interface OfflineOptions {
   // 最初の手の回し始め（それより前のフレームは始まりの状態のはず）。認めなければ backward にせず、橋渡し・前向きを補う・届かないに進む
   // （精密解析は回し始める前に確かに読めたステッカーと照らす: src/track/startCheck.ts。渡さなければ今までどおり認める）
   startCheck?: (state: CubeState, until: number) => boolean;
+  // 解き直し全体の時間の上限（performance.now() の時刻）。過ぎたら、そこまでの前向きの結果（終わりに届かない）を返す（timedOut）。
+  // 後ろ向きだけの答えを認めなかった後の深い 2 回目（refine.ts）で使う
+  deadline?: number;
 }
 
 export const DEFAULT_OFFLINE: OfflineOptions = {
@@ -49,6 +52,7 @@ export interface OfflineResult {
   meetAt: number; // つないだ観測の番号（meet のとき）
   cost: number;
   reachedEnd: boolean;
+  timedOut?: boolean; // 時間の上限（deadline）で打ち切った
 }
 
 interface Snapshot {
@@ -121,7 +125,10 @@ export function decodeOffline(obs: Observation[], start: CubeState, end: CubeSta
     F = pre.F;
   } else {
     const p = new OfflineForward(start, options);
-    for (const o of valid) p.feed(o);
+    for (const o of valid) {
+      p.feed(o);
+      if (options.deadline !== undefined && performance.now() > options.deadline) return { moves: p.fwd.bestMoves(), method: "forward", meetAt: -1, cost: p.fwd.costOffset, reachedEnd: false, timedOut: true };
+    }
     fwd = p.fwd;
     F = p.F;
   }
@@ -138,7 +145,7 @@ export function decodeOffline(obs: Observation[], start: CubeState, end: CubeSta
   // 後ろ向きに 1 観測ずつ進めながらつなぐ: 観測 k の時点で同じ状態・姿勢の仮説（観測 k のコストは両方に入っているので 1 回引く）。
   // 合計のコストが最小の所（同じなら早い観測）
   let best: { cost: number; k: number; f: Hypothesis; b: Hypothesis } | null = null;
-  const backDeadline = performance.now() + (options.backwardMs ?? Infinity);
+  const backDeadline = Math.min(performance.now() + (options.backwardMs ?? Infinity), options.deadline ?? Infinity);
   for (let j = 0; j < rev.length; j++) {
     const k = valid.length - 1 - j;
     options.tick?.();
@@ -192,16 +199,17 @@ export function decodeOffline(obs: Observation[], start: CubeState, end: CubeSta
     if (!options.startCheck || options.startCheck(b0.state, until)) return { moves, method: "backward", meetAt: -1, cost: b0.cost + B[0].offset, reachedEnd: true, startState: Uint8Array.from(b0.state) };
   }
   // 前後どちらも、隠れていた同じ区間で見失った: 隠れる前の前向きの仮説と、隠れた後の後ろ向きの仮説を短い手順でつなぐ
-  const bridged = options.bridge === false ? null : bridge(F, B, valid, options.tick);
+  const late = () => options.deadline !== undefined && performance.now() > options.deadline;
+  const bridged = options.bridge === false || late() ? null : bridge(F, B, valid, options.tick, options.deadline);
   if (bridged) return bridged;
   // それでもつながらない: 前向きの結果を、終わりの状態にたどり着くよう補う
-  const fixed = finishDeep(fwd, end, lastT, options.tick);
+  const fixed = late() ? null : finishDeep(fwd, end, lastT, options.tick);
   if (fixed) return { moves: fixed, method: "forward-finish", meetAt: -1, cost: fwd.costOffset, reachedEnd: true };
   // 届かない: 後ろ向きが終わりから続けて追えていた所までの手順を付ける（タイムの終わりは決められる）
   let kT = valid.length;
   while (kT > 0 && !lostAt(kT - 1)) kT--;
   const tb = kT < valid.length ? B[kT].hyps[0] : undefined;
-  return { ...forwardBest(), ...(tb ? { tail: backMoves(tb) } : {}) };
+  return { ...forwardBest(), ...(tb ? { tail: backMoves(tb) } : {}), ...(late() ? { timedOut: true } : {}) };
 }
 
 // 前向きの有力な仮説から、終わりの状態に届く手を足す（2 手で届かなければ 3 手・4 手まで。足した手は inferred）。
@@ -314,12 +322,12 @@ function tableOf(snap: Snapshot, top: number, reachOf: (s: Uint8Array) => Reach)
 const BRIDGE_MS = 10000; // 結果を出すことを優先して長めに（表は直近の分だけなのでメモリは増えない）。この間も tick で「動いている」と知らせる
 const LOST_COST = 3; // 観測の矛盾がこれ以上の観測が 3 つ続いたら見失っている
 
-function bridge(F: Snapshot[], B: Snapshot[], obs: Observation[], tick?: () => void): OfflineResult | null {
+function bridge(F: Snapshot[], B: Snapshot[], obs: Observation[], tick?: () => void, until = Number.POSITIVE_INFINITY): OfflineResult | null {
   const N = obs.length;
   const TOP = 16;
   const DEPTH = 3;
   const GAP = 10;
-  const deadline = performance.now() + BRIDGE_MS;
+  const deadline = Math.min(performance.now() + BRIDGE_MS, until);
   const cache = new Map<number, Reach>();
   const reachOf = (s: Uint8Array): Reach => {
     const h = hash53(s);

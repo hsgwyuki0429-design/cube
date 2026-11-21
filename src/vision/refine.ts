@@ -204,6 +204,10 @@ const BACKWARD_MS = 30000;
 // Node で 15〜25 秒かかるので、1 回目でつながったときは使わない
 const DEEP_DECODER = { beamWidth: 256, maxMovesPerStep: 4, deepHyps: Infinity };
 const DEEP_BACKWARD_MS = 60000;
+// 後ろ向きだけの答え（始まりの状態が違う）を認めなかった後の 2 回目の時間の上限（Node。iPhone では 2〜3 倍）。届かなければ 1 回目の結果
+// （終わりに届かない: タイムの終わりは後ろ向きに追えた手から）で終える。1.5Mbps の IMG_5048 で、2 回目が後ろ向き 60 秒・橋渡し・前向きを補うまで
+// 探して 1 本 133 秒かかり、それでも届かなかった
+const DEEP_AFTER_REJECT_MS = 30000;
 
 export class Refiner {
   readonly engine: TrackerEngine;
@@ -441,17 +445,23 @@ export class Refiner {
   // onPhase: 段階を知らせる（解き直しの後に "timing"。落ちたときにどこで落ちたかを残すため: src/app/crashGuard.ts）。解き直しの間も
   // "decode" をときどき（呼ぶ側で間引く）: 本体は知らせが届かないと止まったとみなしてやり直す（controller.endAnalysis の STALL_MS）
   deepUsed = false; // 調査用: 2 回目の深い解き直しの結果を使った
+  deepTimedOut = false; // 調査用: 2 回目が時間の上限で打ち切られた
   result(target: CubeState | null = solvedState(), onPhase?: (phase: "decode" | "timing") => void): RefineResult {
     const dec = this.engine.decoder;
     const tick = onPhase ? () => onPhase("decode") : undefined;
     this.piecesMs = 0;
+    this.startVerdict = null;
+    this.deepTimedOut = false;
     // 前向き（スクランブル後から）と後ろ向き（完成から）の両方で解き直し、辻褄の合う所でつなぐ
     // ステッカーの動きの方程式（RefineInput.pieces）: 完成までつながらなければ、これまでの解き直しに戻す
     const pieces = target && this.input.pieces ? this.decodeByPieces(target, tick) : null;
     let off: OfflineResult = pieces ?? decodeOffline(this.engine.observationLog, Uint8Array.from(this.input.state), target, this.lastT, { ...this.offlineOptions(), tick }, this.forward ?? undefined);
     if (!pieces && target && off.method !== "meet" && off.method !== "backward") {
       const base = this.offlineOptions();
-      const deep = decodeOffline(this.engine.observationLog, Uint8Array.from(this.input.state), target, this.lastT, { ...base, decoder: { ...base.decoder, ...DEEP_DECODER }, backwardMs: DEEP_BACKWARD_MS, tick });
+      const verdict = this.startVerdict as StartVerdict | null; // 1 回目の解き直しの中で書き換わる
+      const rejected = verdict !== null && !verdict.ok;
+      const deep = decodeOffline(this.engine.observationLog, Uint8Array.from(this.input.state), target, this.lastT, { ...base, decoder: { ...base.decoder, ...DEEP_DECODER }, backwardMs: DEEP_BACKWARD_MS, tick, ...(rejected ? { deadline: performance.now() + DEEP_AFTER_REJECT_MS } : {}) });
+      this.deepTimedOut = !!deep.timedOut;
       const guessed = (r: typeof off) => r.moves.filter((m) => m.inferred).length;
       if (deep.reachedEnd && (!off.reachedEnd || guessed(deep) < guessed(off) || (guessed(deep) === guessed(off) && deep.method === "meet"))) off = deep;
       this.deepUsed = off === deep;

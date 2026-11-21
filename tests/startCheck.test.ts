@@ -95,6 +95,16 @@ describe("decodeOffline の startCheck", () => {
     expect(no.method).not.toBe("backward");
     expect(no.startState).toBeUndefined();
   }, 60000);
+  it("時間の上限（deadline）を過ぎたら、終わりに届かないまま打ち切る", () => {
+    const { obs, lastT, start } = session(5);
+    let wrong = start;
+    for (const m of [0, 4, 8, 9, 13, 17, 2, 6, 11, 15]) wrong = applyMoves(wrong, [m]);
+    const t0 = performance.now();
+    const r = decodeOffline(obs, wrong, solvedState(), lastT, { ...DEFAULT_OFFLINE, startCheck: () => false, deadline: performance.now() - 1 });
+    expect(r.timedOut).toBe(true);
+    expect(r.reachedEnd).toBe(false);
+    expect(performance.now() - t0).toBeLessThan(5000);
+  }, 60000);
 });
 
 describe("精密解析（Refiner）: スクランブルを間違えて回したときは救う", () => {

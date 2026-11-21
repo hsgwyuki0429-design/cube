@@ -73,11 +73,19 @@ function truthOf(name: string, rdStart: number[]): { start: CubeState; moves: { 
 // 後ろ向きだけでたどり着いた始まりの状態は、回し始める前の確かな読みと照らす（Refiner.checkBackwardStart と同じ。インスペクションの
 // 終わりは書き出しにないので、答えの最初の手まで）
 function oldDecode(obs: Observation[], start: CubeState, end: CubeState, lastT: number, readings?: Reading[]): OfflineResult {
-  const startCheck: OfflineOptions["startCheck"] = readings ? (s, until) => judgeBackwardStart(s, start, stableFrames(readings.filter((r) => r.t < until - 100))).ok : undefined;
+  let rejected = false;
+  const startCheck: OfflineOptions["startCheck"] = readings
+    ? (s, until) => {
+        const ok = judgeBackwardStart(s, start, stableFrames(readings.filter((r) => r.t < until - 100))).ok;
+        if (!ok) rejected = true;
+        return ok;
+      }
+    : undefined;
   const base = { decoder: { beamWidth: 32, maxMovesPerStep: 3, rotationCost: 1.5, ...DEFAULT_OFFLINE.decoder }, backwardMs: 30000, startCheck };
   let off = decodeOffline(obs, start, end, lastT, base);
   if (off.method !== "meet" && off.method !== "backward") {
-    const deep = decodeOffline(obs, start, end, lastT, { ...base, decoder: { ...base.decoder, beamWidth: 256, maxMovesPerStep: 4, deepHyps: Infinity }, backwardMs: 60000 });
+    // 後ろ向きだけの答えを認めなかった後は 30 秒まで（refine.ts の DEEP_AFTER_REJECT_MS）
+    const deep = decodeOffline(obs, start, end, lastT, { ...base, decoder: { ...base.decoder, beamWidth: 256, maxMovesPerStep: 4, deepHyps: Infinity }, backwardMs: 60000, ...(rejected ? { deadline: performance.now() + 30000 } : {}) });
     const guessed = (r: OfflineResult) => r.moves.filter((m) => m.inferred).length;
     if (deep.reachedEnd && (!off.reachedEnd || guessed(deep) < guessed(off) || (guessed(deep) === guessed(off) && deep.method === "meet"))) off = deep;
   }
