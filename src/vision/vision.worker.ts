@@ -330,11 +330,9 @@ function track(r: Recognized): void {
         : {}),
     });
   if (track) focus = focusCells(track.cells, track.orient);
-  let looksSolved: boolean | undefined;
   let pose: FrameMessage["pose"];
   if (engine && reading.faces.length) {
     const labels = engine.labelsOf(reading);
-    looksSolved = engine.looksSolved(reading, labels);
     const p = focal.estimate(result.faces, w, h);
     if (p && p.err < Math.max(4, w / 100)) {
       // 直前の 3D の向き（キューブ固定 → カメラ）に近い姿勢を優先する（見え方で区別できないときに跳ねない）
@@ -344,7 +342,7 @@ function track(r: Recognized): void {
       pose = { R: p.R, err: p.err, orient };
     }
   }
-  post({ type: "frame", id: r.id, t: r.t, width: w, height: h, faces: result.faces, quads: result.quads, procMs: r.procMs, track, looksSolved, pose, ...(r.foreign ? { foreign: true } : {}) });
+  post({ type: "frame", id: r.id, t: r.t, width: w, height: h, faces: result.faces, quads: result.quads, procMs: r.procMs, track, sight, pose, ...(r.foreign ? { foreign: true } : {}) });
 }
 
 self.onmessage = async (event: MessageEvent<ToWorker>) => {
