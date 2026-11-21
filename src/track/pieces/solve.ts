@@ -44,6 +44,7 @@ export interface SolveOptions {
   maxK: number; // 1 区間に入れる手の上限（4 までは表、5〜8 は突き合わせ）
   extraBits: number; // 最小の手の数より多い手の解は、最小の手の数の解よりこれ（ビット）までしか悪くないものだけ仮説にする（手は、その分の食い違いを減らすこと）
   weakParentBits: number; // 確かな式のない見え方では、見え方の一番よい仮説からこれ（ビット）までの仮説に、読みに合う手を手のコストだけで足す
+  trustExtra: boolean; // 答えの確かめで区間だけ解き直した所でも、つながった答えの extra の手を確定にしてよい（比べるための切り替え）
   // 一番よい仮説よりこれ（ビット）以上悪い仮説は落とす。答えの確かめの基準（verifyBits 8）と、読み違い 1 本ぶん（10〜13 ビット）の
   // 回り道を残すために、その和ほど
   keepBits: number;
@@ -86,6 +87,7 @@ export const DEFAULT_SOLVE: SolveOptions = {
   maxK: 8,
   extraBits: 1,
   weakParentBits: 0,
+  trustExtra: true,
   keepBits: 20,
   capHyps: 256,
   solLimit: 64,
@@ -325,7 +327,7 @@ export function solvePieces(table: PieceTable, start: CubeState, end: CubeState,
     // 前向きと後ろ向きがつながったときは、確かな式の解が複数あった区間の手も（解き直しで別の手順と比べている）。つながらずに片方だけで
     // 終わりまで行った答えは、見失った後の手に当たるので、確かな式で 1 つに決まった手だけ（IMG_5046 の 2.5Mbps で 7 手を確定のまま間違えた）
     // 弱い読みだけの見え方で足した手（extra）も、つながったときは同じ（28 本で確定で間違いは 0 のまま、確定にできる手が増えた）
-    trusted: (m) => !m.guess && (!m.why || (method === "meet" && (m.why === "multi" || m.why === "extra"))),
+    trusted: (m) => !m.guess && (!m.why || (method === "meet" && (m.why === "multi" || (opt.trustExtra && m.why === "extra")))),
     blockPin: true,
   });
   opt.tick?.();
