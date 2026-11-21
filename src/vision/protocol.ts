@@ -66,7 +66,9 @@ export interface FrameMessage {
   quads: Pt[][];
   procMs: number;
   track?: TrackUpdate;
-  looksSolved?: boolean; // 見えている面がすべて1色（追跡を見失っていても完成を検出できるように）
+  // 面ごとに読んだステッカーの ID・マーカーの向き・面の外枠（src/track/sight.ts）。タイマーの開始と停止を ID で見る（src/app/startDetect.ts・
+  // stopDetect.ts）。スロットがありえないフレームも入れる
+  sight?: import("../track/sight").SightFrame;
   // キューブの連続的な姿勢: R = カメラフレームに揃ったキューブ → 実際、orient = このフレームの離散的な姿勢。
   // キューブ固定フレーム → カメラの回転は R · ORIENTATIONS[orient]
   pose?: { R: number[]; err: number; orient: number };

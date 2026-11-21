@@ -7,15 +7,17 @@ import { cfopSplits } from "../cube/analysis";
 import { type CubeState, MOVE_NAMES, applyMoves, invertMoves, isSolved, moveFace, movesToString, relativeMove, rotateOrientation, solvedState, statesEqual } from "../cube/model";
 import { randomScramble, solveBetween, solveState } from "../cube/solver";
 import { StartDetector } from "./startDetect";
+import { StopDetector } from "./stopDetect";
 import { PadState, onPadEvent, padConnected } from "./ganTimer";
 import { markPhase } from "./crashGuard";
 import { ScrambleGuide, undoMoves } from "./scrambleGuide";
 import type { TrackUpdate } from "../track/engine";
+import type { FrameMessage } from "../vision/protocol";
 import { mergeQuickRepeats } from "../track/merge";
 import type { RefineResult } from "../vision/refine";
 import { controller } from "./controller";
 import { settingsStore } from "./settings";
-import { type Solve, loadSolves, saveSolves } from "./storage";
+import { type Solve, type StartWhy, loadSolves, saveSolves } from "./storage";
 import { createStore } from "./store";
 
 export type TimerPhase = "idle" | "preparing" | "scrambling" | "inspection" | "solving" | "done";
@@ -65,10 +67,10 @@ let readyMoves = 0;
 let warned8 = false;
 let warned12 = false;
 let recording = false;
-let lookRun = 0;
-let lookStartT = 0;
 let replanKey = ""; // スクランブルの案内を作り直した追跡の状態（同じ状態で何度も作り直さない）
 const startDetector = new StartDetector(); // インスペクション中に回し始めたか（src/app/startDetect.ts）
+const stopDetector = new StopDetector(); // 計測中に完成したか（src/app/stopDetect.ts）
+let startWhy: StartWhy | null = null; // 始めた理由（記録の Solve.edges）
 
 const POSTROLL_MS = 1200; // 止めた後も録画を続ける時間（最後の手の回し終わりを確かめる）
 
@@ -145,7 +147,8 @@ function onTrack(u: TrackUpdate): void {
   if (s.phase === "scrambling" && target) {
     if (statesEqual(state, target)) {
       readyMoves = u.moves.length;
-      startDetector.reset(u.base?.n ?? 0);
+      startDetector.reset();
+      startWhy = null;
       warned8 = warned12 = false;
       controller.beep(660, 0.15);
       timerStore.set({ phase: "inspection", inspectionStart: performance.now(), guideDone: s.guide.length, guideHalf: false, guideFix: [], recomputing: false });
@@ -184,18 +187,20 @@ function onTrack(u: TrackUpdate): void {
     return;
   }
   if (s.phase === "inspection") {
-    // 回し始めたか: 最初の手が確定して層が動いたのを見たか、スクランブルの状態から外れたまま続いたとき（src/app/startDetect.ts）
+    // 回し始めたか: 見え方が ID でスクランブルの状態から確かに変わり、層が動いたのをフレームで見たとき（src/app/startDetect.ts）
     // GAN タイマーをつないでいれば、タイマーから手を離した時に始める（src/app/ganTimer.ts）
     if (padConnected()) return;
-    const startT = startDetector.push(u, target, readyMoves);
+    const startT = startDetector.push(u, readyMoves, u.observation.t);
     if (startT === null) return;
+    startWhy = startDetector.why;
     beginSolve(startT, u.moves.length);
     return;
   }
   if (s.phase === "solving") {
     timerStore.set({ liveMoves: Math.max(0, u.moves.length - s.startIndex) });
-    // タイマーをつないでいれば、タイマーで止めるまで待つ（止めた時刻とタイムはタイマーのもの）
-    if (u.solved && !padConnected()) finish(u, "tracked");
+    // タイマーをつないでいれば、タイマーで止めるまで待つ（止めた時刻とタイムはタイマーのもの）。追跡が揃っても、そのフレームの
+    // 見え方が ID で揃いと食い違えば止めない（src/app/stopDetect.ts）
+    if (u.solved && !padConnected() && stopDetector.trackedSolved(u.observation.t)) finish(u, "tracked");
   }
 }
 
@@ -203,7 +208,7 @@ function beginSolve(startT: number, liveCount: number): void {
   timerStore.set({ phase: "solving", startT, startIndex: readyMoves, liveMoves: Math.max(0, liveCount - readyMoves) });
   controller.recorder.keepMs = 150000;
   controller.solvingStarted(startT);
-  lookRun = 0;
+  stopDetector.reset();
   controller.beep(990, 0.08);
 }
 
@@ -212,28 +217,24 @@ function beginSolve(startT: number, liveCount: number): void {
 function onPad(e: { state: PadState; timeMs?: number }, at: number): void {
   const s = timerStore.get();
   if (e.state === PadState.RUNNING && s.phase === "inspection") {
+    startWhy = { how: "pad" };
     beginSolve(at, controller.store.get().track?.moves.length ?? readyMoves);
     return;
   }
   if (e.state === PadState.STOPPED && s.phase === "solving" && e.timeMs !== undefined) finish(controller.store.get().track, "pad", undefined, { startT: at - e.timeMs, stopT: at, ms: e.timeMs });
 }
 
-// 追跡を見失っていても、見えている面がすべて1色のまま数フレーム続いたら止める
-function onFrame(m: { t: number; looksSolved?: boolean }): void {
-  if (timerStore.get().phase !== "solving" || m.looksSolved === undefined || padConnected()) {
-    lookRun = 0;
+// フレームごとの見え方を ID で見る: インスペクション中は回し始めたか（スクランブルの状態から変わったか）、計測中は完成したか。
+// 追跡を見失っていても止められる（src/app/stopDetect.ts）
+function onFrame(m: FrameMessage): void {
+  const phase = timerStore.get().phase;
+  if (phase === "inspection") {
+    startDetector.frame(m.t, m.sight, target);
     return;
   }
-  if (!m.looksSolved) {
-    lookRun = 0;
-    return;
-  }
-  if (!lookRun) lookStartT = m.t;
-  lookRun++;
-  const track = controller.store.get().track;
-  // 追跡が確かなうちは追跡の判定に任せる（2面だけ見えている PLL の途中などを完成と取り違えないように）
-  const trusted = track?.status === "tracking";
-  if (lookRun >= 3 && (!trusted || m.t - lookStartT > 1000)) finish(track, "look", lookStartT);
+  if (phase !== "solving" || padConnected()) return;
+  const at = stopDetector.frame(m.t, m.sight);
+  if (at !== null) finish(controller.store.get().track, "look", at);
 }
 
 function splitsOf(start: CubeState, moves: TimedMove[], startT: number): Solve["splits"] {
@@ -311,6 +312,7 @@ function finish(u: TrackUpdate | null, how: StopReason, lookT?: number, pad?: Pa
     tracked: how !== "manual",
     ...(pad ? { pad: { ms: pad.ms } } : {}),
     poses: posesOf(s.startT, endT),
+    edges: { ...(startWhy ? { start: startWhy } : {}), stop: how === "look" || how === "tracked" ? (stopDetector.why ?? { how: how === "look" ? "ids" : "tracked" }) : { how } },
     ...(analyze ? { analysis: "pending" as const, provisionalMs: timeMs } : {}),
   };
   const solves = [solve, ...s.solves];

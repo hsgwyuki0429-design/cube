@@ -81,6 +81,8 @@ if (params.has("demo")) {
           tps: Number(params.get("tps") ?? 2),
           view: (params.get("view") as "top" | "corner" | "front") ?? "top",
           timer: params.has("timer"),
+          inspectMs: Number(params.get("inspect") ?? 0) || undefined,
+          inspectLook: params.has("look"),
         }
       : {},
   });
