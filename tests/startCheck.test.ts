@@ -16,11 +16,11 @@ import { loadTestOpenCv } from "./cv";
 import { ALL_MOVES, observe, randomMove, rng } from "./sim";
 
 // 状態 s を姿勢 o で見たときの、正面・上・右の確かな読み（9 マスずつ）のフレーム
-function framesOf(s: Uint8Array, o: number, n: number, t0 = 0): { t: number; faces: { slot: number; ids: number[]; w: number[] }[] }[] {
+function framesOf(s: Uint8Array, o: number, n: number, t0 = 0, slots = [2, 0, 1]): { t: number; faces: { slot: number; ids: number[]; w: number[] }[] }[] {
   const ids = stickerIds(s);
   return Array.from({ length: n }, (_, k) => ({
     t: t0 + k * 33,
-    faces: [2, 0, 1].map((slot) => ({ slot, ids: Array.from({ length: 9 }, (_, c) => ids[VIEW[(o * 6 + slot) * 9 + c]]), w: new Array(9).fill(1) })),
+    faces: slots.map((slot) => ({ slot, ids: Array.from({ length: 9 }, (_, c) => ids[VIEW[(o * 6 + slot) * 9 + c]]), w: new Array(9).fill(1) })),
   }));
 }
 
@@ -40,9 +40,9 @@ describe("始まりの状態の確かめ（judgeBackwardStart）", () => {
   });
   it("確かな読みがない・案内と食い違う読みがなければ認めない", () => {
     expect(judgeBackwardStart(actual, given, []).ok).toBe(false);
-    // 案内と後ろ向きの状態が見えている所では同じ（違うのは見えない面だけ）: 間違えたとは読みから言えない
-    const hidden = applyMoves(given, parseMoves("D2"));
-    const fr = stableFrames(framesOf(given, 0, 30));
+    // 案内と後ろ向きの状態が見えている所では同じ（正面だけが見えていて、違うのは B2 で動く所だけ）: 間違えたとは読みから言えない
+    const hidden = applyMoves(given, parseMoves("B2"));
+    const fr = stableFrames(framesOf(given, 0, 30, 0, [2]));
     expect(contradictionsOf(hidden, fr)).toBe(0);
     expect(judgeBackwardStart(hidden, given, fr).ok).toBe(false);
   });
