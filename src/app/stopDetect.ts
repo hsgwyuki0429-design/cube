@@ -19,6 +19,9 @@ export class StopDetector {
   private frames = 0;
   private last: { t: number; ok: boolean; home: number } | null = null;
 
+  // min・holdMs: 計測で変えるとき（tests/debug/timerEdges.debug.test.ts の TE_MIN・TE_HOLD）
+  constructor(private readonly opts: { min?: number; holdMs?: number } = {}) {}
+
   reset(): void {
     this.since = -1;
     this.frames = 0;
@@ -35,10 +38,10 @@ export class StopDetector {
       this.frames = 0;
       return null;
     }
-    if (v.home < SOLVED_MIN) return null;
+    if (v.home < (this.opts.min ?? SOLVED_MIN)) return null;
     if (this.since < 0) this.since = t;
     this.frames++;
-    return this.frames >= SOLVED_HOLD_FRAMES && t - this.since >= SOLVED_HOLD_MS ? this.since : null;
+    return this.frames >= SOLVED_HOLD_FRAMES && t - this.since >= (this.opts.holdMs ?? SOLVED_HOLD_MS) ? this.since : null;
   }
 
   // 追跡が揃った状態になった（t: その観測の時刻）。直近の見え方も揃いと食い違わなければ true

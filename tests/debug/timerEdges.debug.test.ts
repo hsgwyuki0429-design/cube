@@ -3,7 +3,7 @@
 // 精密解析の結果（REAL_REF で書き出したもの）。ライブの追跡は本体と同じ設定で、インスペクションの始まりにスクランブルの状態から始める
 // （本体ではスクランブルの状態に着いたときにインスペクションになる）。
 //   TE_DIR=~/rv TE_SETS="4970:15:0,5046:15:10.10"（名前:fps:インスペクションの始まり（秒）。read-名前-fps.json・ref-名前.json）
-//   TE_DUMP=1（開始・停止を決めたときの様子）
+//   TE_DUMP=1（開始・停止を決めたときの様子）・TE_MIN=10・TE_HOLD=200（今の停止の枚数・続く長さ）
 // 出すもの（1 本ごと・合計）:
 //   開始: 決めた時刻 − 本当の回し始め（遅れ。負 = 回す前に始めた: 間違って始まった）、開始の時刻の誤差
 //   停止: 決めた時刻 − 本当の回し終わり（遅れ。負 = 間違って止まった）、止まらなかった。間違って止める判定の回数は、本当の最初の手を
@@ -46,7 +46,7 @@ const TOL_START = 50;
 
 class Stopper {
   private oldS = new OldStopDetector();
-  private newS = new StopDetector();
+  private newS = new StopDetector({ min: Number(process.env.TE_MIN) || undefined, holdMs: process.env.TE_HOLD ? Number(process.env.TE_HOLD) : undefined });
   constructor(readonly kind: StopKind) {}
   reset(): void {
     this.oldS.reset();
