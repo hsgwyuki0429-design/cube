@@ -19,6 +19,15 @@
 //   REAL_OBS=ファイル（精密解析の観測を書き出す: obsReplay.debug.test.ts で解き直しだけを測る）・REAL_OBS_ONLY=1（書き出したら解き直さない）
 //   REAL_REF=ファイル（精密解析の結果を書き出す。REAL_REFINE=0 なら読み込んで、ライブの一致だけ測る: ライブを直して何度も測るとき）
 //   REAL_PIECES=1（精密解析の解き直しをステッカーの動きの方程式で: RefineInput.pieces。表の AND 版。REAL_PIECES=v1 は最初の版）
+// 設定画面の「録画を書き出す」で書き出した録画（cubevision-rec-….mp4）は、REAL_VIDEO=そのファイル だけで本体と同じ条件になる
+// （tests/debug/lib/recording.ts）: 圧縮し直さず・縮めずに YUV のまま読み（本体と同じ planesToRgba）、時刻は本体の時間軸（ms）、始まりの状態・
+//   解析の範囲・インスペクションの間引き・止めた時刻・終わりの状態・認識と追跡の設定は書き出しから。ライブは省き（REAL_NOLIVE=0 で通す）、
+//   止まったフレームは飛ばす（REAL_STILL=0 で飛ばさない）。本体の結果と比べて「アプリの結果と同じ」を出す（REAL_EXPECT_SAME=1 なら違えば失敗）。
+//   REAL_START・REAL_START_FILE・REAL_END・REAL_FROM・REAL_TO（秒、本体の時間軸）を渡せばそちらを使う（そのときは本体と同じにはならない）
+//   REAL_APP_TRUTH=ファイル（本体の結果を piecesBench の正解の形で書き出す: REAL_RREADINGS・REAL_OBS と一緒に piecesBench に通す）
+//   REAL_STATS_OUT=ファイル（読める量の物差しを 1 行の JSON で足す: 1 フレームに読めたマス・ピース、確かな読みのない区間、実際の fps・抜け。
+//   範囲は REAL_STATS_RANGE=開始,終了（秒）か REAL_STATS_REF=精密解析の結果（REAL_REF の書き出し）の最初の手の回し始め〜最後の手の回し終わり、
+//   なければこの解析の結果の。REAL_STATS_LABEL=条件の名前・REAL_NAME=動画の名前。まとめは tests/debug/recordingStats.debug.test.ts）
 // 精密解析の追跡の設定は本体と同じ（controller.engineOptions: ARUCO_OBSERVER・候補 32・3 手）。
 // 精密解析が完成までつながったら、その手順と時刻を本当の動きとみなして、ライブが 3D に出した状態が本当の状態と同じだった時間の割合を出す
 // （手を回している間とその後 300ms は数えない）
@@ -41,6 +50,9 @@ import { type FrameResult, frameReading, processFrame } from "../../src/vision/p
 import { StillSkipper } from "../../src/vision/motion";
 import { sightFrame } from "../../src/track/sight";
 import { type RefineResult, Refiner } from "../../src/vision/refine";
+import { DEFAULT_PIPELINE } from "../../src/vision/pipeline";
+import { type StatFrame, compareResults, exportPlan, loadExport, readExportFrames, readStats, statFrame } from "./lib/recording";
+import type { SightFrame } from "../../src/track/sight";
 import { loadTestOpenCv } from "../cv";
 import { writePng } from "./png";
 import { profile, summarize } from "./prof";
@@ -94,21 +106,41 @@ it("実際のプレイ動画", async () => {
   const file = process.env.REAL_VIDEO;
   if (!file) return;
   const cv = await loadTestOpenCv();
+  // 書き出した録画（メタデータつき）なら本体と同じ条件で
+  const exp = loadExport(file);
+  const plan = exp ? exportPlan(exp) : null;
+  const flag = (k: string, dflt: boolean) => (process.env[k] === undefined ? dflt : process.env[k] !== "0");
+  const noLive = flag("REAL_NOLIVE", !!exp);
+  const sameAsApp = !!exp && !process.env.REAL_START && !process.env.REAL_START_FILE && !process.env.REAL_END && !process.env.REAL_FROM && !process.env.REAL_TO;
   // 大きさと回転
-  const probe = spawnSync("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0", file], { encoding: "utf8" }).stdout.trim().split(",").map(Number);
+  const probe = exp ? [exp.recorder.width, exp.recorder.height] : spawnSync("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "stream=width,height", "-of", "csv=p=0", file], { encoding: "utf8" }).stdout.trim().split(",").map(Number);
   const [sw, sh] = probe;
-  const s = LONG / Math.max(sw, sh);
+  const s = exp ? 1 : LONG / Math.max(sw, sh);
   const W = Math.round((sw * s) / 2) * 2;
   const H = Math.round((sh * s) / 2) * 2;
-  // フレームの時刻（秒）
-  const times = spawnSync("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "frame=pts_time", "-of", "csv=p=0", file], { encoding: "utf8", maxBuffer: 1 << 26 })
-    .stdout.trim()
-    .split("\n")
-    .map((l) => Number.parseFloat(l)); // 行の終わりに "," が付く
-  const from = Number(process.env.REAL_FROM ?? 0);
+  // フレームの時刻（秒。書き出した録画は readExportFrames が本体の時間軸で）
+  const times = exp
+    ? []
+    : spawnSync("ffprobe", ["-v", "error", "-select_streams", "v:0", "-show_entries", "frame=pts_time", "-of", "csv=p=0", file], { encoding: "utf8", maxBuffer: 1 << 26 })
+        .stdout.trim()
+        .split("\n")
+        .map((l) => Number.parseFloat(l)); // 行の終わりに "," が付く
+  const from = Number(process.env.REAL_FROM ?? (exp ? -Infinity : 0));
   const to = Number(process.env.REAL_TO ?? Infinity);
+  const allTimes: number[] = []; // 読んだフレームの時刻（ms。REAL_STATS_OUT の fps・抜け）
   // 動画を 1 フレームずつ読む（時刻 ms）
   const readFrames = async (each: (img: Img, t: number) => void, until = to) => {
+    allTimes.length = 0;
+    if (exp) {
+      await readExportFrames(file, exp, (img, tUs) => {
+        const t = tUs / 1000;
+        if (t > until * 1000) return false;
+        allTimes.push(t);
+        if (t < from * 1000) return;
+        each(img, t);
+      });
+      return;
+    }
     const proc = spawn("ffmpeg", ["-v", "error", "-i", file, "-vf", `scale=${W}:${H}`, "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", "rgba", "-"]);
     const size = W * H * 4;
     let buf = Buffer.alloc(0);
@@ -119,6 +151,7 @@ it("実際のプレイ動画", async () => {
         const data = new Uint8ClampedArray(buf.subarray(0, size));
         buf = buf.subarray(size);
         const t = (times[k] ?? k / 60) * 1000;
+        allTimes.push(t);
         k++;
         if (t < from * 1000 || t > until * 1000) continue;
         each({ data, width: W, height: H }, t);
@@ -134,6 +167,7 @@ it("実際のプレイ動画", async () => {
   const out: string[] = [];
 
   let start = solvedState();
+  if (exp && !process.env.REAL_START && !process.env.REAL_START_FILE) start = Uint8Array.from(exp.analysis.input.state);
   // REAL_START_FILE=ファイル: 始まりの状態（JSON の startState か start。精密解析の結果・REAL_READINGS の書き出しをそのまま使える）
   if (process.env.REAL_START_FILE) {
     const j = JSON.parse(readFileSync(process.env.REAL_START_FILE, "utf8")) as { startState?: number[]; start?: number[] };
@@ -211,14 +245,39 @@ it("実際のプレイ動画", async () => {
   // REAL_LIVE_WORKERS=2: ライブの認識を Worker 2 つで交互に処理したとき（フレームの間で引き継ぐものは Worker ごと）
   const liveMemories = Array.from({ length: Number(process.env.REAL_LIVE_WORKERS ?? 1) }, () => ({}));
   let liveTurn = 0;
-  const refiner = process.env.REAL_REFINE === "0" ? null : new Refiner(cv as never, { state: Array.from(start), refs: ARUCO_REFS, from: from * 1000, to: to * 1000, ...(process.env.REAL_PIECES ? { pieces: process.env.REAL_PIECES === "v1" ? ("v1" as const) : ("and" as const) } : {}), ...(process.env.REAL_REFINE_GATE === "0" ? { gate: false } : {}), engine: { observer: ARUCO_OBSERVER, ...JSON.parse(process.env.REAL_REFINE_ENGINE ?? "{}"), decoder: { beamWidth: 32, maxMovesPerStep: 3, rotationCost: 1.5, ...JSON.parse(process.env.REAL_REFINE_ENGINE ?? "{}").decoder } }, pipeline: { ...STICKERS, ...JSON.parse(process.env.REAL_REFINE_CFG ?? "{}") } });
+  const pieces = process.env.REAL_PIECES ? { pieces: process.env.REAL_PIECES === "v1" ? ("v1" as const) : ("and" as const) } : {};
+  const refineEngine = JSON.parse(process.env.REAL_REFINE_ENGINE ?? "{}");
+  // 書き出した録画: 本体が解析に渡した入力（認識・追跡の設定も）のまま。本体の解析の Worker は認識の設定を DEFAULT_PIPELINE に重ねる
+  const refiner =
+    process.env.REAL_REFINE === "0"
+      ? null
+      : exp && plan
+        ? new Refiner(cv as never, {
+            ...plan.input,
+            state: Array.from(start),
+            ...(process.env.REAL_FROM ? { from: from * 1000 } : {}),
+            ...(process.env.REAL_TO ? { to: to * 1000 } : {}),
+            ...pieces,
+            ...(process.env.REAL_REFINE_GATE === "0" ? { gate: false } : {}),
+            engine: { ...plan.input.engine, ...refineEngine, decoder: { ...plan.input.engine?.decoder, ...refineEngine.decoder } },
+            pipeline: { ...DEFAULT_PIPELINE, ...plan.input.pipeline, ...JSON.parse(process.env.REAL_REFINE_CFG ?? "{}") },
+          })
+        : new Refiner(cv as never, { state: Array.from(start), refs: ARUCO_REFS, from: from * 1000, to: to * 1000, ...(process.env.REAL_PIECES ? { pieces: process.env.REAL_PIECES === "v1" ? ("v1" as const) : ("and" as const) } : {}), ...(process.env.REAL_REFINE_GATE === "0" ? { gate: false } : {}), engine: { observer: ARUCO_OBSERVER, ...JSON.parse(process.env.REAL_REFINE_ENGINE ?? "{}"), decoder: { beamWidth: 32, maxMovesPerStep: 3, rotationCost: 1.5, ...JSON.parse(process.env.REAL_REFINE_ENGINE ?? "{}").decoder } }, pipeline: { ...STICKERS, ...JSON.parse(process.env.REAL_REFINE_CFG ?? "{}") } });
   // REAL_RFRAMES=22.1-23.0: 精密解析が精密に処理したフレームの面
   // 精密解析が精密に処理したフレームの読み（ID が読めたマスの数。認識の良し悪し）
   const rstat = { frames: 0, faces: 0, ids: 0, empty: 0 };
   // REAL_RREADINGS=ファイル: 精密解析が精密に処理したフレームの読み（面と ID だけ）を書き出す（betweenMoves.debug.test.ts で、手と手の間の状態がどれだけ読めたかを測る）
   const rreadings: { t: number; faces: { slot: number; ids: number[]; w: number[]; rot?: number[]; held?: boolean; quad?: number[]; c?: number[] }[] }[] = [];
+  // REAL_STATS_OUT: 精密に処理したフレームの読める量と、確かな読みのない区間の材料
+  const statOn = !!process.env.REAL_STATS_OUT;
+  const statFrames: StatFrame[] = [];
+  const statSights: SightFrame[] = [];
   if (refiner && !process.env.REAL_RFRAMES)
     refiner.onFrame = (_t, r: FrameResult) => {
+      if (statOn) {
+        statFrames.push(statFrame(_t, r.faces));
+        if (r.faces.length) statSights.push(sightFrame(_t, r));
+      }
       if (process.env.REAL_RREADINGS) {
         // rot・held: ピースの時刻表（src/track/pieces）の材料（マーカーの向き・1 列だけの面）
         const sf = new Map(sightFrame(_t, r).faces.map((f) => [f.slot, f]));
@@ -238,10 +297,18 @@ it("実際のプレイ動画", async () => {
   }
   Object.assign(liveStats, { tracked: 0, gridded: 0, partial: 0, detected: 0, last: "" });
   const REFINE_EVERY = Number(process.env.REAL_REFINE_EVERY ?? 1); // 精密解析に N 枚に 1 枚だけ渡す（間引いたときの正確さを見る）
-  const SOLVE_FROM = Number(process.env.REAL_SOLVE_FROM ?? -Infinity);
+  const SOLVE_FROM = plan ? -Infinity : Number(process.env.REAL_SOLVE_FROM ?? -Infinity);
   if (refiner && Number.isFinite(SOLVE_FROM)) refiner.setInspectUntil(SOLVE_FROM * 1000);
+  if (refiner && plan?.inspectUntil !== undefined) refiner.setInspectUntil(plan.inspectUntil);
+  let endApplied = false; // 書き出した録画（ソルブ中から進めた解析）: 止めた知らせが届いた所で、解析の範囲の終わりと止めた時刻を渡す
+  const applyEnd = () => {
+    if (!refiner || !plan || plan.mode !== "stream" || endApplied) return;
+    endApplied = true;
+    if (!process.env.REAL_TO) refiner.setEnd(plan.to);
+    refiner.setStop(plan.stop);
+  };
   let lastInspect = -Infinity;
-  const still = process.env.REAL_STILL ? new StillSkipper() : null;
+  const still = flag("REAL_STILL", !!exp) ? new StillSkipper() : null;
   let refineFrames = 0;
   const K = Number(process.env.REAL_K ?? 0);
   // REAL_FPS=6: 1 秒 N 枚に固定して処理する（処理時間によらないので、設定を比べるときに結果がぶれない）。待っている 3 枚のうち動きのいちばん小さいもの
@@ -309,7 +376,7 @@ it("実際のプレイ動画", async () => {
   await readFrames((img, t) => {
     if (process.env.REAL_SAVE && Math.abs(t / 1000 - saveAt) < 0.009) writePng(`${process.env.REAL_SAVE}/frame-${saveAt}.png`, img);
     frames++;
-    if (process.env.REAL_NOLIVE) {
+    if (noLive) {
       // ライブを省く（精密解析だけを本体と同じ条件で測るとき）
     } else if (!K && !FIX) liveFrame(img, t);
     else {
@@ -325,8 +392,13 @@ it("実際のプレイ動画", async () => {
         liveFrame(best.img, best.t);
       }
     }
+    // 書き出した録画: 本体の解析の Worker と同じ範囲・間引き（tests/debug/lib/recording.ts の exportPlan）
+    if (plan) {
+      if (!plan.keep(t)) return;
+      if (plan.endAt !== null && t > plan.endAt) applyEnd();
+    }
     // REAL_SOLVE_FROM=11.4: この時刻（秒）より前はインスペクションとして 60ms に 1 枚だけ精密解析に渡す（vision.worker.ts の INSPECT_EVERY_MS）
-    const inspecting = t < SOLVE_FROM * 1000;
+    const inspecting = plan ? t < plan.thinBefore(t) : t < SOLVE_FROM * 1000;
     if (inspecting && t - lastInspect < 60) return;
     if (inspecting) lastInspect = t;
     if (refiner && frames % REFINE_EVERY === 0) {
@@ -352,6 +424,7 @@ it("実際のプレイ動画", async () => {
     console.log(summarize(nodes, interval, picked.length, 30));
   }
   if (process.env.REAL_READINGS) writeFileSync(process.env.REAL_READINGS, JSON.stringify({ start: Array.from(start), readings }));
+  applyEnd(); // 止めた知らせが最後のフレームの後だった
   if (process.env.REAL_RREADINGS) writeFileSync(process.env.REAL_RREADINGS, JSON.stringify({ start: Array.from(start), readings: rreadings }));
   const liveMoves = simplifyMoves(live.decoder.bestMoves()).map((m) => MOVE_NAMES[m.move]).join(" ");
   const shown = live.view?.state ?? live.decoder.best().state;
@@ -377,7 +450,16 @@ it("実際のプレイ動画", async () => {
   }
   if (refiner || cached) {
     const r0 = performance.now();
-    const end = process.env.REAL_END === "solved" ? solvedState() : process.env.REAL_END === "none" ? null : isSolved(Uint8Array.from(shown)) ? solvedState() : null;
+    const end =
+      process.env.REAL_END === "solved"
+        ? solvedState()
+        : process.env.REAL_END === "none"
+          ? null
+          : exp && !process.env.REAL_END
+            ? exp.analysis.target && Uint8Array.from(exp.analysis.target)
+            : isSolved(Uint8Array.from(shown))
+              ? solvedState()
+              : null;
     // REAL_OBS=ファイル: 精密解析の観測を書き出す（解き直しだけを tests/debug/obsReplay.debug.test.ts で繰り返し測る）
     if (refiner && process.env.REAL_OBS) {
       const arr = (a?: ArrayLike<number>) => (a ? Array.from(a) : undefined);
@@ -390,6 +472,42 @@ it("実際のプレイ動画", async () => {
     }
     const res = cached ?? refiner!.result(end);
     if (refiner && refFile) writeFileSync(refFile, JSON.stringify(res));
+    // 書き出した録画: 録画の設定と、本体の結果との比べ
+    if (exp) {
+      const a = exp.analysis;
+      const rc = exp.recorder;
+      const sec = (t?: number | null) => (t === undefined || t === null ? "-" : `${((t - exp.timeOriginUs / 1000) / 1000).toFixed(3)}s`);
+      out.push(`書き出した録画: ${rc.codec}（${rc.hw ?? "?"}）・${(rc.bitrate / 1e6).toFixed(1)}Mbps・${rc.width}×${rc.height}・圧縮に回した ${rc.frames}・間引いた ${rc.dropped}・${exp.device?.ua ?? ""}`);
+      out.push(`  時刻は録画の始まりから: 回し始め（リアルタイム）${sec(a.live?.startT)}・止めた ${sec(a.live?.endT)}（${a.live?.how ?? "-"}）・インスペクションの終わり ${sec(a.solvingFrom)}・解析の範囲の終わり ${sec(a.input.to)}・${plan?.note}`);
+      const di = a.result?.decodeInfo;
+      if (di) out.push(`  本体の復号: ${di.decoded} 枚（YUV のまま ${di.copied}・${di.format ?? "?"}・${di.matrix ?? "?"}・${di.fullRange ? "full" : "limited"}）・精密に処理 ${di.refined}・飛ばした ${di.gated}／手元: 精密に処理 ${refiner?.frames ?? "-"}・飛ばした ${refiner?.gated ?? "-"}${di.copied < di.decoded ? "（本体は canvas で画素にしたので、同じ画素にならない）" : ""}`);
+      // REAL_APP_TRUTH=ファイル: 本体の結果を piecesBench の正解の形（buildTruth の BT_OUT と同じ { startState, moves }）で書き出す
+      // （PB_TRUTH にそのフォルダを渡す。本当の正解ではなく、本体の解析と比べるため）
+      if (process.env.REAL_APP_TRUTH && a.result?.solved) writeFileSync(process.env.REAL_APP_TRUTH, JSON.stringify({ startState: a.result.startState ?? a.input.state, moves: a.result.moves, note: "app" }));
+      if (!a.result) out.push(`  本体の結果なし（${a.error ?? (a.pending ? "解析中に書き出した" : "?")}）`);
+      else if (refiner) {
+        const diff = compareResults(a.result, res);
+        out.push(sameAsApp ? `アプリの結果と同じ: ${diff.length ? "いいえ" : "はい"}` : `アプリの結果との違い（条件を変えたので参考）: ${diff.length ? "" : "なし"}`);
+        for (const d of diff) out.push(`  ${d}`);
+        if (process.env.REAL_EXPECT_SAME && diff.length) {
+          console.log(out.join("\n"));
+          throw new Error("アプリの結果と違う");
+        }
+      }
+    }
+    // REAL_STATS_OUT=ファイル: 読める量の物差し（実機の録画と x264 を同じ物差しで比べる）
+    if (statOn) {
+      const ref = process.env.REAL_STATS_REF ? (JSON.parse(readFileSync(process.env.REAL_STATS_REF, "utf8")) as RefineResult) : null;
+      const rr = process.env.REAL_STATS_RANGE?.split(",").map((x) => Number(x) * 1000);
+      const base = ref ?? res;
+      const range: [number, number] | null = rr ? [rr[0], rr[1]] : base.start !== null && base.end !== null ? [base.start, base.end] : null;
+      if (range) {
+        const st = readStats(range, allTimes, statFrames, statSights);
+        const row = { name: process.env.REAL_NAME ?? file.split("/").pop(), label: process.env.REAL_STATS_LABEL ?? (exp ? "実機" : "動画"), ...st, solved: res.solved, method: res.method, moves: res.moves.length, inferred: res.moves.filter((m) => m.inferred).length, ...(exp ? { recorder: exp.recorder, device: exp.device?.ua } : {}) };
+        appendFileSync(process.env.REAL_STATS_OUT!, `${JSON.stringify(row)}\n`);
+        out.push(`読める量（${(range[0] / 1000).toFixed(2)}〜${(range[1] / 1000).toFixed(2)}s）: ${st.fps}fps（間隔の中央 ${st.medianMs}ms・抜け ${st.holes} か所 ${st.missing} 枚）・1 フレームに読めたマス ${st.cells}・ピース ${st.pieces}・確かな読みのない 1 秒より長い区間 ${st.gaps1}（${st.gaps1Sec} 秒）・いちばん長い ${st.longest} 秒`);
+      } else out.push("読める量: 範囲が決まらない（REAL_STATS_RANGE か REAL_STATS_REF を渡す）");
+    }
     // REAL_METHODS=old,v1,and・REAL_METHODS_OUT=ファイル: 同じ読みで解き直しの方法ごとに結果を 1 行ずつ足す（REAL_PIECES=1 と一緒に:
     // ピースの材料を集めるため）。タイムの端の前の決まり（端の手が inferred なら時刻も不確か）での不確かさも出す
     if (refiner && process.env.REAL_METHODS && process.env.REAL_METHODS_OUT) {

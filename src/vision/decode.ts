@@ -1,9 +1,10 @@
 // 録画（WebCodecs で圧縮したもの）を1フレームずつ復号して画素にする。精密解析の Worker で使う。
 import type { PixelSource } from "./image";
 import type { Recording } from "./recorder";
-import { type ChunkInit, DecodeQueue, FramePixelReader } from "./videoDecoder";
+import { type ChunkInit, DecodeQueue, type DecodeInfo, FramePixelReader } from "./videoDecoder";
 
-export async function decodeRecording(rec: Recording, onFrame: (img: PixelSource, t: number) => void): Promise<number> {
+// onInfo: 復号し終えたときの様子（RefineResult.decodeInfo）
+export async function decodeRecording(rec: Recording, onFrame: (img: PixelSource, t: number) => void, onInfo?: (info: DecodeInfo) => void): Promise<number> {
   const reader = new FramePixelReader(rec.width, rec.height);
   const queue = new DecodeQueue(rec.config);
   let count = 0;
@@ -24,6 +25,7 @@ export async function decodeRecording(rec: Recording, onFrame: (img: PixelSource
     queue.close();
   }
   if (queue.error) throw queue.error;
+  onInfo?.(reader.info());
   return count;
 }
 
@@ -47,6 +49,11 @@ export class StreamDecoder {
   // canvas を通さずに取り出したフレームの数（framePixels）
   get copied(): number {
     return this.reader.copied;
+  }
+
+  // 復号の様子（RefineResult.decodeInfo）
+  info(): DecodeInfo {
+    return this.reader.info();
   }
 
   // onFrame が Promise を返したら待つ（検出を別の Worker に頼んでいる間は、次のフレームを復号しすぎない）

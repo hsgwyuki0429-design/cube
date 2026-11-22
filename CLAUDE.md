@@ -93,6 +93,7 @@ src/vision Vision             ← 映像 → マーカー → 見えている面
 - 重い計測は `tests/debug/*.debug.test.ts`（`npx vitest run -c vitest.debug.config.ts …`）。使い方は各ファイルの先頭
 - 実機のライブの記録: 設定画面の「ライブの記録を書き出す」（`src/track/liveLog.ts`）→ 手元で `LIVE_LOG=ファイル` で
   `tests/debug/liveLog.debug.test.ts` に通し直す（追跡は読みだけで決まる）
+- 実機の録画: 設定画面の「録画を書き出す」→ 手元で `REAL_VIDEO=ファイル` で精密解析し直す（下の「検証」の「実機の録画で確かめる」）
 
 ---
 
@@ -238,7 +239,8 @@ facelet の直接置換テーブルを手書きすると必ず間違える。**3
   （実機ではまだ試していない）
 - **録画**（`src/vision/recorder.ts`）: 精密解析を始めたときから WebCodecs で圧縮して保持。H.264 Baseline（ハードウェア優先）・**5Mbps**
   （`BITRATES`。圧縮で読めるマスが減るのが精密解析の一番の弱点）。詰まったら間引き、間引きが 3% を超えたら次から 1 段下げる仕組みがある。
-  映像は保存も送信もしない
+  映像は保存も送信もしない（開発用の「録画を書き出す」を利用者が押したときだけ書き出す。直近のソルブの録画は次の録画を始めるまで持つ:
+  `controller.lastRecording`。持つ量の上限 `MAX_BYTES` は変えていない）
 - **インスペクションから進める**（`controller.startAnalysis`）: 録画を 250ms ごとに解析の Worker へ渡す（`stream-feed`）。回し始めの知らせ
   （`stream-solving`）までは 60ms に 1 枚だけ処理し（`INSPECT_EVERY_MS`、その間は録画を 3 秒遅らせて復号）、**ソルブ中は間引かない**。
   止まったフレームは飛ばす（`StillSkipper`・`Refiner.gate`）。途中結果はライブに反映しない
@@ -386,6 +388,16 @@ facelet の直接置換テーブルを手書きすると必ず間違える。**3
   2026-11-20 の値（`REAL_FROM`・`REAL_SOLVE_FROM`）: 5046 は 10.10・12.88、5047 は 10.33・14.62、5048 は 14.35・21.04、5049 は 4.21・12.79 秒
 - **本体の録画の画質でも確かめる**（`ffmpeg -vf scale=1280:-2 -r 60 -c:v libx264 -profile:v baseline -preset veryfast -tune zerolatency -b:v 5000k -maxrate 5000k -bufsize 2500k -g 60`）。
   元の画質だけでは実機で起きる問題が出ない
+- **実機の録画で確かめる**（`docs/history.md` の「実機の録画を書き出して比べる道具」）: 実機でタイマーのソルブをしたら、設定画面の「録画を書き出す」
+  （`src/ui/recordingExport.ts`。iPhone は共有シートの「ファイルに保存」）。中身は精密解析に渡した録画そのもの（圧縮したままの H.264 を MP4 に:
+  `src/vision/mp4Mux.ts`）と、録画の設定（コーデック・ハードウェア・ビットレート・大きさ）・間引いたフレーム・`Solve`（`edges` など）・
+  精密解析の入力と結果（`RefineResult.decodeInfo` に復号の様子と、回し始め・止めた知らせが届いた所）。手元では
+  `REAL_VIDEO=書き出したファイル` だけで realVideo が本体と同じ条件になる（YUV のまま読み・縮めない・本体の時間軸・始まりの状態・範囲・間引き・
+  止めた時刻・設定は書き出しから。ライブは省く）。「アプリの結果と同じ」を出す（`REAL_EXPECT_SAME=1` で違えば失敗）。`REAL_RREADINGS`・`REAL_OBS`・
+  `REAL_APP_TRUTH`（本体の結果を正解の形で）を付ければ `piecesBench` にも通せる。読める量は `REAL_STATS_OUT=rows.jsonl`（1 フレームに読めた
+  マス・ピース、確かな読みのない区間、実際の fps・抜け）→ `RS_ROWS=rows.jsonl` で `recordingStats.debug.test.ts`。比べる相手は同じ物差しの
+  x264 の 5・2.5Mbps（bench-2 の圧縮。表は `docs/history.md`）。E2E: `E2E_MODE=timer E2E_EXPORT=フォルダ E2E_EXPORT_CHECK=1`（書き出し → 手元で
+  解析し直してアプリの結果と比べる）
 - ライブの良し悪しは「3D に出した状態が本当の状態（精密解析の手順と時刻）と同じだった時間の割合」（遅れ 300ms まで）。追跡だけ・解き直し
   だけを直すときは認識の結果を書き出して再生する: `REAL_READINGS=` → `liveReplay.debug.test.ts`、`REAL_OBS=` → `obsReplay.debug.test.ts`。
   3D の見せ方（回して見せた手のうち本当の手と結びつかないもの・本当の手を回した割合）は `liveReplay` の `LIVE_ANIM=1`、E2E は「3D:」の行

@@ -5,6 +5,7 @@ import { connectPad, disconnectPad, padStore } from "../app/ganTimer";
 import { useStore } from "../app/store";
 import { HelpPage } from "./HelpPage";
 import { exportLiveLog } from "./liveLogExport";
+import { exportRecording } from "./recordingExport";
 
 function Field(props: { label: string; desc?: string; children: preact.ComponentChildren }) {
   return (
@@ -162,6 +163,12 @@ export function SettingsPage() {
           </p>
           <button class="btn" onClick={() => void exportLiveLog()}>
             ライブの記録を書き出す
+          </button>
+          <p class="small muted" style={{ margin: "14px 0 10px" }}>
+            直前のソルブの録画（精密解析に使った映像）と、録画の設定・タイマーの開始と停止・解析の結果をファイルにします。開発用です。映像が入るので、送る相手に気をつけてください。iPhone では共有シートの「ファイルに保存」を選んでください（写真に保存すると解析の情報が消えることがあります）。次のソルブを始めると前の録画は消えます。
+          </p>
+          <button class="btn" onClick={() => void exportRecording()}>
+            録画を書き出す
           </button>
         </div>
       </div>

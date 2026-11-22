@@ -17,6 +17,7 @@ import type { DecodedMove, TrackStatus } from "../track/types";
 import type { Lab } from "./color";
 import { type PatchFrame, facePatch, refineEnd, refineStart } from "./fineTiming";
 import type { CV, PixelSource } from "./image";
+import type { DecodeInfo } from "./videoDecoder";
 import { DEFAULT_PIPELINE, type FrameResult, type PipelineConfig, frameReading, processFrame } from "./pipeline";
 import { type FaceLayer, cellH } from "../aruco/cube";
 import type { Marker } from "../aruco/detect";
@@ -161,6 +162,10 @@ export interface RefineResult {
   // 打ち切った最後の手の回し終わりをフレームから決められず、回し始めと止めた時刻の真ん中にした（近似。確定のまま）: その間の長さ（ms）
   endApproxMs?: number;
   raw?: { move: number; t0?: number; t: number; start: number; end: number; inferred?: boolean }[]; // まとめる前の手（調査用）
+  // 録画を復号した様子と、精密に処理したフレーム（refined）・軽い検査で飛ばしたフレーム（gated）の数（調査用。録画を解析した Worker が足す）
+  // stream: ソルブ中から進めた解析のとき、回し始めの知らせ（solvingAt）・止めた知らせ（endAt）が届いたときに最後に来ていたフレームの時刻と、
+  // 最後の間引きの境（fullFrom）。手元で同じフレームを同じように処理し直すため（tests/debug/realVideo.debug.test.ts）
+  decodeInfo?: DecodeInfo & { refined: number; gated: number; stream?: { solvingAt: number | null; endAt: number | null; fullFrom: number } };
 }
 
 const EDGE_NOISE_MAX = 8; // 最初・最後の「それだけで打ち消し合う手の並び」として除く長さの上限

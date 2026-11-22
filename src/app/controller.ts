@@ -12,7 +12,7 @@ import type { PipelineConfig } from "../vision/pipeline";
 import type { FrameMessage, StreamPartial } from "../vision/protocol";
 import type { LiveStop } from "../track/stopCut";
 import type { RefineInput, RefineResult } from "../vision/refine";
-import { FrameRecorder } from "../vision/recorder";
+import { FrameRecorder, type RecorderInfo, type Recording } from "../vision/recorder";
 import type { VideoFileInfo } from "../vision/videoFile";
 import { RefineClient, VisionClient } from "../vision/visionClient";
 import { ARUCO_OBSERVER, LIVE_OBSERVER } from "../track/observer";
@@ -128,6 +128,7 @@ class Controller {
   readonly camera = new CameraSource();
   vision: VisionClient | null = null;
   readonly recorder = new FrameRecorder(); // タイマー計測中の録画（ソルブ後の精密解析用）
+  lastRecording: SolveRecording | null = null; // 直近のソルブの録画（開発用の書き出し）
   readonly refiner = new RefineClient();
   // 動画ファイルの解析（ソルブ中から進める解析と別の Worker。並べて動かしても追跡を止めない）
   private readonly videoRefiner = new RefineClient();
@@ -464,6 +465,7 @@ class Controller {
   // timed: タイマーの計測（止めたときに結果を使う）。keep: いまの追跡の手のうち、解析の前からある手の数
   async startAnalysis(opts: { state: ArrayLike<number>; refs?: Lab[]; keep: number; timed: boolean }): Promise<boolean> {
     this.cancelAnalysis();
+    this.lastRecording = null; // 前のソルブの録画は、次の録画を始めるときに手放す（持ち方の上限は録画 1 回分のまま）
     const s = settingsStore.get();
     const refs = opts.refs ?? this.store.get().track?.refs ?? this.store.get().cube?.refs;
     // 前回の解析中に落ちていたら軽い設定で解析する（やめはしない: 結果は必ず出す。落ちずに終われば元に戻っていく: src/app/crashGuard.ts）
@@ -521,7 +523,8 @@ class Controller {
 
   // タイマーを止めた: to までの録画を渡し切り、終わりの状態（完成）で解き直した結果を待つ Promise を返す
   // stop: ライブが揃ったと判断して止めた時刻（精密解析はその前の最後の揃いで打ち切る: RefineInput.stop）。手動・GAN タイマーは渡さない
-  async endAnalysis(to: number, target: ArrayLike<number> | null, progress?: (p: number) => void, stop?: LiveStop): Promise<Promise<RefineResult> | null> {
+  // live: 記録の番号とリアルタイムの開始・停止（開発用の録画の書き出しに残す）
+  async endAnalysis(to: number, target: ArrayLike<number> | null, progress?: (p: number) => void, stop?: LiveStop, live?: SolveRecording["live"]): Promise<Promise<RefineResult> | null> {
     const session = this.session;
     if (!session || !session.timed || !session.input) return null;
     clearInterval(session.timer);
@@ -531,6 +534,8 @@ class Controller {
     if (session.id >= 0) this.feedAnalysis(session, to);
     // 解析が途中で失敗した（Worker が落ちた・例外・止まった）ときのために、録画全体を取っておく（圧縮した映像のかたまりを指すだけ）
     const backup = this.recorder.extract(session.from, to);
+    const whole = this.recorder.extract(session.from, Infinity);
+    const capInput: RefineInput = { ...session.input, to, ...(session.solvingFrom !== undefined ? { inspectUntil: session.solvingFrom } : {}), ...(stop ? { stop } : {}) };
     this.recorder.clear(); // 渡し終えた録画は使わない（解析の Worker が自分の分を持っている）
     // 必ず結果を出す:
     //   - 解析の Worker がまだ始まっていなかった（OpenCV の読み込み中に解き終えた）ら、録画全体をいまから解析する
@@ -539,11 +544,30 @@ class Controller {
     const again = (why: unknown) => {
       if (!backup) throw why instanceof Error ? why : new Error(String(why));
       console.warn("解析をやり直します", why);
+      if (this.lastRecording?.input === capInput) this.lastRecording.retried = errorText(why);
       this.refiner.close();
-      return this.watched((p) => this.refiner.run(backup, { ...session.input, to, ...(session.solvingFrom !== undefined ? { inspectUntil: session.solvingFrom } : {}), ...(stop ? { stop } : {}) }, p), progress);
+      return this.watched((p) => this.refiner.run(backup, capInput, p), progress);
     };
     const first = session.id >= 0 ? this.watched((p) => this.refiner.endStream(session.id, to, target, p, stop), progress) : Promise.reject(new Error("解析が始まっていませんでした"));
     const result = first.catch(again);
+    // 開発用の「録画を書き出す」（設定画面）: 直近のソルブの録画（解析に渡した圧縮のまま）と、解析の入力・結果を次の録画を始めるまで持つ。
+    // 録画のかたまりは解析が終わるまで持っている backup と同じもの（写さない）。書き出すのは利用者がボタンを押したときだけ
+    if (backup) {
+      const cap: SolveRecording = {
+        // ソルブ中から進めた解析は、止めた時刻 to より後のフレームも（止めた知らせが届く前に）処理していることがあるので、録画の終わりまで
+        recording: whole ?? backup,
+        recorder: this.recorder.info(),
+        input: capInput,
+        solvingFrom: session.solvingFrom,
+        target: target ? Array.from(target) : null,
+        ...(live ? { live } : {}),
+      };
+      this.lastRecording = cap;
+      result.then(
+        (r) => (cap.result = r),
+        (e) => (cap.error = errorText(e)),
+      );
+    }
     this.liveResting = true;
     const rest = window.setTimeout(() => (this.liveResting = false), LIVE_REST_MAX_MS);
     // 終わったら解析の Worker を閉じてメモリを返す（次のインスペクションで作り直す）
@@ -693,6 +717,22 @@ class Controller {
     clearInterval(this.statsTimer);
   }
 }
+
+// 直近のソルブの録画（開発用の書き出し: src/ui/recordingExport.ts）。input は解析に渡したもの（止めた時刻 to・インスペクションの終わり・
+// 止めた時刻 stop を足したもの: 手元で同じ解析をし直すため）。result・error は解析が終わると入る
+export interface SolveRecording {
+  recording: Recording;
+  recorder: RecorderInfo;
+  input: RefineInput;
+  solvingFrom?: number;
+  target: number[] | null;
+  live?: { solveId: string; startT: number; endT: number; how: string };
+  result?: RefineResult;
+  error?: string;
+  retried?: string; // ソルブ中から進めた解析が失敗し、録画全体を解析し直した（その理由）
+}
+
+const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 interface AnalysisSession {
   id: number; // 解析 Worker の中の番号（始まるまで -1）
