@@ -7,6 +7,20 @@ export interface RecordedChunk {
   data: ArrayBuffer;
 }
 
+// 録画の設定と数: frames = 圧縮に回したフレーム、dropped = 圧縮が追いつかずに間引いたフレーム（カメラのフレームのうち）
+export interface RecorderInfo {
+  codec: string | null;
+  hw: HardwareAcceleration | null;
+  bitrate: number;
+  width: number;
+  height: number;
+  framerate: number; // 圧縮に伝えた fps（実際の fps は録画の時刻から）
+  latencyMode: string;
+  keyIntervalMs: number;
+  frames: number;
+  dropped: number;
+}
+
 export interface Recording {
   config: VideoDecoderConfig;
   chunks: RecordedChunk[];
@@ -84,6 +98,7 @@ export class FrameRecorder {
   private decoderConfig: VideoDecoderConfig | null = null;
   private lastKey = -Infinity;
   private codec: string | null = null;
+  hw: HardwareAcceleration | null = null; // 頼んだハードウェアの使い方（prefer-hardware で対応していればハードウェアの圧縮）
   recording = false;
   dropped = 0;
   frames = 0;
@@ -130,6 +145,7 @@ export class FrameRecorder {
         const dec = await VideoDecoder.isConfigSupported({ codec, codedWidth: w, codedHeight: h });
         if (!enc.supported || !dec.supported) continue;
         this.codec = codec;
+        this.hw = hw;
         this.bitrate = bitrate;
         this.encoder = new VideoEncoder({
           output: (chunk, meta) => {
@@ -263,6 +279,11 @@ export class FrameRecorder {
     const chunks = this.chunks.slice(start).filter((c) => c.timestamp <= b);
     if (!chunks.length || chunks[0].type !== "key") return null;
     return { config: this.decoderConfig, chunks, width: this.width, height: this.height };
+  }
+
+  // 録画の設定と数（開発用の「録画を書き出す」: src/ui/recordingExport.ts）
+  info(): RecorderInfo {
+    return { codec: this.codec, hw: this.hw, bitrate: this.bitrate, width: this.width, height: this.height, framerate: 60, latencyMode: "realtime", keyIntervalMs: 1000, frames: this.frames, dropped: this.dropped };
   }
 
   stop(): void {

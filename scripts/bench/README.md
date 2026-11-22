@@ -25,3 +25,10 @@
   長辺は切り出しの大きさのまま）。7 本 × 3 × 3 × 3 = 189 本は `xargs -P` で並べてよい（材料づくりは時間を測らない）
 - 解き直しは `piecesBench`（`PB_DIR=$BENCH/cropmat`）を 1 本ずつ別のプロセスで → `rows.jsonl` → `python3 cropsum.py`（`BENCH` を読む）
 - 確かめる: `cd $BENCH && sha256sum -c` に `crop-1b.sha256` を渡す（1a の元の解像度の材料 `native/` も入っている）
+
+## 実機の録画と比べる読める量（精密解析 1c の前に）
+
+- `stats.sh <動画> <5000k|2500k>`: 本体の条件のソルブだけで、読める量の物差し（1 フレームに読めたマス・ピース、確かな読みのない区間、fps・抜け）を
+  `$BENCH/stats/rows_<画質>.jsonl` に 1 行ずつ。5000k を先に（その結果の範囲を 2500k にも使う）。まとめは `RS_ROWS=… tests/debug/recordingStats.debug.test.ts`
+- 実機の録画（設定画面の「録画を書き出す」）は `REAL_VIDEO=書き出したファイル REAL_STATS_OUT=… REAL_STATS_LABEL=実機` で同じ行を足す（`docs/history.md` の
+  「実機の録画を書き出して比べる道具」）

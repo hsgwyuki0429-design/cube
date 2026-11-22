@@ -5,6 +5,8 @@
 //   E2E_VIEW=corner E2E_TPS=3 npm run e2e
 //   E2E_NOHELPER=1（認識の補助の Worker を使わない）
 //   E2E_QUERY='&refinepool=0'（URL に足す。&refinepool=0 はタイマーの精密解析で検出を別の Worker に分けない）
+//   E2E_MODE=timer E2E_EXPORT=フォルダ E2E_EXPORT_CHECK=1（「録画を書き出す」を押して保存し、手元の realVideo で解析し直してアプリの結果と比べる。
+//   E2E_EXPORT_STATS=rows.jsonl で読める量の物差しも足す）
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { chromium } from "playwright-core";
@@ -147,6 +149,34 @@ try {
       console.log(`  ${await turnStats(page)}`);
       console.log(`  edges: start ${((r.startT - r.truthStart) / 1000).toFixed(3)}s stop ${((r.startT + (live?.timeMs ?? 0) - r.truthEnd) / 1000).toFixed(3)}s inspection ${((r.truthStart - r.inspectionStart) / 1000).toFixed(2)}s analysis ${r.result?.analysis}`);
       for (const l of logs.filter((l) => l.includes("[start]") || l.includes("[stop]"))) console.log(`  ${l}`);
+      // E2E_EXPORT=フォルダ: 設定画面の「録画を書き出す」を押して、書き出した録画を保存する。E2E_EXPORT_CHECK=1 なら手元の
+      // realVideo（tests/debug/realVideo.debug.test.ts）で精密解析し直し、アプリの結果と同じかを確かめる（違えば NG）
+      if (process.env.E2E_EXPORT) {
+        const dir = process.env.E2E_EXPORT;
+        mkdirSync(dir, { recursive: true });
+        await page.evaluate(() => window.__cubevision.store.set({ screen: "settings" }));
+        const [dl] = await Promise.all([page.waitForEvent("download", { timeout: 30000 }), page.getByRole("button", { name: "録画を書き出す" }).click()]);
+        const file = `${dir}/seed${seed}-${dl.suggestedFilename()}`;
+        await dl.saveAs(file);
+        console.log(`  export: ${file}`);
+        if (process.env.E2E_EXPORT_CHECK) {
+          const env = { ...process.env, REAL_VIDEO: file, REAL_EXPECT_SAME: "1", ...(process.env.E2E_EXPORT_STATS ? { REAL_STATS_OUT: process.env.E2E_EXPORT_STATS, REAL_STATS_LABEL: "合成（E2E）", REAL_NAME: `seed${seed}` } : {}) };
+          const code = await new Promise((resolve) => {
+            const p = spawn("npx", ["vitest", "run", "-c", "vitest.debug.config.ts", "tests/debug/realVideo.debug.test.ts", "--silent=false"], { env, stdio: ["ignore", "pipe", "pipe"] });
+            let text = "";
+            p.stdout.on("data", (d) => (text += d));
+            p.stderr.on("data", (d) => (text += d));
+            p.on("close", (c) => {
+              for (const l of text.split("\n").filter((l) => /書き出した録画|時刻は録画|本体の復号|アプリの結果|読める量|^  (手順|stopCut|start|end|method|solved|inferred|手の時刻)/.test(l))) console.log(`  ${l.trim()}`);
+              resolve(c);
+            });
+          });
+          if (code !== 0) {
+            console.log(`  export check: NG（終了コード ${code}）`);
+            failures++;
+          } else console.log("  export check: OK");
+        }
+      }
       if (!ok || process.env.E2E_TRACK) {
         // NG のとき: 終わった後のライブの追跡の様子（揃っていると見ているか・作り変えたか）
         const tr = await page.evaluate(() => {

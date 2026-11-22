@@ -6,6 +6,7 @@ import { type Mat3, ORIENTATIONS, mul } from "../cube/model";
 import { TrackerEngine, focusCells } from "../track/engine";
 import { LiveLog } from "../track/liveLog";
 import { StreamDecoder, decodeRecording } from "./decode";
+import type { DecodeInfo } from "./videoDecoder";
 import type { Recording } from "./recorder";
 import { StillSkipper } from "./motion";
 import { FocalTracker, rotationAngle } from "./pose";
@@ -49,6 +50,11 @@ interface Stream {
   // 実物の動画（46 秒・5Mbps）の解析が 0 個 73 秒 → 1 個 67 秒・2 個 62 秒と 1〜2 割しか縮まない。ソルブ中はライブの認識と CPU を
   // 取り合うので、実機で確かめるまで既定にしない（2026-11）
   par: Promise<{ pool: DetectPool; feeder: ParallelFeeder } | null>;
+  // 手元で同じ解析をし直すため（RefineResult.decodeInfo.stream）: 最後に streamFrame に来たフレームの時刻と、回し始めの知らせ・止めた知らせが
+  // 届いたときのそれ（その前のフレームは間引きの境・解析の範囲の終わりを知らずに処理している）
+  lastSeen: number;
+  solvingAt: number | null;
+  endAt: number | null;
 }
 const streams = new Map<number, Stream>();
 // 中止を頼まれた動画の解析
@@ -76,6 +82,7 @@ function releaseChunks(id: number, s: Stream): void {
 }
 
 async function streamFrame(id: number, s: Stream, img: PixelSource, t: number): Promise<void> {
+  s.lastSeen = t;
   if (t < s.fullFrom) {
     if (t - s.lastInspect < INSPECT_EVERY_MS) return;
     s.lastInspect = t;
@@ -403,17 +410,24 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
           const inspectUntil = input.inspectUntil ?? -Infinity;
           if (Number.isFinite(inspectUntil)) refiner.setInspectUntil(inspectUntil);
           let lastInspect = -Infinity;
-          await decodeRecording(recording, (img, t) => {
-            if (t < input.from || t > input.to) return;
-            progress();
-            if (t < inspectUntil) {
-              if (t - lastInspect < INSPECT_EVERY_MS) return;
-              lastInspect = t;
-            }
-            for (const f of still.next(img, t)) refiner.push(f.img, f.t);
-          });
+          let info: DecodeInfo | null = null;
+          await decodeRecording(
+            recording,
+            (img, t) => {
+              if (t < input.from || t > input.to) return;
+              progress();
+              if (t < inspectUntil) {
+                if (t - lastInspect < INSPECT_EVERY_MS) return;
+                lastInspect = t;
+              }
+              for (const f of still.next(img, t)) refiner.push(f.img, f.t);
+            },
+            (i) => (info = i),
+          );
           post({ type: "refine-phase", id, phase: "decode" });
-          post({ type: "refine-result", id, result: refiner.result(undefined, phasePoster(id)) });
+          const result = refiner.result(undefined, phasePoster(id));
+          if (info) result.decodeInfo = { ...(info as DecodeInfo), refined: refiner.frames, gated: refiner.gated };
+          post({ type: "refine-result", id, result });
         } catch (e) {
           post({ type: "refine-error", id, message: errorMessage(e) });
         }
@@ -425,7 +439,7 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
           if (!msg.input) return;
           const refiner = newRefiner(msg.input);
           const par = parallelFeeder(refiner, msg.input.parallel === undefined ? 0 : poolFor(msg.input));
-          s = { refiner, decoder: null, fedUntil: 0, lastPartial: -Infinity, still: new StillSkipper(), fullFrom: msg.inspection ? Infinity : -Infinity, held: [], lastInspect: -Infinity, par };
+          s = { refiner, decoder: null, fedUntil: 0, lastPartial: -Infinity, still: new StillSkipper(), fullFrom: msg.inspection ? Infinity : -Infinity, held: [], lastInspect: -Infinity, par, lastSeen: -Infinity, solvingAt: null, endAt: null };
           streams.set(msg.id, s);
         }
         const st = s;
@@ -440,6 +454,7 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
       case "stream-solving": {
         const s = streams.get(msg.id);
         if (!s || s.fullFrom !== Infinity) return;
+        s.solvingAt = s.lastSeen;
         s.fullFrom = msg.from;
         s.refiner.setInspectUntil(msg.from);
         releaseChunks(msg.id, s);
@@ -451,6 +466,7 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
           post({ type: "refine-error", id: msg.id, message: "解析が始まっていません" });
           return;
         }
+        s.endAt = s.lastSeen;
         s.refiner.setEnd(msg.to);
         s.refiner.setStop(msg.stop);
         s.end = { from: s.refiner.lastT, to: msg.to, posted: 0 };
@@ -469,6 +485,7 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
           const t1 = performance.now();
           post({ type: "refine-phase", id: msg.id, phase: "decode" });
           const result = s.refiner.result(msg.target ? Uint8Array.from(msg.target) : null, phasePoster(msg.id));
+          if (s.decoder) result.decodeInfo = { ...s.decoder.info(), refined: s.refiner.frames, gated: s.refiner.gated, stream: { solvingAt: s.solvingAt, endAt: s.endAt, fullFrom: s.fullFrom } };
           // 調査用: 止めた時点の遅れ・残りの処理・解き直しの時間
           console.info(`[analysis] behind ${behind.toFixed(0)}ms rest ${(t1 - t0).toFixed(0)}ms result ${(performance.now() - t1).toFixed(0)}ms frames ${s.refiner.frames} gated ${s.refiner.gated} copied ${s.decoder?.copied ?? 0} pool ${pool}`);
           post({ type: "refine-result", id: msg.id, result });
