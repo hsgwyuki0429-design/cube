@@ -13,6 +13,7 @@ declare global {
   interface Window {
     __cubevision?: typeof controller;
     __cubevisionTimer?: typeof timerStore;
+    __cubevisionTurns?: { move: number; t: number; instant: boolean }[]; // デモのライブの 3D が回した手・塗り替えた手（LiveCube3D）
     __cvMounted?: boolean;
     __cvBootError?: (reason?: string) => void;
   }

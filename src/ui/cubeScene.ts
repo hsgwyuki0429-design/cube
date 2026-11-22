@@ -28,6 +28,7 @@ import {
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import { RoomEnvironment } from "three/examples/jsm/environments/RoomEnvironment.js";
 import { NORMAL, applyMove, faceletGeometry, moveAmount, moveFace, solvedState, type CubeState } from "../cube/model";
+import { turnMs } from "./turnTiming";
 
 // 面 U R F D L B の色（明るい標準配色。スピードキューブのステッカーに近い色）
 export const FACE_COLORS = ["#f4f5f0", "#e3263a", "#13b255", "#ffd42a", "#ff7a12", "#1f5fe0"];
@@ -37,10 +38,7 @@ const EYE_LAT = (26 * Math.PI) / 180;
 const EYE_LON = (32 * Math.PI) / 180;
 const EYE_DIST = 12.5;
 
-// 回す速さ: 1/4 回転・半回転の長さ（ms）。待っている手があれば速める（下限あり）
-export const TURN_MS = 190;
-export const HALF_MS = 270;
-export const MIN_TURN_MS = 85;
+export { HALF_MS, MIN_TURN_MS, TURN_MS } from "./turnTiming";
 
 // 回し方の動き: 最初に素早く動き、最後にすっと止まる（少しだけ行き過ぎて戻る: 本物のキューブのカチッと止まる感じ）
 export function turnEase(t: number): number {
@@ -71,12 +69,12 @@ export class CubeScene {
   private mats: MeshStandardMaterial[];
   private state: CubeState = solvedState();
   private turn: Turn | null = null;
-  private queue: { move: number; dur: number }[] = [];
+  private queue: { move: number; dur: number; instant?: boolean }[] = [];
   private dimMats: MeshStandardMaterial[];
   private grayMat: MeshStandardMaterial;
   private mask: PieceMask | null = null;
-  // 手を回し始めたとき
-  onTurn: ((move: number) => void) | null = null;
+  // 手を回し始めたとき（instant: 回さずに塗り替えた）
+  onTurn: ((move: number, instant: boolean) => void) | null = null;
   private dirty = true;
   private raf = 0;
   private disposed = false;
@@ -191,9 +189,9 @@ export class CubeScene {
     return this.queue.length;
   }
 
-  // 待っている手を置き換える（回している手はそのまま）
-  setQueue(moves: number[]): void {
-    this.queue = moves.map((move) => ({ move, dur: 0 }));
+  // 待っている手を置き換える（回している手はそのまま）。instant[i] が true の手は回さずに、順番が来たらその場で塗り替える
+  setQueue(moves: number[], instant?: boolean[]): void {
+    this.queue = moves.map((move, i) => ({ move, dur: 0, instant: !!instant?.[i] }));
   }
 
   // 回している途中の手・待っている手をやめる（回している手は回し終えたことにしない）
@@ -227,6 +225,13 @@ export class CubeScene {
   }
 
   private startTurn(now: number): void {
+    // 回さない手は、順番が来たらその場で塗り替える
+    while (this.queue[0]?.instant) {
+      const q = this.queue.shift()!;
+      this.state = applyMove(this.state, q.move);
+      this.paint();
+      this.onTurn?.(q.move, true);
+    }
     const next = this.queue.shift();
     if (!next) return;
     const f = moveFace(next.move);
@@ -234,12 +239,10 @@ export class CubeScene {
     const n = NORMAL[f];
     // 時計回り（外から見て）= 外向きの法線のまわりに -90°
     const angle = amount === 1 ? -Math.PI / 2 : amount === 2 ? -Math.PI : Math.PI / 2;
-    const base = amount === 2 ? HALF_MS : TURN_MS;
-    const speed = 1 + 0.45 * this.queue.length; // 溜まっていれば速める
-    const dur = next.dur > 0 ? next.dur : Math.max(amount === 2 ? MIN_TURN_MS * 1.3 : MIN_TURN_MS, base / speed);
+    const dur = next.dur > 0 ? next.dur : turnMs(amount, this.queue.filter((q) => !q.instant).length);
     for (const c of this.cubies) if (c.pos[0] * n[0] + c.pos[1] * n[1] + c.pos[2] * n[2] === 1) this.pivot.add(c.group);
     this.turn = { move: next.move, start: now, dur, axis: new Vector3(...n), angle };
-    this.onTurn?.(next.move);
+    this.onTurn?.(next.move, false);
   }
 
   private endTurn(done: boolean): void {

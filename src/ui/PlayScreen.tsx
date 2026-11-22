@@ -12,6 +12,7 @@ import { MOVE_NAMES } from "../cube/model";
 import { mergeQuickRepeats, simplifyMoves } from "../track/merge";
 import { CameraView } from "./CameraView";
 import { LiveCube3D } from "./LiveCube3D";
+import { seenMoves } from "./liveShow";
 import { StartCard } from "./playParts";
 import { moveLabel } from "./notation";
 import { ScanPanel } from "./ScanPanel";
@@ -173,6 +174,8 @@ function CubeInset() {
   // 足された手は回して見せ、解釈が変わったら回さずにその状態へ切り替える（LiveCube3D）。手順を追えずに見えている色に合わせて
   // 作り変えたら（track.base）、その場でその状態にする
   const moves = (track?.moves ?? []).map((m) => m.move);
+  // 層が動いたのをフレームで見た手だけ回して見せる（見ていない手は回さずに塗り替える: src/ui/liveShow.ts）
+  const moveSeen = seenMoves(track?.moves ?? [], track?.timings);
   const shownOrient = track?.view?.orient ?? track?.orient ?? 0; // 表示だけの作り変えの間は、その状態の姿勢
   const follow = settings.view !== "fixed";
   const orient = !follow || !track ? null : shownOrient;
@@ -181,7 +184,7 @@ function CubeInset() {
   return (
     <div class={`cube-inset${party ? " party" : ""}`}>
       {party && <Celebrate key={party} />}
-      <LiveCube3D epoch={cube.epoch} setupMoves={cube.setupMoves} moves={moves} orient={orient} follow={follow} mirror={mirror && !demo} base={track?.base ?? null} seen={track?.view ?? null} />
+      <LiveCube3D epoch={cube.epoch} setupMoves={cube.setupMoves} moves={moves} moveSeen={moveSeen} orient={orient} follow={follow} mirror={mirror && !demo} base={track?.base ?? null} seen={track?.view ?? null} />
     </div>
   );
 }
