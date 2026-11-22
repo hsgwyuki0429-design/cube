@@ -36,7 +36,10 @@
   OpenCV を読み込まない。OpenCV.js は ArUco の画面のテストモード・ほかの符号と配置・比較用（`arucoQuad: false`）だけ
 - **3D キューブ**は three.js で直接描く（`src/ui/cubeScene.ts` 1 つ: ライブ `LiveCube3D.tsx`・記録のリプレイと X クロス `ReplayCube.tsx`・
   動画の解析 `src/aruco/timedCube.tsx`）。cubing.js の TwistyPlayer は使わない。状態は facelet の色で持ち、手は層を回して見せ（1 手 190ms・
-  半回転 270ms、溜まれば速める）、回し終えたら塗り替える。作り変えはソルバーを通さずその場で塗る。**向きはカメラの映像と全く同じ**
+  半回転 270ms、溜まれば速める: `src/ui/turnTiming.ts`）、回し終えたら塗り替える。**ライブで層を回して見せるのは、その手の層が動いたのを
+  フレームで見た手だけ**（`MoveTiming.moved`。見ていない手・推定した手は順番が来たら回さずに塗り替える。見せ方の決まりは
+  `src/ui/liveShow.ts`、追跡の状態は変えない。傾けただけで面の割り当てが入れ替わったのを手で説明したものを回して見せないため。
+  カメラを向いた面の手・隠れた層の手も塗り替えになる: `docs/history.md`）。作り変えはソルバーを通さずその場で塗る。**向きはカメラの映像と全く同じ**
   （キューブ固定 → カメラ = 傾き R · 持ち方。鏡像のプレビューなら 3D も CSS で鏡像）。揺れだけならす（`src/ui/gyro.ts`）。定点の表示は
   少し上・右から見下ろす（`setEye(false)`）。記録のリプレイの 1 手は 200ms より短くしない
 
@@ -383,7 +386,8 @@ facelet の直接置換テーブルを手書きすると必ず間違える。**3
 - **本体の録画の画質でも確かめる**（`ffmpeg -vf scale=1280:-2 -r 60 -c:v libx264 -profile:v baseline -preset veryfast -tune zerolatency -b:v 5000k -maxrate 5000k -bufsize 2500k -g 60`）。
   元の画質だけでは実機で起きる問題が出ない
 - ライブの良し悪しは「3D に出した状態が本当の状態（精密解析の手順と時刻）と同じだった時間の割合」（遅れ 300ms まで）。追跡だけ・解き直し
-  だけを直すときは認識の結果を書き出して再生する: `REAL_READINGS=` → `liveReplay.debug.test.ts`、`REAL_OBS=` → `obsReplay.debug.test.ts`
+  だけを直すときは認識の結果を書き出して再生する: `REAL_READINGS=` → `liveReplay.debug.test.ts`、`REAL_OBS=` → `obsReplay.debug.test.ts`。
+  3D の見せ方（回して見せた手のうち本当の手と結びつかないもの・本当の手を回した割合）は `liveReplay` の `LIVE_ANIM=1`、E2E は「3D:」の行
 - **解き直しの方式を比べるときは同じ材料で**（`docs/history.md` の「ベンチの材料 bench-2」・`scripts/bench/README.md`。材料は作り直して sha256 で
   確かめる）。x264 は既定だと同じコマンドでも毎回違う動画になり、低い画質の 1 本は圧縮のゆらぎだけで「完成」と「届かない」が入れ替わる
   （`-threads 1` なら毎回同じ）

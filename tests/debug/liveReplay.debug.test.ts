@@ -3,16 +3,22 @@
 // 割合を出す。認識は追跡の結果に依らないので、追跡だけを直して何度も測るときに速い（1 本 1 秒ほど）。
 //   LIVE_SETS="4972-10:ref-4972.json,4970-10:ref-4970.json"（読みのファイル:精密解析の結果。LIVE_DIR からの相対）
 //   LIVE_ENGINE='{"decoder":{"maxMovesPerStep":4}}'（本体のライブの設定に上書き）・LIVE_DUMP=1（観測ごと）
+//   LIVE_ANIM=1: 3D の見せ方（src/ui/liveShow.ts）を、3D の手の待ち行列の模擬（tests/liveShowSim.ts）に通して、前（足された手を全部回す）と
+//     後（層が動いたのをフレームで見た手だけ回す）で、回して見せた手の数・そのうち本当の手（精密解析の同じ面の手の回し始め 300ms 前〜
+//     回し終わり 1 秒後）と結びつかない手（回していないのに回して見せた）・本当の手のうち回して見せた数・3D に出ていた状態（回している層は
+//     回す前）が本当の状態と同じだった時間の割合（遅れ 300ms まで）を出す。LIVE_ANIM=2 で結びつかない手の時刻も
 import { readFileSync } from "node:fs";
 import { it } from "vitest";
 import { ARUCO_REFS } from "../../src/aruco/palette";
-import { MOVE_NAMES, VIEW, applyMove, inverseMove, statesEqual } from "../../src/cube/model";
+import { MOVE_NAMES, VIEW, applyMove, inverseMove, moveFace, statesEqual } from "../../src/cube/model";
 import { type EngineOptions, TrackerEngine } from "../../src/track/engine";
 import { simplifyMoves } from "../../src/track/merge";
 import { ARUCO_OBSERVER, type FrameReading, LIVE_OBSERVER } from "../../src/track/observer";
 import type { RefineResult } from "../../src/vision/refine";
 import type { SightFrame } from "../../src/track/sight";
 import { slotsPlausible } from "../../src/track/slotCheck";
+import { LiveShow, seenMoves } from "../../src/ui/liveShow";
+import { SimScene, type SimTurn } from "../liveShowSim";
 
 const LAGS = [150, 300, 600];
 
@@ -52,6 +58,20 @@ function matches(start: Uint8Array, res: RefineResult, t: number, lag: number, s
   return false;
 }
 
+// 回して見せた手を本当の手（精密解析の手）に結びつける: 同じ面で、本当の手の回し始め 300ms 前〜回し終わり 1 秒後に回し始めたもの。
+// 本当の手 1 つに結びつけるのは 1 つだけ。返すのは結びつかなかった手と、回して見せた本当の手の数
+function matchTurns(turns: SimTurn[], res: RefineResult, s0: number, s1: number): { fake: SimTurn[]; real: number; truth: number } {
+  const truth = res.moves.filter((m) => m.end >= s0 && m.start <= s1);
+  const used = new Set<number>();
+  const fake: SimTurn[] = [];
+  for (const a of turns) {
+    const j = truth.findIndex((m, k) => !used.has(k) && moveFace(m.move) === moveFace(a.move) && a.t >= m.start - 300 && a.t <= m.end + 1000);
+    if (j >= 0) used.add(j);
+    else fake.push(a);
+  }
+  return { fake, real: used.size, truth: truth.length };
+}
+
 it("書き出したライブの読みの追跡", () => {
   const sets = (process.env.LIVE_SETS ?? "").split(",").filter(Boolean);
   const dir = process.env.LIVE_DIR ?? ".";
@@ -61,6 +81,8 @@ it("書き出したライブの読みの追跡", () => {
   let seenSum = 0;
   const allRuns: number[] = [];
   const lines: string[] = [];
+  const animTotals: Record<string, { turns: number; fake: number; pre: number; real: number; truth: number; same: number; counted: number; mean: number }> = {};
+  for (const k of ["前", "後"]) animTotals[k] = { turns: 0, fake: 0, pre: 0, real: 0, truth: 0, same: 0, counted: 0, mean: 0 };
   for (const set of sets) {
     const [rd, rf] = set.split(":");
     const { start, readings } = JSON.parse(readFileSync(`${dir}/${rd}`, "utf8")) as { start: number[]; readings: FrameReading[] };
@@ -80,6 +102,11 @@ it("書き出したライブの読みの追跡", () => {
     const runs: number[] = [];
     const kinds: Record<string, number> = {};
     const seenAcc = { same: 0, counted: 0 };
+    // LIVE_ANIM: 前（全部回す）・後（見た手だけ回す）の 3D
+    const anim = !!process.env.LIVE_ANIM;
+    const arrivals: { move: number; t: number; inferred: boolean; flags: string }[] = [];
+    let lastLen = 0;
+    const shows = (["前", "後"] as const).map((name) => ({ name, show: new LiveShow(), sim: new SimScene(st0), same: 0, counted: 0 }));
     for (let i = 0; i < readings.length; i++) {
       let r = readings[i];
       // スロットがありえないフレームの面を捨てる（本体と同じ: src/track/pieces/slotCheck.ts。LIVE_SLOTCHECK=0 で捨てない）
@@ -104,6 +131,29 @@ it("書き出したライブの読みの追跡", () => {
       if (u) {
         obs++;
         evals += engine.decoder.lastExpanded;
+      }
+      if (anim && u) {
+        // 足された手の、届いたときの印
+        for (let j = lastLen; j < u.moves.length; j++) {
+          const tm = u.timings[j];
+          arrivals.push({ move: u.moves[j].move, t: u.moves[j].t, inferred: !!u.moves[j].inferred, flags: tm ? `${tm.exact ? "x" : "-"}${tm.endExact ? "e" : "-"}${tm.moved ? "m" : "-"}` : "null" });
+        }
+        lastLen = u.moves.length;
+      }
+      if (anim) {
+        for (const a of shows) {
+          a.sim.advance(r.t);
+          if (u)
+            a.show.apply(a.sim, {
+              epoch: 1,
+              setupMoves: [],
+              moves: u.moves.map((m) => m.move),
+              moveSeen: a.name === "前" ? u.moves.map(() => true) : seenMoves(u.moves, u.timings),
+              base: u.base ?? { n: 0, at: 0, state: st0 },
+              view: u.view,
+            });
+          a.sim.advance(r.t);
+        }
       }
       if (engine.base && engine.base.n !== lastBase) snaps++;
       lastBase = engine.base?.n ?? 0;
@@ -142,6 +192,11 @@ it("書き出したライブの読みの追跡", () => {
         kinds[kind] = (kinds[kind] ?? 0) + dt;
       }
       seenAcc.counted += dt;
+      if (anim)
+        for (const a of shows) {
+          a.counted += dt;
+          if (matches(st0, res, tEval, 300, a.sim.state)) a.same += dt;
+        }
       if (matchesSeen(st0, res, tEval, 300, shown, engine.view?.orient ?? best.orient)) seenAcc.same += dt;
       LAGS.forEach((lag, k) => {
         acc[k].counted += dt;
@@ -159,6 +214,54 @@ it("書き出したライブの読みの追跡", () => {
       });
     }
     meanSum += acc[1].same / Math.max(1, acc[1].counted);
+    if (anim) {
+      const parts = shows.map((a) => {
+        const turns = a.sim.log.filter((x) => !x.instant && x.t >= s0 && x.t <= s1);
+        const m = matchTurns(turns, res, s0, s1);
+        animTotals[a.name].turns += turns.length;
+        animTotals[a.name].fake += m.fake.length;
+        animTotals[a.name].real += m.real;
+        animTotals[a.name].truth += m.truth;
+        animTotals[a.name].same += a.same;
+        animTotals[a.name].counted += a.counted;
+        animTotals[a.name].mean += a.same / Math.max(1, a.counted);
+        if (process.env.LIVE_ANIM === "3" && a.name === "後") {
+          // 本当の手に結びついた「前」の手のうち、「後」で回さなかったもの: 届いたときと最後の時刻の印
+          const fin = engine.decoder.bestMoves();
+          const rows = fin.map((mv) => {
+            const tm = engine.timing(mv);
+            return `${MOVE_NAMES[mv.move]}@${(mv.t / 1000).toFixed(2)}${mv.inferred ? "?" : ""}[${tm ? `${tm.exact ? "x" : "-"}${tm.endExact ? "e" : "-"}${tm.moved ? "m" : "-"}` : "null"}]`;
+          });
+          console.log(`ANIMFIN ${rd} ${rows.join(" ")}`);
+          console.log(`ANIMARR ${rd} ${arrivals.map((x) => `${MOVE_NAMES[x.move]}@${(x.t / 1000).toFixed(2)}${x.inferred ? "?" : ""}[${x.flags}]`).join(" ")}`);
+        }
+        const flagOf = (x: SimTurn) => {
+          let best: (typeof arrivals)[number] | undefined;
+          for (const y of arrivals) if (y.move === x.move && y.t <= x.t + 1) best = y;
+          return best ? best.flags : "?";
+        };
+        if (process.env.LIVE_ANIM === "2" || process.env.LIVE_ANIM === "3")
+          if (m.fake.length) console.log(`ANIMFAKE ${rd} ${a.name} ${m.fake.map((x) => `${(x.t / 1000).toFixed(2)}s ${MOVE_NAMES[x.move]}[${flagOf(x)}]`).join("・")}`);
+        {
+          // ソルブの前（インスペクション: 本当の手がない）に回して見せた手 = 持ち替え・傾けを手で説明したもの
+          const pre = a.sim.log.filter((x) => !x.instant && x.t < s0 - 300);
+          animTotals[a.name].pre += pre.length;
+          if (process.env.LIVE_ANIM === "3" && pre.length) console.log(`ANIMPRE ${rd} ${a.name} ${pre.map((x) => `${(x.t / 1000).toFixed(2)}s ${MOVE_NAMES[x.move]}[${flagOf(x)}]`).join(" ")}`);
+        }
+        if (process.env.LIVE_ANIM === "3") {
+          const fakeSet = new Set(m.fake);
+          const tally: Record<string, [number, number]> = {};
+          for (const x of turns) {
+            const f = flagOf(x);
+            tally[f] ??= [0, 0];
+            tally[f][fakeSet.has(x) ? 1 : 0]++;
+          }
+          console.log(`ANIMFLAGS ${rd} ${a.name} ${Object.entries(tally).map(([k, [r, f]]) => `${k} 本当 ${r} 偽 ${f}`).join("・")}`);
+        }
+        return `${a.name} 回した ${turns.length}（結びつかない ${m.fake.length}）・本当の手 ${m.real}/${m.truth}・一致 ${((a.same / Math.max(1, a.counted)) * 100).toFixed(1)}%`;
+      });
+      console.log(`ANIM ${rd.padEnd(13)} ${parts.join(" | ")}`);
+    }
     seenSum += seenAcc.same / Math.max(1, seenAcc.counted);
     if (process.env.LIVE_SEEN) console.log(`SEEN ${rd} 全体 ${((acc[1].same / Math.max(1, acc[1].counted)) * 100).toFixed(1)}% 見えている 3 面 ${((seenAcc.same / Math.max(1, seenAcc.counted)) * 100).toFixed(1)}%`);
     if (process.env.LIVE_KIND) console.log(`KIND ${rd} 数えた ${(acc[1].counted / 1000).toFixed(1)}s ` + Object.entries(kinds).map(([k, v]) => `${k} ${(v / 1000).toFixed(1)}s`).join(" "));
@@ -187,5 +290,10 @@ it("書き出したライブの読みの追跡", () => {
   }
   lines.push(`見えている 3 面だけで比べた一致の平均 ${((seenSum / Math.max(1, sets.length)) * 100).toFixed(1)}%`);
   lines.push(`平均（1 本ずつの 300ms の一致の平均） ${((meanSum / Math.max(1, sets.length)) * 100).toFixed(1)}%`);
+  if (process.env.LIVE_ANIM)
+    for (const [k, a] of Object.entries(animTotals))
+      lines.push(
+        `3D の見せ方 ${k}: ソルブの前に回した ${a.pre}・ソルブ中に回した ${a.turns}・うち結びつかない ${a.fake}（${((a.fake / Math.max(1, a.turns)) * 100).toFixed(1)}%）・本当の手を回した ${a.real}/${a.truth}（${((a.real / Math.max(1, a.truth)) * 100).toFixed(1)}%）・3D の一致 ${((a.same / Math.max(1, a.counted)) * 100).toFixed(1)}%（1 本ずつの平均 ${((a.mean / Math.max(1, sets.length)) * 100).toFixed(1)}%）`,
+      );
   console.log(lines.join("\n"));
 }, 3600000);

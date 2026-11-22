@@ -71,6 +71,24 @@ function editDistance(a, b) {
   return dp[a.length][b.length];
 }
 
+// ライブの 3D が回して見せた手（LiveCube3D の window.__cubevisionTurns）を、合成キューブの本当の手（同じ面で、回し始め 300ms 前〜回し終わり
+// 1 秒後）に結びつける。結びつかない手 = 回していないのに回して見せた手（持ち替え・傾けを手で説明したもの）
+async function turnStats(page) {
+  const { turns, truth, solveFrom } = await page.evaluate(() => ({ turns: window.__cubevisionTurns ?? [], truth: (window.__cubevision.synthetic?.truth ?? []).map((x) => ({ ...x })), solveFrom: window.__cubevision.synthetic?.solveFrom ?? -1 }));
+  const used = new Set();
+  const fake = [];
+  const shown = turns.filter((x) => !x.instant);
+  for (const a of shown) {
+    const j = truth.findIndex((m, k) => !used.has(k) && Math.floor(m.move / 3) === Math.floor(a.move / 3) && a.t >= m.start - 300 && a.t <= m.t + 1000);
+    if (j >= 0) used.add(j);
+    else fake.push(a);
+  }
+  const t0 = truth[0]?.start ?? 0;
+  // タイマー: インスペクション（崩し終わりの 1 秒後〜解き始め。手を回していない: &look なら持ち替えて見回すだけ）に回して見せた手
+  const inspect = solveFrom > 0 ? shown.filter((x) => x.t > truth[solveFrom - 1].t + 1000 && x.t < truth[solveFrom].start).length : 0;
+  return `3D: 回した ${shown.length}・結びつかない ${fake.length}${solveFrom > 0 ? `（うちインスペクション中 ${inspect}）` : ""}${fake.length ? `（${fake.map((x) => `${name(x.move)}@${((x.t - t0) / 1000).toFixed(1)}s`).join(" ")}）` : ""}・塗り替え ${turns.length - shown.length}・本当の手を回した ${used.size}/${truth.length}`;
+}
+
 const browser = await chromium.launch({
   executablePath: CHROME,
   args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--autoplay-policy=no-user-gesture-required", "--ignore-gpu-blocklist"],
@@ -126,6 +144,7 @@ try {
       );
       // 開始・停止のずれ（リアルタイムの速報値。+ = 遅い）と、インスペクションの長さ
       console.log(`  why: ${JSON.stringify(r.result?.edges ?? null)}`);
+      console.log(`  ${await turnStats(page)}`);
       console.log(`  edges: start ${((r.startT - r.truthStart) / 1000).toFixed(3)}s stop ${((r.startT + (live?.timeMs ?? 0) - r.truthEnd) / 1000).toFixed(3)}s inspection ${((r.truthStart - r.inspectionStart) / 1000).toFixed(2)}s analysis ${r.result?.analysis}`);
       for (const l of logs.filter((l) => l.includes("[start]") || l.includes("[stop]"))) console.log(`  ${l}`);
       if (!ok || process.env.E2E_TRACK) {
@@ -198,6 +217,7 @@ try {
     const orientOk = r.trackOrient === r.synthOrient;
     results.push({ seed, acc, finalOk, scanSec });
     console.log(`seed ${seed}: scan ${scanSec.toFixed(1)}s  accuracy ${(acc * 100).toFixed(1)}%  final ${finalOk ? "OK" : "NG"}  orient ${orientOk ? "OK" : `NG(${r.trackOrient}/${r.synthOrient})`}  status ${r.status}  obs ${r.observations}  recov ${r.recoveries}  inferred ${r.inferred}  camFps ${r.stats.camFps} procFps ${r.stats.procFps} procMs ${r.stats.procMs.toFixed(1)}  処理 ${r.processed} 枚（選ばず ${r.skipped} 枚）`);
+    console.log(`  ${await turnStats(page)}`);
     console.log(`  truth  : ${r.truth.map(name).join(" ")}`);
     console.log(`  decoded: ${r.decoded.map(name).join(" ")}`);
     if (!finalOk || !orientOk || acc < 0.9) {
