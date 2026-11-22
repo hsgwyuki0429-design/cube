@@ -70,7 +70,7 @@ it("実機のライブの記録", () => {
         const e = seg.events[ev++];
         if (e.kind === "options" && !process.env.LIVE_LOG_ENGINE) engine.setOptions(e.data as Partial<EngineOptions>);
       }
-      const u = engine.push(r.dropped ? { ...r, faces: [] } : r);
+      const u = engine.push(r.dropped ? { ...r, faces: [] } : r, r.sight);
       if (engine.base && engine.base.n !== lastBase) snaps++;
       lastBase = engine.base?.n ?? 0;
       if (u && r.out) {

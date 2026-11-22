@@ -1,4 +1,5 @@
 // アプリの中枢: カメラ → 認識 Worker → スキャン／追跡 の流れをまとめる。UI はこのストアを購読するだけ。
+import { LIVE_TRACKED_ORIENT } from "../track/orient";
 import { Matrix4, Quaternion } from "three";
 import { type Mat3, ORIENTATIONS, mul } from "../cube/model";
 import { F, isSolved, solvedState } from "../cube/model";
@@ -227,7 +228,9 @@ class Controller {
   // 残りは写らない面の手で、写らない手は回さない）
   liveEngineOptions(s: Settings = settingsStore.get()): Partial<EngineOptions> {
     return {
-      decoder: { ...searchOptions(s), priorWeight: 0, confirmMargin: 1, deepHyps: 4, bridgeDepth: 5 },
+      // trackedOrient・orient: キューブ全体の向きを手とは別に追い、傾けただけで面の割り当てが入れ替わったのを手で説明しない（src/track/orient.ts）
+      decoder: { ...searchOptions(s), priorWeight: 0, confirmMargin: 1, deepHyps: 4, bridgeDepth: 5, trackedOrient: LIVE_TRACKED_ORIENT },
+      orient: true,
       observer: { ...observerOptions(s), ...LIVE_OBSERVER },
       // 見え方とはっきり合わなければ、見えている色に合う状態にその場で作り変え、そこから追跡をやり直す（src/track/snap.ts）。
       // スクランブル中は使わない（setLiveSnap。手順を追って案内するので、見えていない面の分からない作り変えは道筋を乱す）

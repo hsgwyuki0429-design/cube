@@ -317,7 +317,7 @@ function track(r: Recognized): void {
   const sight = read0.faces.length ? sightFrame(r.t, result) : undefined;
   const dropped = !!sight && !slotsPlausible(sight);
   const reading = dropped ? { ...read0, faces: [] } : read0;
-  const track = engine?.push(reading) ?? undefined;
+  const track = engine?.push(reading, sight) ?? undefined;
   if (engine)
     liveLog.add({
       ...read0,
