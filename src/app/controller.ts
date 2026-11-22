@@ -10,6 +10,7 @@ import { type CameraInfo, CameraSource, cameraErrorMessage, listCameras } from "
 import { type Lab, NAMED_COLORS } from "../vision/color";
 import type { PipelineConfig } from "../vision/pipeline";
 import type { FrameMessage, StreamPartial } from "../vision/protocol";
+import type { LiveStop } from "../track/stopCut";
 import type { RefineInput, RefineResult } from "../vision/refine";
 import { FrameRecorder } from "../vision/recorder";
 import type { VideoFileInfo } from "../vision/videoFile";
@@ -519,7 +520,8 @@ class Controller {
   }
 
   // タイマーを止めた: to までの録画を渡し切り、終わりの状態（完成）で解き直した結果を待つ Promise を返す
-  async endAnalysis(to: number, target: ArrayLike<number> | null, progress?: (p: number) => void): Promise<Promise<RefineResult> | null> {
+  // stop: ライブが揃ったと判断して止めた時刻（精密解析はその前の最後の揃いで打ち切る: RefineInput.stop）。手動・GAN タイマーは渡さない
+  async endAnalysis(to: number, target: ArrayLike<number> | null, progress?: (p: number) => void, stop?: LiveStop): Promise<Promise<RefineResult> | null> {
     const session = this.session;
     if (!session || !session.timed || !session.input) return null;
     clearInterval(session.timer);
@@ -538,9 +540,9 @@ class Controller {
       if (!backup) throw why instanceof Error ? why : new Error(String(why));
       console.warn("解析をやり直します", why);
       this.refiner.close();
-      return this.watched((p) => this.refiner.run(backup, { ...session.input, to, ...(session.solvingFrom !== undefined ? { inspectUntil: session.solvingFrom } : {}) }, p), progress);
+      return this.watched((p) => this.refiner.run(backup, { ...session.input, to, ...(session.solvingFrom !== undefined ? { inspectUntil: session.solvingFrom } : {}), ...(stop ? { stop } : {}) }, p), progress);
     };
-    const first = session.id >= 0 ? this.watched((p) => this.refiner.endStream(session.id, to, target, p), progress) : Promise.reject(new Error("解析が始まっていませんでした"));
+    const first = session.id >= 0 ? this.watched((p) => this.refiner.endStream(session.id, to, target, p, stop), progress) : Promise.reject(new Error("解析が始まっていませんでした"));
     const result = first.catch(again);
     this.liveResting = true;
     const rest = window.setTimeout(() => (this.liveResting = false), LIVE_REST_MAX_MS);

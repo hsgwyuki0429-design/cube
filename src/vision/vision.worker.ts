@@ -452,6 +452,7 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
           return;
         }
         s.refiner.setEnd(msg.to);
+        s.refiner.setStop(msg.stop);
         s.end = { from: s.refiner.lastT, to: msg.to, posted: 0 };
         // 回し始めの知らせが届かないまま終わった（手動で止めたなど）: 残りは間引かない
         if (s.fullFrom === Infinity) s.fullFrom = s.refiner.lastT;

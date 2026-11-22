@@ -40,7 +40,7 @@ export function editDistance(a: number[], b: number[]): number {
 export const toSights = (rd: Reading[]): SightFrame[] => rd.map((r) => ({ t: r.t, faces: r.faces.map((f) => ({ slot: f.slot, ids: f.ids, rot: f.rot ?? new Array(9).fill(-1), quad: f.quad ?? [], ...(f.held ? { held: true } : {}) })) }));
 
 // 正解: 手（時刻つき）と始まりの状態
-function truthOf(name: string, rdStart: number[]): { start: CubeState; moves: { move: number; start: number; end: number }[]; note: string } | null {
+export function truthOf(name: string, rdStart: number[]): { start: CubeState; moves: { move: number; start: number; end: number }[]; note: string } | null {
   const b = name.slice(0, 8);
   if (KNOWN[b]) return { start: Uint8Array.from(rdStart), moves: parseMoves(KNOWN[b]).map((move) => ({ move, start: Number.NaN, end: Number.NaN })), note: "" };
   const tdir = process.env.PB_TRUTH;
@@ -93,7 +93,7 @@ function oldDecode(obs: Observation[], start: CubeState, end: CubeState, lastT: 
 }
 
 // まとめた形で、確定のまま正解と対応しない手と、確定で正しい手
-function wrongSure(ms: { move: number; inferred?: boolean }[], want: number[]): { wrong: number; ok: number } {
+export function wrongSure(ms: { move: number; inferred?: boolean }[], want: number[]): { wrong: number; ok: number } {
   const c = canonicalWithIndex(ms.map((m) => m.move));
   const map = alignment(
     c.map((x) => x.m),
@@ -112,7 +112,7 @@ function wrongSure(ms: { move: number; inferred?: boolean }[], want: number[]): 
 // 状態で照らした「確定のまま間違えた手」: 確定の手の前と後の状態が、どちらも正解の手順の途中の状態（半回転の途中・同じ軸の 2 手の
 // 入れ替え・打ち消し合う手も含む）にこの順で出てくること。まとめた形の比べ（wrongSure）では、打ち消し合って消える確定の手（U U'）が
 // 見えない。前の手（inferred）が間違って状態がずれた後の確定の手も数えるので、多めに出る（見て確かめる）
-function wrongByState(ms: { move: number; inferred?: boolean; t?: number }[], truthMoves: { move: number }[], start: CubeState): { wrong: number; at: string[] } {
+export function wrongByState(ms: { move: number; inferred?: boolean; t?: number }[], truthMoves: { move: number }[], start: CubeState): { wrong: number; at: string[] } {
   const key = (x: CubeState) => Array.from(x).join("");
   const idx = new Map<string, number[]>();
   const put = (x: CubeState, i: number) => {
