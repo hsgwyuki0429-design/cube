@@ -360,7 +360,7 @@ it("書き出したライブの読みの追跡", () => {
     const sorted = [...allFrameMs].sort((x, y) => x - y);
     const os = [...orientMs].sort((x, y) => x - y);
     lines.push(`向きを追う部品だけ: 平均 ${(orientMs.reduce((x, y) => x + y, 0) / Math.max(1, orientMs.length)).toFixed(3)}ms・99% ${os[Math.floor(os.length * 0.99)]?.toFixed(2)}ms・最大 ${os[os.length - 1]?.toFixed(2)}ms`);
-    lines.push(`追跡の 1 フレーム: 平均 ${(allFrameMs.reduce((x, y) => x + y, 0) / Math.max(1, allFrameMs.length)).toFixed(2)}ms・99% ${sorted[Math.floor(sorted.length * 0.99)]?.toFixed(1)}ms・99.9% ${sorted[Math.floor(sorted.length * 0.999)]?.toFixed(1)}ms・最大 ${sorted[sorted.length - 1]?.toFixed(1)}ms`);
+    lines.push(`追跡の 1 フレーム: 平均 ${(allFrameMs.reduce((x, y) => x + y, 0) / Math.max(1, allFrameMs.length)).toFixed(2)}ms・99% ${sorted[Math.floor(sorted.length * 0.99)]?.toFixed(1)}ms・99.9% ${sorted[Math.floor(sorted.length * 0.999)]?.toFixed(1)}ms・最大 ${sorted[sorted.length - 1]?.toFixed(1)}ms・3ms を超えた ${((sorted.filter((x) => x > 3).length / Math.max(1, sorted.length)) * 100).toFixed(2)}%`);
   }
   console.log(lines.join("\n"));
 }, 3600000);
