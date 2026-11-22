@@ -424,7 +424,7 @@ it("実際のプレイ動画", async () => {
     // "|" で区切って複数: 同じ読みで、止めた時刻で打ち切った結果も出す（RefineInput.stop。src/track/stopCut.ts）。REAL_STOP_OUT=ファイルに、
     // 打ち切らない結果と打ち切った結果を 1 行ずつ足す。REAL_TIMING_DBG=1: 打ち切った最後の手の前後のフレーム
     if (refiner && process.env.REAL_STOP) {
-      const fmt = (r: RefineResult) => ({ solved: r.solved, method: r.method, n: r.moves.length, moves: r.moves.map((x) => `${MOVE_NAMES[x.move]}${x.inferred ? "?" : ""}`).join(" "), inferred: r.inferred, start: r.start, end: r.end, startUncertain: r.startUncertain, endUncertain: r.endUncertain, startState: r.startState ?? null, stopCut: r.stopCut ?? null });
+      const fmt = (r: RefineResult) => ({ solved: r.solved, method: r.method, n: r.moves.length, moves: r.moves.map((x) => `${MOVE_NAMES[x.move]}${x.inferred ? "?" : ""}`).join(" "), inferred: r.inferred, start: r.start, end: r.end, startUncertain: r.startUncertain, endUncertain: r.endUncertain, startState: r.startState ?? null, stopCut: r.stopCut ?? null, endApproxMs: r.endApproxMs ?? null });
       for (const spec of process.env.REAL_STOP.split("|")) {
         const [a, b] = spec.split(",").map((x) => Number(x) * 1000);
         refiner.setStop({ at: a, until: b ?? a });
