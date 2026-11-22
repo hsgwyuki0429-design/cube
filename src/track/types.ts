@@ -21,6 +21,15 @@ export interface Observation {
   tPrevEnd: number; // 前の観測が最後に見えていた時刻（手はこの間に起きた）
   faces: FaceObservation[];
   turns?: TurnHint[]; // 前の観測からこの観測までに、回転途中の形で見えた層の回転（手の手がかり）
+  orient?: OrientHint | null; // 前の観測からこの観測までの、キューブ全体の向きの入れ替わり（src/track/orient.ts。ライブだけ）
+}
+
+// キューブ全体の向きを手とは別に追った結果（src/track/orient.ts）: 前の観測から、同じ面の同じマスに残っていたステッカー（その間に
+// 回していない層にいる。キューブ固定の位置が前の観測と同じ）と、いま見えているカメラフレームのマス（スロット * 9 + マス。still と同じ並び）
+export interface OrientHint {
+  still: number[];
+  at: number[];
+  near: number[]; // still のうち、短い間（OrientOptions.nearGapMs）の突き合わせだけで続いたもの
 }
 
 // 回転途中の形状認識（src/aruco/turn.ts）で、フレームをつないで分かった層の回転。カメラフレームの面 slot の層が回った。

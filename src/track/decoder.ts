@@ -45,6 +45,10 @@ export interface DecoderOptions {
   idPrune: boolean;
   // 読んだステッカーを手がかりに、maxMovesPerStep より深くこの手数まで探す（0 で探さない。下の「深く探す」）
   bridgeDepth: number;
+  // キューブ全体の向きを手とは別に追った結果（Observation.orient。src/track/orient.ts）を使う（ライブだけ。null で使わない）:
+  //   前の観測から動いていないステッカー（still）が freeMin 枚以上なら持ち替えのコストを freeCost にする（どの向きかは見え方で決まる）。
+  //   短い間の突き合わせだけで動いていないと分かったステッカー（near）を動かす層の手は 1 手ごとに frozenCost を足す
+  trackedOrient?: { freeMin: number; freeCost: number; frozenCost: number } | null;
 }
 
 export const DEFAULT_DECODER: DecoderOptions = {
@@ -493,6 +497,23 @@ export class MoveDecoder {
   private expand(beam: Hypothesis[], obs: Observation, depth: number, inferred: boolean): Hypothesis[] {
     const { moveCost, rotationCost, beamWidth } = this.options;
     const orients = this.orientationCandidates(obs);
+    // 手とは別に追った向き（trackedOrient）: 仮説ごとの入れ替わりの先・動いていないステッカー
+    const tOpts = this.options.trackedOrient;
+    const tracked = tOpts && obs.orient?.still.length ? obs.orient : null;
+    const rotC0 = tracked && tracked.still.length >= tOpts!.freeMin ? tOpts!.freeCost : rotationCost;
+    const rotOf = (h: Hypothesis, o: number): number => (o === h.orient ? 0 : rotC0);
+    // 動いていないステッカーのある層（仮説の状態で）のビット
+    const frozenMask = (h: Hypothesis): number => {
+      if (!tracked || !tracked.near.length || !(tOpts!.frozenCost > 0)) return 0;
+      const want = new Set(tracked.near);
+      let mask = 0;
+      for (let f = 0; f < 54; f++) {
+        const id = stickerIdAt(h.state, f);
+        if (id < 0 || !want.has(id)) continue;
+        for (let j = f * 3; j < f * 3 + 3 && DISTURB[j] >= 0; j++) mask |= 1 << DISTURB[j];
+      }
+      return mask;
+    };
     const compiled = new Map<number, CompiledObs>();
     const getCompiled = (o: number) => {
       let c = compiled.get(o);
@@ -508,6 +529,9 @@ export class MoveDecoder {
     const minMove = moveCost; // 1 手のコストの下限（刈り込み用。上乗せは 0 以上）
     const pathCost = new Float32Array(nodes);
     const context = new Int32Array(nodes);
+    let curMask = 0; // いまの仮説の、動いていないステッカーのある層
+    const frozenCost = tOpts?.frozenCost ?? 0;
+    const pen = (m: number) => ((curMask >> moveFace(m)) & 1 ? frozenCost : 0);
     const fillLevel = (h: Hypothesis, d: number) => {
       const from = tree.levelStart[d];
       const to = tree.levelStart[d + 1];
@@ -523,7 +547,7 @@ export class MoveDecoder {
       for (let node = from; node < to; node++) {
         const p = tree.parent[node];
         const m = tree.move[node];
-        pathCost[node] = pathCost[p] + moveCost + (prior ? pw * prior.penalty(context[p], m) : 0);
+        pathCost[node] = pathCost[p] + moveCost + (prior ? pw * prior.penalty(context[p], m) : 0) + pen(m);
         context[node] = shiftContext(context[p], m);
       }
     };
@@ -583,6 +607,7 @@ export class MoveDecoder {
     // 仮説 h の、手順の木の深さ from〜to の節点を評価する。節点の状態は評価する節点とその親だけ作り、最後の段の手のコストは
     // 読みの下限を通った親の子だけ求める
     const evalLevels = (h: Hypothesis, hi: number, from: number, to: number) => {
+      curMask = frozenMask(h);
       const os = orients.includes(h.orient) ? orients : [...orients, h.orient];
       const prevLen = h.tail?.len ?? 0;
       const penalty = turnPenalty(h.orient);
@@ -614,7 +639,7 @@ export class MoveDecoder {
         childLb = new Float64Array(os.length * NUM_MOVES);
         pass = new Uint8Array(os.length);
       }
-      const rot = os.map((o) => (o === h.orient ? 0 : rotationCost));
+      const rot = os.map((o) => rotOf(h, o));
       // 節点 node（深さ d）を姿勢 os[oi] で評価する。base: 仮説のコスト + 手のコスト + 持ち替え
       const evalNode = (node: number, d: number, oi: number, base: number) => {
         const o = os[oi];
@@ -697,7 +722,7 @@ export class MoveDecoder {
           if (!any && last) continue;
           for (let node = c0; node < c1; node++) {
             const m = tree.move[node];
-            pathCost[node] = pathCost[p] + moveCost + (prior ? pw * prior.penalty(context[p], m) : 0);
+            pathCost[node] = pathCost[p] + moveCost + (prior ? pw * prior.penalty(context[p], m) : 0) + pen(m);
             context[node] = shiftContext(context[p], m);
             if (!any) continue;
             const pc = h.cost + pathCost[node] + (penalty ? penalty(node) : 0);
@@ -743,6 +768,7 @@ export class MoveDecoder {
           if (searched.has(hk)) continue;
           searched.add(hk);
           const os = orients.includes(h.orient) ? orients : [...orients, h.orient];
+          curMask = frozenMask(h);
           let filled = false;
           for (const o of os) {
             const c = consOf(o);
@@ -763,7 +789,7 @@ export class MoveDecoder {
               if (at[k] < 0) missing = true;
             }
             if (missing) continue;
-            const rotC = o === h.orient ? 0 : rotationCost;
+            const rotC = rotOf(h, o);
             const prevLen = h.tail?.len ?? 0;
             const strong = Array.from(c.lb, (v) => v > BRIDGE_MAX_OBS);
             const path: number[] = [];
@@ -804,7 +830,7 @@ export class MoveDecoder {
               }
               for (let m = 0; m < NUM_MOVES; m++) {
                 if (redundantAfter(last, m)) continue;
-                const pc = h.cost + rotC + cost[d] + moveCost + (prior ? pw * prior.penalty(ctx[d], m) : 0);
+                const pc = h.cost + rotC + cost[d] + moveCost + (prior ? pw * prior.penalty(ctx[d], m) : 0) + pen(m);
                 if (pc >= top.threshold) continue;
                 const bit = 1 << m;
                 const evalChild = need1 && !(bad1 & bit);
@@ -814,7 +840,7 @@ export class MoveDecoder {
                 const dstTable = MOVE_DST[m];
                 for (let k = 0; k < n; k++) at[base + n + k] = dstTable[at[base + k]];
                 path[d] = m;
-                cost[d + 1] = cost[d] + moveCost + (prior ? pw * prior.penalty(ctx[d], m) : 0);
+                cost[d + 1] = cost[d] + moveCost + (prior ? pw * prior.penalty(ctx[d], m) : 0) + pen(m);
                 ctx[d + 1] = shiftContext(ctx[d], m);
                 if (evalChild) {
                   // 状態を作って評価する

@@ -21,9 +21,11 @@ import { slotsPlausible } from "../../src/track/slotCheck";
 import type { RefineResult } from "../../src/vision/refine";
 import { OldStartDetector, OldStopDetector } from "./lib/oldTimer";
 import { ARUCO_OBSERVER, LIVE_OBSERVER } from "../../src/track/observer";
+import { LIVE_TRACKED_ORIENT } from "../../src/track/orient";
 
 // 本体のライブ（src/app/controller.ts の liveEngineOptions。liveReplay.debug.test.ts と同じ）
-const liveEngineOptions = () => ({ observer: { ...ARUCO_OBSERVER, ...LIVE_OBSERVER }, decoder: { priorWeight: 0, confirmMargin: 1, deepHyps: 4, bridgeDepth: 5 }, snapToView: true, recover: true });
+// TE_OLD=1: 向きを別に追う前（2026-11-22 まで）
+const liveEngineOptions = () => ({ observer: { ...ARUCO_OBSERVER, ...LIVE_OBSERVER }, decoder: { priorWeight: 0, confirmMargin: 1, deepHyps: 4, bridgeDepth: 5, ...(process.env.TE_OLD ? {} : { trackedOrient: LIVE_TRACKED_ORIENT }) }, snapToView: true, recover: true, orient: !process.env.TE_OLD });
 
 type Reading = FrameReading & { sight?: SightFrame };
 
@@ -107,7 +109,7 @@ it("タイマーの開始・停止（前の判定と今の判定）", () => {
       // 本体の Worker と同じ: スロットがありえないフレームは追跡に何も見えなかったとして渡す
       const dropped = !!sight && r.faces.length > 0 && !slotsPlausible(sight);
       const reading: FrameReading = dropped ? { ...r, faces: [] } : r;
-      const u = engine.push(reading);
+      const u = engine.push(reading, sight);
       if (u) last = u;
       const looks = reading.faces.length ? engine.looksSolved(reading) : undefined;
       const status = last?.status;

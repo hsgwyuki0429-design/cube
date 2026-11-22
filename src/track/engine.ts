@@ -10,7 +10,9 @@ import { movePrior } from "./prior";
 import { snapToObservation } from "./snap";
 import { FaceObserver, type FrameReading, type ObserverOptions } from "./observer";
 import { DEFAULT_TIMING, type LoggedFrame, type MoveTiming, moveTiming } from "./timing";
-import type { DecodedMove, Observation, TrackStatus, TurnHint, TurnSnapshot } from "./types";
+import { OrientTracker, type OrientOptions } from "./orient";
+import type { SightFrame } from "./sight";
+import type { DecodedMove, Observation, OrientHint, TrackStatus, TurnHint, TurnSnapshot } from "./types";
 
 export interface EngineOptions {
   decoder: Partial<DecoderOptions>;
@@ -30,7 +32,11 @@ export interface EngineOptions {
   snapToView?: boolean;
   // 見失ったところからの復帰（ライブ）: 見失う直前の確かな状態から、後で読めたステッカーが全部合う手順を探して仮説に足す（src/track/recover.ts）
   recover?: boolean | Partial<RecoverOptions>;
+  // キューブ全体の向きを手とは別に追う（ライブ。src/track/orient.ts）: 前後のフレームで同じ面を突き合わせ、観測ごとに前の観測から
+  // 動いていないステッカーをデコーダに渡す（デコーダの trackedOrient で使う）。push に見え方（sight）を渡したときだけ外枠を使える
+  orient?: boolean | Partial<OrientOptions>;
 }
+
 
 const TIMING_FINAL_MS = 1000; // 手の観測からこれだけたてば、その手の時刻はもう変わらない
 const REPEAT_COST = 0.8;
@@ -172,7 +178,12 @@ export class TrackerEngine {
     this.snapToView = !!options.snapToView;
     this.recoverOpts = options.recover ? (options.recover === true ? {} : options.recover) : null;
     if (options.personal?.length && this.decoder.prior) this.decoder.prior = movePrior(options.personal);
+    if (options.orient) this.orient = new OrientTracker(options.orient === true ? {} : options.orient);
   }
+  // キューブ全体の向き（orient）: 追う部品と、前の観測のフレームの時刻
+  readonly orient: OrientTracker | null = null;
+  private orientT = -Infinity;
+  lastOrient: OrientHint | null = null; // 最後の観測に付けたもの（調査用）
   private maxObservations: number;
   private repeatMs: number;
   private snapToView: boolean;
@@ -215,13 +226,16 @@ export class TrackerEngine {
     this.view = null;
     this.snapStreak = 0;
     this.observer.reset();
+    this.orient?.reset();
+    this.orientT = -Infinity;
     this.turnCur = null;
     this.turnHints = [];
     this.lastSeen.fill(-1);
     this.timingCache.clear();
   }
 
-  push(frame: FrameReading): TrackUpdate | null {
+  push(frame: FrameReading, sight?: SightFrame): TrackUpdate | null {
+    this.orient?.push(frame, sight);
     this.frames.push({ t: frame.t, faces: frame.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, spread: f.spread, masked: f.masked, shift: f.shift, ids: f.ids })) });
     while (this.frames.length && frame.t - this.frames[0].t > this.logMs) this.frames.shift();
     this.collectTurn(frame);
@@ -235,6 +249,12 @@ export class TrackerEngine {
     this.finishTurn();
     if (this.turnHints.length) obs.turns = this.turnHints;
     this.turnHints = [];
+    if (this.orient) {
+      // 前の観測のフレームから同じ所にいるステッカー（最初の観測にはない）
+      obs.orient = Number.isFinite(this.orientT) ? this.orient.stillSince(this.orientT) : null;
+      this.lastOrient = obs.orient;
+      this.orientT = frame.t;
+    }
     if (this.keepObservations) {
       this.observationLog.push(obs);
       if (this.observationLog.length > this.maxObservations) this.observationLog.splice(0, this.observationLog.length - this.maxObservations);
