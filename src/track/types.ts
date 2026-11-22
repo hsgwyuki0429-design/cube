@@ -25,9 +25,11 @@ export interface Observation {
 }
 
 // キューブ全体の向きを手とは別に追った結果（src/track/orient.ts）: 前の観測から、同じ面の同じマスに残っていたステッカー（その間に
-// 回していない層にいる。キューブ固定の位置が前の観測と同じ）
+// 回していない層にいる。キューブ固定の位置が前の観測と同じ）と、いま見えているカメラフレームのマス（スロット * 9 + マス。still と同じ並び）
 export interface OrientHint {
   still: number[];
+  at: number[];
+  near: number[]; // still のうち、短い間（OrientOptions.nearGapMs）の突き合わせだけで続いたもの
 }
 
 // 回転途中の形状認識（src/aruco/turn.ts）で、フレームをつないで分かった層の回転。カメラフレームの面 slot の層が回った。

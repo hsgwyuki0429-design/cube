@@ -45,8 +45,8 @@ describe("OrientTracker", () => {
     tr.push(a.reading, a.sight);
     a = frame(33, [{ f: face(2, ids), quad: square(104, 98, 90) }]);
     tr.push(a.reading, a.sight);
-    expect(tr.stillSince(0).sort()).toEqual(ids.filter((_, c) => c !== 4).sort());
-    expect(tr.stillSince(-1)).toEqual([]);
+    expect(tr.stillSince(0).still.sort()).toEqual(ids.filter((_, c) => c !== 4).sort());
+    expect(tr.stillSince(-1).still).toEqual([]);
   });
 
   it("スロットのラベルが変わっても、外枠が同じなら同じ面（傾けて正面が上に入れ替わった）", () => {
@@ -55,7 +55,7 @@ describe("OrientTracker", () => {
     tr.push(a.reading, a.sight);
     a = frame(33, [{ f: face(0, ids, [4]), quad: q }]);
     tr.push(a.reading, a.sight);
-    expect(tr.stillSince(0).length).toBe(8);
+    expect(tr.stillSince(0).still.length).toBe(8);
   });
 
   it("面を回した（外枠は同じでステッカーが 90° 回った）なら動いた", () => {
@@ -65,7 +65,7 @@ describe("OrientTracker", () => {
     tr.push(a.reading, a.sight);
     a = frame(33, [{ f: face(2, turned), quad: q }]);
     tr.push(a.reading, a.sight);
-    expect(tr.stillSince(0)).toEqual([]);
+    expect(tr.stillSince(0).still).toEqual([]);
   });
 
   it("格子の向きの付け直し（外枠の隅が 1 つずれた）はマスの対応に入れる", () => {
@@ -77,7 +77,7 @@ describe("OrientTracker", () => {
     tr.push(a.reading, a.sight);
     a = frame(33, [{ f: face(2, relabeled), quad: turnQuad(q, 1) }]);
     tr.push(a.reading, a.sight);
-    expect(tr.stillSince(0).length).toBe(8);
+    expect(tr.stillSince(0).still.length).toBe(8);
   });
 
   it("離れすぎたフレームとは突き合わせない", () => {
@@ -86,7 +86,7 @@ describe("OrientTracker", () => {
     tr.push(a.reading, a.sight);
     a = frame(500, [{ f: face(2, ids), quad: q }]);
     tr.push(a.reading, a.sight);
-    expect(tr.stillSince(0)).toEqual([]);
+    expect(tr.stillSince(0).still).toEqual([]);
   });
 });
 

@@ -22,6 +22,7 @@ import type { SightFrame } from "./sight";
 
 export interface OrientOptions {
   maxGapMs: number; // これより前に見えた面とは突き合わせない
+  nearGapMs: number; // 動いていないステッカーのうち、これ以内の間の突き合わせだけで続いたもの（near。手にコストを足すのはこちらだけ）
   matchDist: number; // 外枠の真ん中どうしの距離（面の大きさに対する割合）がこれ以内なら同じ面の候補（ID で決まらないとき）
   farDist: number; // ID で突き合わせた面でも、外枠の真ん中がこれより離れていたら同じ面とみない
   cornerRatio: number; // 外枠の 4 隅の対応: いちばん合う回し方の食い違いが、2 番目のこの割合より小さいときだけ決める
@@ -33,7 +34,7 @@ export interface OrientOptions {
 // 「向きを別に追う」）: 動いていないステッカーが 3 枚以上なら持ち替え 0.2・動いていないステッカーを動かす層の手 1 手ごとに +1.5
 export const LIVE_TRACKED_ORIENT = { freeMin: 3, freeCost: 0.2, frozenCost: 1.5 };
 
-export const DEFAULT_ORIENT: OrientOptions = { maxGapMs: 400, matchDist: 0.6, farDist: 1.5, cornerRatio: 0.6, cornerMax: 0.5, maxShift: 0.35 };
+export const DEFAULT_ORIENT: OrientOptions = { maxGapMs: 400, nearGapMs: 120, matchDist: 0.6, farDist: 1.5, cornerRatio: 0.6, cornerMax: 0.5, maxShift: 0.35 };
 
 // 格子のマスの対応: 新しい格子の隅 (k + r) % 4 に、前の格子の隅 k が来た（隅は左上・右上・右下・左下）とき、前のマス c が新しいどのマスか
 export const CELL_MAP = (() => {
@@ -51,11 +52,13 @@ export const CELL_MAP = (() => {
 // ---- フレームの面 ----
 interface Face {
   t: number;
+  slot: number;
   quad: [number, number][] | null; // 外枠の 4 隅（なければ null）
   center: [number, number] | null;
   size: number; // 外枠の辺の長さの平均（画素）
   ids: Int16Array; // 9 マス（-1 = 読めない・使わない）
   since: Float64Array; // 9 マス: そのステッカーがいつから同じ所にいるか
+  near: Float64Array; // 9 マス: 同じ。ただし nearGapMs 以内の突き合わせだけでつないだもの
   centerId: number; // センターの ID（-1 = 読めない）
 }
 
@@ -81,7 +84,7 @@ function facesOf(frame: FrameReading, sight: SightFrame | undefined, maxShift: n
       if (!(size > 1)) quad = center = null;
     }
     const cid = ids[4] >= 0 && ids[4] % 9 === 4 ? ids[4] : -1;
-    out.push({ t: frame.t, quad, center, size, ids, since: new Float64Array(9).fill(frame.t), centerId: cid });
+    out.push({ t: frame.t, slot: f.slot, quad, center, size, ids, since: new Float64Array(9).fill(frame.t), near: new Float64Array(9).fill(frame.t), centerId: cid });
   }
   return out;
 }
@@ -141,7 +144,9 @@ export class OrientTracker {
         const id = a.ids[c];
         if (id < 0) continue;
         const cb = CELL_MAP[r * 9 + c];
-        if (b.ids[cb] === id) b.since[cb] = Math.min(b.since[cb], a.since[c]);
+        if (b.ids[cb] !== id) continue;
+        b.since[cb] = Math.min(b.since[cb], a.since[c]);
+        if (b.t - a.t <= o.nearGapMs) b.near[cb] = Math.min(b.near[cb], a.near[c]);
       }
     }
     // 突き合わせに使った前の面は今の面に置き換わる
@@ -181,10 +186,20 @@ export class OrientTracker {
     return best;
   }
 
-  // 最後のフレームで見えたステッカーのうち、時刻 t0 から同じ所にいるもの（センターは除く: どの手でも動かない）
-  stillSince(t0: number): number[] {
-    const out: number[] = [];
-    for (const f of this.last) for (let c = 0; c < 9; c++) if (c !== 4 && f.ids[c] >= 0 && f.since[c] <= t0) out.push(f.ids[c]);
-    return out;
+  // 最後のフレームで見えたステッカーのうち、時刻 t0 から同じ所にいるもの（センターは除く: どの手でも動かない）と、いま見えている
+  // カメラフレームのマス（スロット * 9 + マス）
+  // near: そのうち nearGapMs 以内の突き合わせだけでつないだもの
+  stillSince(t0: number): { still: number[]; at: number[]; near: number[] } {
+    const still: number[] = [];
+    const at: number[] = [];
+    const near: number[] = [];
+    for (const f of this.last)
+      for (let c = 0; c < 9; c++)
+        if (c !== 4 && f.ids[c] >= 0 && f.since[c] <= t0) {
+          still.push(f.ids[c]);
+          at.push(f.slot * 9 + c);
+          if (f.near[c] <= t0) near.push(f.ids[c]);
+        }
+    return { still, at, near };
   }
 }

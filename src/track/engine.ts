@@ -251,7 +251,7 @@ export class TrackerEngine {
     this.turnHints = [];
     if (this.orient) {
       // 前の観測のフレームから同じ所にいるステッカー（最初の観測にはない）
-      obs.orient = Number.isFinite(this.orientT) ? { still: this.orient.stillSince(this.orientT) } : null;
+      obs.orient = Number.isFinite(this.orientT) ? this.orient.stillSince(this.orientT) : null;
       this.lastOrient = obs.orient;
       this.orientT = frame.t;
     }

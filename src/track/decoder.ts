@@ -47,7 +47,7 @@ export interface DecoderOptions {
   bridgeDepth: number;
   // キューブ全体の向きを手とは別に追った結果（Observation.orient。src/track/orient.ts）を使う（ライブだけ。null で使わない）:
   //   前の観測から動いていないステッカー（still）が freeMin 枚以上なら持ち替えのコストを freeCost にする（どの向きかは見え方で決まる）。
-  //   動いていないステッカーを動かす層の手は 1 手ごとに frozenCost を足す
+  //   短い間の突き合わせだけで動いていないと分かったステッカー（near）を動かす層の手は 1 手ごとに frozenCost を足す
   trackedOrient?: { freeMin: number; freeCost: number; frozenCost: number } | null;
 }
 
@@ -504,8 +504,8 @@ export class MoveDecoder {
     const rotOf = (h: Hypothesis, o: number): number => (o === h.orient ? 0 : rotC0);
     // 動いていないステッカーのある層（仮説の状態で）のビット
     const frozenMask = (h: Hypothesis): number => {
-      if (!tracked || !tracked.still.length || !(tOpts!.frozenCost > 0)) return 0;
-      const want = new Set(tracked.still);
+      if (!tracked || !tracked.near.length || !(tOpts!.frozenCost > 0)) return 0;
+      const want = new Set(tracked.near);
       let mask = 0;
       for (let f = 0; f < 54; f++) {
         const id = stickerIdAt(h.state, f);
