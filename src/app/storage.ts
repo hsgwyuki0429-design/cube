@@ -54,7 +54,9 @@ export interface StartWhy {
 // 停止: ids = 揃いの見え方が続いた / tracked = 追跡の揃い（見え方で照らした）/ manual / pad。
 // home = 揃いの場所にいたステッカーの数（接し方でつながる面のまとまり）・faces = その面の数・frames = 揃いが続いたフレームの数・
 // hold = 揃いが見え始めてから止めると決めるまで（ms）・cut = 精密解析で、止めた後の手として手順から外した手の数（まとめる前。
-// src/track/stopCut.ts）・cutBy = 外し方（prefix = 手順の途中の揃いで切った / decode = 止めると決めたフレームまでで解き直した）
+// src/track/stopCut.ts）・cutBy = 外し方（prefix = 手順の途中の揃いで切った / decode = 止めると決めたフレームまでで解き直した）・
+// endApprox = 打ち切った最後の手の回し終わりをフレームから決められず、回し始めと止めた時刻の真ん中にした（近似。確定のまま）・
+// approxMs = その間の長さ（ms。誤差はこの半分まで）
 export interface StopWhy {
   how: "ids" | "tracked" | "manual" | "pad";
   home?: number;
@@ -63,6 +65,8 @@ export interface StopWhy {
   hold?: number;
   cut?: number;
   cutBy?: "prefix" | "decode";
+  endApprox?: boolean;
+  approxMs?: number;
 }
 
 const SOLVES_KEY = "cubevision.solves.v1";

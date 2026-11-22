@@ -158,6 +158,8 @@ export interface RefineResult {
   // 止めた時刻（RefineInput.stop）で手順を打ち切った（src/track/stopCut.ts）。how = prefix（手順の途中の揃いで切った）/ decode（止めると
   // 決めたフレームまでの観測で解き直した）、dropped = 止めた時刻より後に回し終わる手として外した手の数（まとめる前）。打ち切らなければ無い
   stopCut?: { how: "prefix" | "decode"; dropped: number };
+  // 打ち切った最後の手の回し終わりをフレームから決められず、回し始めと止めた時刻の真ん中にした（近似。確定のまま）: その間の長さ（ms）
+  endApproxMs?: number;
   raw?: { move: number; t0?: number; t: number; start: number; end: number; inferred?: boolean }[]; // まとめる前の手（調査用）
 }
 
@@ -714,11 +716,13 @@ export class Refiner {
     // 止めた時刻で打ち切った（stopCut）のに、最後の手の回し終わりが層の動きから決まらない（IMG_5049: 上の層が見えにくい向きで、
     // 回し終わりの後のフレームはほとんど読めない）: 回し始めがフレームから決まっていて、ライブが揃いを見た時刻（stop.at）がその
     // STOP_END_SPAN_MS 以内なら、回し終わりはその間にある。間の真ん中にする（誤差は間の半分まで）
+    let endApproxMs: number | undefined;
     if (stopCutInfo && stop && last && !last.inferred && !last.endExact && last.exact && solved) {
       const from = Math.max(last.start, timed.length > 1 ? timed[timed.length - 2].end : last.start);
       if (stop.at >= from && stop.at - from <= STOP_END_SPAN_MS) {
         last.end = (from + stop.at) / 2;
         last.endExact = true;
+        endApproxMs = Math.round(stop.at - from);
         endByLooks = true;
       }
     }
@@ -754,6 +758,7 @@ export class Refiner {
       startMoveInferred: !!first?.inferred,
       endMoveInferred: !!last?.inferred,
       ...(stopCutInfo ? { stopCut: stopCutInfo } : {}),
+      ...(endApproxMs !== undefined ? { endApproxMs } : {}),
       raw: timed.map((m) => ({ move: m.move, t0: m.t0, t: m.t, start: m.start, end: m.end, inferred: m.inferred })),
     };
   }

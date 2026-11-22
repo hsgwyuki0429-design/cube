@@ -1979,6 +1979,8 @@ dfb9a9b4656c0f9dcc0fd41feecc511ebb353dc4cf5b3df66783d0339d1edfd6  dump/IMG_5049_
   揃いと出ない: 44.972 秒の F の面が 1 マス読み違い）。回し始めと止めた時刻の間（150ms 以内）の真ん中にした（44.934 / 44.967 秒。画像で
   見た揃いは 44.93 秒）
 - 外した手の数と外し方は記録の `Solve.edges.stop.cut`・`cutBy`（prefix・decode）に残す
+- 真ん中にした回し終わりは確定のままにし、近似だと分かるように `Solve.edges.stop.endApprox`・`approxMs`（間の長さ。誤差はその半分まで）を残す
+  （2026-11-22。`RefineResult.endApproxMs`。`IMG_5049` の原画質の 41 秒からの短い通しで 73ms・終わり 44.933 秒）
 
 **実物の 28 本**（bench-2 の材料と正解。sha256 は上の表と同じことを確かめた。本体の `Refiner` に通し、同じ読みで「打ち切らない」と「止めた時刻で
 打ち切る」を出した: `realVideo` の `REAL_STOP`・`REAL_STOP_OUT` → `tests/debug/stopCompare.debug.test.ts`。止めた時刻は原画質のライブの読みを

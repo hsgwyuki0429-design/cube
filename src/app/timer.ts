@@ -454,7 +454,9 @@ async function analyzeRecordingInner(live: LiveSpan, endT: number): Promise<void
   }
   const liveEdges: ("start" | "end")[] = how === "pad" ? [] : [...(startSure ? [] : ["start" as const]), ...(endSure ? [] : ["end" as const])];
   // 止めた後の手として外した手の数を、止めた理由に残す（記録の Solve.edges.stop.cut）
-  const edges = result.stopCut && cur?.edges?.stop ? { edges: { ...cur.edges, stop: { ...cur.edges.stop, cut: result.stopCut.dropped, cutBy: result.stopCut.how } } } : {};
+  // 最後の手の回し終わりを回し始めと止めた時刻の真ん中にした（近似）ときは、その印と幅も残す（endApprox・approxMs。確定のまま）
+  const approx = result.endApproxMs !== undefined && endSure ? { endApprox: true, approxMs: result.endApproxMs } : {};
+  const edges = result.stopCut && cur?.edges?.stop ? { edges: { ...cur.edges, stop: { ...cur.edges.stop, cut: result.stopCut.dropped, cutBy: result.stopCut.how, ...approx } } } : {};
   updateSolve(id, {
     analysis: startSure && endSure ? "done" : how === "pad" ? "done" : "partial",
     ...(liveEdges.length ? { liveEdges } : {}),
