@@ -7,6 +7,7 @@
 //   E2E_QUERY='&refinepool=0'（URL に足す。&refinepool=0 はタイマーの精密解析で検出を別の Worker に分けない）
 //   E2E_MODE=timer E2E_EXPORT=フォルダ E2E_EXPORT_CHECK=1（「録画を書き出す」を押して保存し、手元の realVideo で解析し直してアプリの結果と比べる。
 //   E2E_EXPORT_STATS=rows.jsonl で読める量の物差しも足す）
+//   E2E_MODE=timer E2E_LIVELOG=フォルダ（「ライブの記録を書き出す」を押して保存する。手元の tests/debug/liveLog.debug.test.ts で通し直す）
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { chromium } from "playwright-core";
@@ -151,6 +152,16 @@ try {
       for (const l of logs.filter((l) => l.includes("[start]") || l.includes("[stop]"))) console.log(`  ${l}`);
       // E2E_EXPORT=フォルダ: 設定画面の「録画を書き出す」を押して、書き出した録画を保存する。E2E_EXPORT_CHECK=1 なら手元の
       // realVideo（tests/debug/realVideo.debug.test.ts）で精密解析し直し、アプリの結果と同じかを確かめる（違えば NG）
+      if (process.env.E2E_LIVELOG) {
+        const dir = process.env.E2E_LIVELOG;
+        mkdirSync(dir, { recursive: true });
+        await page.evaluate(() => window.__cubevision.store.set({ screen: "settings" }));
+        const [dl] = await Promise.all([page.waitForEvent("download", { timeout: 30000 }), page.getByRole("button", { name: "ライブの記録を書き出す" }).click()]);
+        const file = `${dir}/seed${seed}-${dl.suggestedFilename()}`;
+        await dl.saveAs(file);
+        console.log(`  live log: ${file}`);
+        await page.evaluate(() => window.__cubevision.store.set({ screen: "play" }));
+      }
       if (process.env.E2E_EXPORT) {
         const dir = process.env.E2E_EXPORT;
         mkdirSync(dir, { recursive: true });

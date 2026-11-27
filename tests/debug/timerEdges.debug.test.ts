@@ -24,8 +24,10 @@ import { ARUCO_OBSERVER, LIVE_OBSERVER } from "../../src/track/observer";
 import { LIVE_TRACKED_ORIENT } from "../../src/track/orient";
 
 // 本体のライブ（src/app/controller.ts の liveEngineOptions。liveReplay.debug.test.ts と同じ）
-// TE_OLD=1: 向きを別に追う前（2026-11-22 まで）
-const liveEngineOptions = () => ({ observer: { ...ARUCO_OBSERVER, ...LIVE_OBSERVER }, decoder: { priorWeight: 0, confirmMargin: 1, deepHyps: 4, bridgeDepth: 5, ...(process.env.TE_OLD ? {} : { trackedOrient: LIVE_TRACKED_ORIENT }) }, snapToView: true, recover: true, orient: !process.env.TE_OLD });
+// ソルブ中のライブの状態の推定（EngineOptions.pieces）は、本体と同じく今の判定で始めたフレームから有効にする。
+// TE_OLD=1: 推定を使わない（向きを別に追う版: 2026-11-22 の #113）・TE_OLD=2: さらに向きも追わない（その前）
+const OLD = process.env.TE_OLD ?? "";
+const liveEngineOptions = () => ({ observer: { ...ARUCO_OBSERVER, ...LIVE_OBSERVER }, decoder: { priorWeight: 0, confirmMargin: 1, deepHyps: 4, bridgeDepth: 5, ...(OLD === "2" ? {} : { trackedOrient: LIVE_TRACKED_ORIENT }) }, snapToView: true, recover: true, orient: OLD !== "2", ...(OLD ? {} : { pieces: false }) });
 
 type Reading = FrameReading & { sight?: SightFrame };
 
@@ -122,6 +124,7 @@ it("タイマーの開始・停止（前の判定と今の判定）", () => {
         newStart.frame(r.t, sight, target);
         if (u) {
           const at = newStart.push(u, readyMoves);
+          if (at !== null && !OLD) engine.setOptions({ pieces: true });
           if (at !== null) start.neu = { decided: r.t, at, note: (u.timings ?? []).slice(readyMoves).map((x, i) => `${u.moves[readyMoves + i]?.move}${x?.moved ? "m" : ""}${x?.exact ? `@${((x.start - r.t) / 1000).toFixed(2)}` : `~${(((u.moves[readyMoves + i]?.t0 ?? r.t) - r.t) / 1000).toFixed(2)}`}`).join(" ") };
         }
       }

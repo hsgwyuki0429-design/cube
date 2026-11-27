@@ -541,6 +541,9 @@ export function inspectionTick(now: number): number {
 
 controller.onTrack(onTrack);
 // スクランブル中は、ライブを前の動き（一番合う手順を回して見せる。見えている色への作り変えはしない）にする
-timerStore.subscribe((t) => controller.setLiveSnap(t.phase !== "scrambling" && t.phase !== "preparing"));
+timerStore.subscribe((t) => {
+  controller.setLiveSnap(t.phase !== "scrambling" && t.phase !== "preparing");
+  controller.setLivePieces(t.phase === "solving");
+});
 controller.onFrameResult(onFrame);
 onPadEvent(onPad);

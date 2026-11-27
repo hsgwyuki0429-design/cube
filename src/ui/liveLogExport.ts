@@ -40,7 +40,7 @@ export async function exportLiveLog(): Promise<void> {
     helperFrames: vision.helperFrames,
     timer: { phase: t.phase, startT: t.startT, startIndex: t.startIndex, scramble: t.scramble },
     // 直前のソルブ（精密解析の手順と時刻: 本当の動きとして比べる）
-    solves: t.solves.slice(-3),
+    solves: t.solves.slice(0, 3), // 新しい順（先頭が直前のソルブ）
     log,
   };
   const text = JSON.stringify(data);

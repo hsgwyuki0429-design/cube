@@ -1032,6 +1032,20 @@ export class MoveDecoder {
     this.status = "tracking";
   }
 
+  // 外で追った状態と手順をそのまま引き継ぐ（ライブの状態の推定 src/track/liveState.ts から、ふだんの追跡に戻るとき）
+  adopt(state: CubeState, orient: number, moves: DecodedMove[], origin: HypothesisOrigin | null): void {
+    let tail: MoveNode | null = null;
+    for (const m of moves) {
+      const len: number = (tail?.len ?? 0) + 1;
+      tail = { move: m.move, t0: m.t0 ?? m.t, t: m.t, orient: m.orient, inferred: !!m.inferred, prev: tail, len };
+    }
+    this.beam = [{ state: new Uint8Array(state), orient, cost: 0, obsCost: 0, tail, origin }];
+    this.lastGoodBeam = this.beam;
+    this.lastObservationCost = 0;
+    this.uncertainStreak = 0;
+    this.status = "tracking";
+  }
+
   inject(state: CubeState, orient: number, obsCost: number, origin: HypothesisOrigin, extra: number): void {
     const b = this.beam[0];
     const h: Hypothesis = { state: new Uint8Array(state), orient, cost: b.cost - b.obsCost + obsCost + extra, obsCost, tail: b.tail, origin };
