@@ -19,6 +19,7 @@ export interface Settings {
   stableMs: number;
   cameraFps: number;
   rotationCost: number;
+  captureAdvice: boolean; // 撮り方の案内（近づける・明るく・真ん中に…）を出す（src/app/captureAdvice.ts）
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -39,6 +40,7 @@ export const DEFAULT_SETTINGS: Settings = {
   stableMs: 33,
   cameraFps: 60,
   rotationCost: 1.5,
+  captureAdvice: true,
 };
 
 const KEY = "cubevision.settings.v1";

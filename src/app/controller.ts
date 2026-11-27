@@ -23,6 +23,7 @@ import { STICKERS } from "../aruco/design";
 import { loadSolves, personalSequences } from "./storage";
 import { createStore } from "./store";
 import { markPhase } from "./crashGuard";
+import { PerfLog, summarizePerf } from "./perfLog";
 
 // 画面: プレイ・データ（グラフと履歴）・1 回の記録の詳しい画面・解析（スロー動画・ArUco の画面）・設定（使い方も）
 export type Screen = "play" | "data" | "solve" | "analyze" | "settings";
@@ -104,6 +105,20 @@ function refinePool(): Pick<RefineInput, "parallel" | "pieces"> {
   return { ...(v === null || !/^\d+$/.test(v) ? {} : { parallel: Number(v) }), ...(p === "1" || p === "and" ? { pieces: "and" as const } : p === "v1" ? { pieces: "v1" as const } : {}) };
 }
 
+// ?solveload=…: ソルブ中の重さの配り方（ライブ 2.5。実機で比べる。既定は今のまま: 精密解析はソルブ中も全部のフレームを処理し、
+// 補助の Worker も使う）。カンマで組み合わせる:
+//   pause = ソルブ中は精密解析に録画を渡さない（止めたらまとめて渡す。止めた後の待ちが延びる）
+//   duty50 など = ソルブ中は精密解析の Worker が処理していた時間の割合を 50% までにする（同じフレームを遅れて処理する。結果は同じ）
+//   helperoff = ソルブ中は認識の補助の Worker を休ませる（精密解析の Worker に CPU を回す）
+//   lazy = 精密解析で、インスペクションの間引きで処理しないフレームを画素にしない（結果は同じ。復号の後の画素の取り出しを省く）
+//   vframe = カメラのフレームを VideoFrame のままライブの Worker と録画に渡す（縮める・描くのをメインスレッドでしない。いつも）
+export const SOLVE_LOAD = parseSolveLoad(typeof location === "undefined" ? "" : (new URLSearchParams(location.search).get("solveload") ?? ""));
+export function parseSolveLoad(q: string): { refine: string; helper: "on" | "off"; lazy: boolean; vframe: boolean } {
+  const parts = q.split(",").map((x) => x.trim()).filter(Boolean);
+  const refine = parts.find((x) => x === "pause" || /^duty\d+$/.test(x)) ?? "full";
+  return { refine, helper: parts.includes("helperoff") ? "off" : "on", lazy: parts.includes("lazy"), vframe: parts.includes("vframe") };
+}
+
 // ?livepieces=0: ソルブ中のライブの状態の推定を使わない（今までの追跡のまま。比べるとき）
 const LIVE_PIECES = typeof location === "undefined" || new URLSearchParams(location.search).get("livepieces") !== "0";
 
@@ -132,6 +147,7 @@ class Controller {
   readonly camera = new CameraSource();
   vision: VisionClient | null = null;
   readonly recorder = new FrameRecorder(); // タイマー計測中の録画（ソルブ後の精密解析用）
+  readonly perf = new PerfLog(); // 1 秒ごとの処理の様子（調査用: 書き出しに入れる）
   lastRecording: SolveRecording | null = null; // 直近のソルブの録画（開発用の書き出し）
   readonly refiner = new RefineClient();
   // 動画ファイルの解析（ソルブ中から進める解析と別の Worker。並べて動かしても追跡を止めない）
@@ -151,6 +167,21 @@ class Controller {
   private liveResting = false; // 止めた後の残りの解析の間（ライブの認識を休む）
   private snapLive = true; // ライブの作り変えを使うか（タイマーのスクランブル中は使わない）
   private piecesLive = false; // ソルブ中のライブの状態の推定を使うか（タイマーの計測中だけ）
+  private solvingNow = false; // タイマーの計測中
+
+  // ソルブ中の重さの配り方（ライブ 2.5。URL で切り替えて実機で比べる: SOLVE_LOAD）。補助の Worker を休ませるか
+  private helperRest(): boolean {
+    return this.solvingNow && SOLVE_LOAD.helper === "off";
+  }
+
+  // 精密解析をソルブ中にどれだけ動かすか（SOLVE_LOAD.refine）: pause = 録画を渡さない（止めたらまとめて渡す）・duty = Worker が
+  // 処理していた時間の割合をこれまでにする（同じフレームを遅れて処理する）
+  private applySolveLoad(): void {
+    const session = this.session;
+    if (!session || !session.timed || session.id < 0) return;
+    const r = SOLVE_LOAD.refine;
+    if (r.startsWith("duty")) this.refiner.setDuty(session.id, this.solvingNow ? Number(r.slice(4)) / 100 : 1);
+  }
 
   // ライブの作り変え（見えている色に合わせる）を使うか。タイマーのスクランブル中は、前のライブ（一番合う手順を回して見せる）にする
   setLiveSnap(on: boolean): void {
@@ -162,6 +193,8 @@ class Controller {
   // ソルブ中のライブの状態の推定（src/track/liveState.ts。ライブ 2 の後半）: タイマーの計測中だけ使う。スクランブル中・インスペクション・
   // 開始の判定は今までの追跡のまま。切り替えた時点の一番合う状態と手順から推定し、止めたらその状態と手順を今までの追跡に戻す
   setLivePieces(on: boolean): void {
+    this.solvingNow = on;
+    this.applySolveLoad();
     on &&= LIVE_PIECES;
     if (this.piecesLive === on) return;
     this.piecesLive = on;
@@ -177,14 +210,38 @@ class Controller {
     this.vision.ready
       .then(({ opencv, ms }) => this.store.set({ vision: opencv ? "ready" : "error", visionLoadMs: ms }))
       .catch(() => this.store.set({ vision: "error" }));
-    this.vision.onResult((m) => this.onFrame(m));
+    this.vision.onResult((m) => {
+      const a = performance.now();
+      this.onFrame(m);
+      this.perf.addMs("msgMs", performance.now() - a);
+    });
+    const perf = this.perf;
+    this.vision.onStat = (k) => perf.count(k);
+    this.vision.videoFrames = SOLVE_LOAD.vframe;
+    this.recorder.videoFrames = SOLVE_LOAD.vframe;
+    this.recorder.onQueue = (n) => perf.queue(n);
+    perf.workers = async () => {
+      const [lv, refine] = await Promise.all([this.vision?.perf() ?? Promise.resolve({ live: null, helper: null }), this.refiner.perf()]);
+      return { live: lv.live, helper: lv.helper, refine };
+    };
+    perf.start();
     this.camera.onFrame((t) => {
+      const a = performance.now();
+      perf.count("cam");
       // 止めた後の残りの解析の間は、ライブの認識を休む（1 秒に何枚も作る画像でメモリの山が高くなり、iPhone で落ちる元になる。
       // 休んでいる間に回した手は、再開したときに見えている色への作り変えで追いつく）
       // 録画の圧縮が詰まっている間は、認識の補助の Worker を休ませる（CPU を圧縮に回す。録画を間引くと精密解析が悪くなる）
-      if (this.vision) this.vision.useHelper = !this.recorder.congested(t);
+      if (this.vision) this.vision.useHelper = !this.recorder.congested(t) && !this.helperRest();
       if (!this.liveResting) this.vision?.submit(this.camera.video, t);
-      if (this.recorder.recording) this.recorder.add(this.camera.video, t);
+      else perf.count("full");
+      if (this.recorder.recording) {
+        const b = performance.now();
+        const before = this.recorder.dropped;
+        this.recorder.add(this.camera.video, t);
+        perf.addMs("recMs", performance.now() - b);
+        perf.count(this.recorder.dropped > before ? "recDropped" : "rec");
+      }
+      perf.addMs("mainMs", performance.now() - a);
     });
     this.camera.onEnded(() => this.onCameraLost());
     this.statsTimer = window.setInterval(() => {
@@ -512,10 +569,13 @@ class Controller {
     if (id === null || this.session !== session) return abandon();
     session.id = id;
     session.timer = window.setInterval(() => this.feedAnalysis(session), 250);
+    if (SOLVE_LOAD.lazy) this.refiner.setLazy(id);
     return true;
   }
 
-  private feedAnalysis(session: AnalysisSession, untilMs = Infinity): void {
+  private feedAnalysis(session: AnalysisSession, untilMs = Infinity, final = false): void {
+    // ソルブ中は渡さない（?solveload=pause。止めたら残りをまとめて渡す）
+    if (!final && this.solvingNow && SOLVE_LOAD.refine === "pause" && session.started) return;
     const rec = this.recorder.takeNew(untilMs);
     if (!rec || session.id < 0 || !rec.chunks.length) return;
     const first = !session.started;
@@ -549,7 +609,7 @@ class Controller {
     this.session = null;
     this.store.set({ analysis: null });
     await this.recorder.finish(to);
-    if (session.id >= 0) this.feedAnalysis(session, to);
+    if (session.id >= 0) this.feedAnalysis(session, to, true);
     // 解析が途中で失敗した（Worker が落ちた・例外・止まった）ときのために、録画全体を取っておく（圧縮した映像のかたまりを指すだけ）
     const backup = this.recorder.extract(session.from, to);
     const whole = this.recorder.extract(session.from, Infinity);
@@ -579,10 +639,15 @@ class Controller {
         solvingFrom: session.solvingFrom,
         target: target ? Array.from(target) : null,
         ...(live ? { live } : {}),
+        solveLoad: typeof location === "undefined" ? "" : (new URLSearchParams(location.search).get("solveload") ?? ""),
       };
       this.lastRecording = cap;
+      const endAt = performance.now();
       result.then(
-        (r) => (cap.result = r),
+        (r) => {
+          cap.result = r;
+          cap.waitMs = Math.round(performance.now() - endAt);
+        },
         (e) => (cap.error = errorText(e)),
       );
     }
@@ -731,6 +796,11 @@ class Controller {
     }
   }
 
+  // 調査用（E2E が読む）: from〜to（ms）の 1 秒ごとの処理の様子のまとめ
+  perfSummary(from: number, to: number): string {
+    return summarizePerf(this.perf.rows.filter((r) => r.t >= from && r.t + 1000 <= to));
+  }
+
   dispose(): void {
     clearInterval(this.statsTimer);
   }
@@ -748,6 +818,8 @@ export interface SolveRecording {
   result?: RefineResult;
   error?: string;
   retried?: string; // ソルブ中から進めた解析が失敗し、録画全体を解析し直した（その理由）
+  waitMs?: number; // 止めてから解析の結果が出るまで（ms。止めた後の待ち）
+  solveLoad?: string; // ソルブ中の重さの配り方（URL の ?solveload=）
 }
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));

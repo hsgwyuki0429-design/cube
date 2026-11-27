@@ -7,6 +7,9 @@
 //   E2E_QUERY='&refinepool=0'（URL に足す。&refinepool=0 はタイマーの精密解析で検出を別の Worker に分けない）
 //   E2E_MODE=timer E2E_EXPORT=フォルダ E2E_EXPORT_CHECK=1（「録画を書き出す」を押して保存し、手元の realVideo で解析し直してアプリの結果と比べる。
 //   E2E_EXPORT_STATS=rows.jsonl で読める量の物差しも足す）
+//   E2E_MODE=timer E2E_FAKECAM=動画.y4m E2E_SCRAMBLE='R2 B2 …'（デモの合成カメラの代わりに、偽のカメラ（Chromium の
+//   --use-file-for-fake-video-capture）で 60fps の合成動画を流す: tests/debug/fakeCamVideo.debug.test.ts。E2E_CORES=4 で Chromium を CPU 4 つに絞る。
+//   E2E_PERF=rows.jsonl で 1 秒ごとの処理の様子を足す。ソルブ中の重さの配り方は E2E_QUERY='&solveload=pause' など）
 //   E2E_MODE=timer E2E_LIVELOG=フォルダ（「ライブの記録を書き出す」を押して保存する。手元の tests/debug/liveLog.debug.test.ts で通し直す）
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
@@ -92,23 +95,62 @@ async function turnStats(page) {
   return `3D: 回した ${shown.length}・結びつかない ${fake.length}${solveFrom > 0 ? `（うちインスペクション中 ${inspect}）` : ""}${fake.length ? `（${fake.map((x) => `${name(x.move)}@${((x.t - t0) / 1000).toFixed(1)}s`).join(" ")}）` : ""}・塗り替え ${turns.length - shown.length}・本当の手を回した ${used.size}/${truth.length}`;
 }
 
+const FAKECAM = process.env.E2E_FAKECAM;
+// E2E_CORES=4: Chromium（とその子のプロセス）を CPU 4 つに絞る（taskset）。実機の iPhone（4 コア）に近づける
+const CORES = process.env.E2E_CORES;
+let launchPath = CHROME;
+if (CORES) {
+  const { writeFileSync, chmodSync } = await import("node:fs");
+  const wrap = `${OUT}/chromium-${CORES}cores.sh`;
+  writeFileSync(wrap, `#!/bin/sh\nexec taskset -c 0-${Number(CORES) - 1} ${CHROME ?? "chromium"} "$@"\n`);
+  chmodSync(wrap, 0o755);
+  launchPath = wrap;
+}
 const browser = await chromium.launch({
-  executablePath: CHROME,
-  args: ["--use-gl=angle", "--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--autoplay-policy=no-user-gesture-required", "--ignore-gpu-blocklist"],
+  executablePath: launchPath,
+  args: [
+    "--use-gl=angle",
+    "--use-angle=swiftshader",
+    "--enable-unsafe-swiftshader",
+    "--autoplay-policy=no-user-gesture-required",
+    "--ignore-gpu-blocklist",
+    ...(FAKECAM ? ["--use-fake-device-for-media-stream", "--use-fake-ui-for-media-stream", `--use-file-for-fake-video-capture=${FAKECAM}`] : []),
+  ],
 });
 let failures = 0;
 const results = [];
 try {
   for (const seed of SEEDS) {
-    const page = await browser.newPage({ viewport: { width: 1400, height: 900 } });
+    // E2E_VIEWPORT=393x852: 画面の大きさ（偽のカメラで重さを比べるときは iPhone の大きさにする。ヘッドレスの Chromium は描画も CPU なので、大きい画面の描画が fps を下げる）
+    const [vw, vh] = (process.env.E2E_VIEWPORT ?? "1400x900").split("x").map(Number);
+    const page = await browser.newPage({ viewport: { width: vw, height: vh } });
     const logs = [];
     page.on("console", (m) => logs.push(`[${m.type()}] ${m.text()}`));
     page.on("pageerror", (e) => logs.push(`[pageerror] ${e.message}`));
     const t0 = Date.now();
     // E2E_NOHELPER=1: 認識の補助の Worker を使わない（コアが少ない端末のように）
     if (process.env.E2E_NOHELPER) await page.addInitScript(() => Object.defineProperty(navigator, "hardwareConcurrency", { get: () => 2 }));
-    await page.goto(`http://localhost:${PORT}/?demo=e2e&seed=${seed}&moves=${MOVES}&tps=${TPS}&view=${VIEW}${MODE === "timer" ? "&timer=1" : ""}${process.env.E2E_PAD ? "&pad=1" : ""}${process.env.E2E_QUERY ?? ""}`);
+    if (FAKECAM) {
+      // 偽のカメラ: カメラを開始し（動画は開いたときから流れる。最初の 6 秒は揃った状態）、揃った状態から始めて、動画と同じスクランブルを出す
+      await page.context().grantPermissions(["camera"]);
+      await page.goto(`http://localhost:${PORT}/?scramble=${encodeURIComponent(process.env.E2E_SCRAMBLE ?? "")}${process.env.E2E_QUERY ?? ""}`);
+      await page.waitForFunction(() => window.__cubevision?.vision?.isReady, null, { timeout: 60000 });
+      // カメラを許可してあるので、アプリが自分で開始する（来なければ開始する）
+      await page.waitForFunction(() => window.__cubevision.store.get().camera !== "off", null, { timeout: 3000 }).catch(() => page.evaluate(() => window.__cubevision.startCamera()));
+      await page.waitForFunction(() => window.__cubevision.store.get().camera === "on", null, { timeout: 30000 });
+      await page.evaluate(() => window.__cubevision.startFromSolved());
+      await page.waitForFunction(() => !!window.__cubevision.store.get().cube, null, { timeout: 30000 });
+      await page.evaluate(() => window.__cubevisionNewScramble());
+    } else await page.goto(`http://localhost:${PORT}/?demo=e2e&seed=${seed}&moves=${MOVES}&tps=${TPS}&view=${VIEW}${MODE === "timer" ? "&timer=1" : ""}${process.env.E2E_PAD ? "&pad=1" : ""}${process.env.E2E_QUERY ?? ""}`);
     if (MODE === "timer") {
+      // 撮り方の案内（src/app/captureGuide.ts）が出た場面を 100ms ごとに残す（インスペクション・ソルブ中に出たら NG）
+      await page.evaluate(() => {
+        window.__adviceLog = [];
+        setInterval(() => {
+          const k = window.__cubevisionAdvice?.get().key;
+          if (k) window.__adviceLog.push([window.__cubevisionTimer.get().phase, k]);
+        }, 100);
+      });
       try {
         await page.waitForFunction(() => window.__cubevisionTimer?.get().phase === "done", null, { timeout: 240000, polling: 500 });
       } catch (e) {
@@ -145,6 +187,25 @@ try {
       console.log(
         `seed ${seed} timer: ${ok ? "OK" : "NG"} live ${(live?.timeMs / 1000).toFixed(3)}s → ${r.result?.analysis}${r.result?.refineMethod ? `(${r.result.refineMethod})` : ""} ${(r.result?.timeMs / 1000).toFixed(3)}s (truth ≈ ${(truthMs / 1000).toFixed(3)}s, ${sol.length} moves) moves ${n}${r.result?.moves.some((m) => m.inferred) ? ` 推定 ${r.result.moves.map((m, i) => (m.inferred ? i : -1)).filter((i) => i >= 0).join(",")}` : ""} tps ${r.result?.tps.toFixed(2)} ${r.result?.pad ? `pad ${JSON.stringify(r.result.pad)} ` : ""}splits ${JSON.stringify(r.result?.splits?.map((x) => [x.name, x.moves]))} 認識 ${r.processed} 枚（うち補助 ${r.helper}） rec ${r.rec ? `${r.rec.bitrate / 1e6}Mbps ${r.rec.frames} 枚・間引き ${r.rec.dropped}` : "-"} analysis-wait ${((Date.now() - waitFrom) / 1000).toFixed(1)}s ${logs.filter((l) => l.includes("[analysis]")).map((l) => l.replace(/^.*\[analysis\] /, "")).join(" / ")}`,
       );
+      // 1 秒ごとの処理の様子（src/app/perfLog.ts）を場面ごとに（ライブ 2.5: ソルブ中の fps の低下）
+      const perf = await page.evaluate(() => {
+        const c = window.__cubevision;
+        const t = window.__cubevisionTimer.get();
+        const end = t.startT + (t.result?.provisionalMs ?? t.result?.timeMs ?? 0);
+        const now = performance.now();
+        return { inspect: c.perfSummary(t.inspectionStart, t.startT), solve: c.perfSummary(t.startT, end), after: c.perfSummary(end, now), rows: c.perf.rows.filter((r) => r.t >= t.inspectionStart - 2000) };
+      });
+      console.log(`  perf インスペクション: ${perf.inspect}\n  perf ソルブ: ${perf.solve}\n  perf 止めた後〜解析: ${perf.after}`);
+      if (process.env.E2E_PERF) {
+        const { appendFileSync } = await import("node:fs");
+        appendFileSync(process.env.E2E_PERF, `${JSON.stringify({ seed, query: process.env.E2E_QUERY ?? "", waitMs: Date.now() - waitFrom, analysis: r.result?.analysis, method: r.result?.refineMethod, inferred: r.result?.moves.filter((m) => m.inferred).length, moves: n, processed: r.processed, rec: r.rec, rows: perf.rows, startT: r.startT, inspectionStart: r.inspectionStart, live: live?.timeMs })}\n`);
+      }
+      const advice = await page.evaluate(() => window.__adviceLog ?? []);
+      const byPhase = {};
+      for (const [ph, k] of advice) byPhase[`${ph}:${k}`] = (byPhase[`${ph}:${k}`] ?? 0) + 1;
+      const quietBad = advice.filter(([ph]) => ph === "inspection" || ph === "solving").length;
+      console.log(`  撮り方の案内: ${Object.entries(byPhase).map(([k, n]) => `${k} ${n}`).join("・") || "なし"}${quietBad ? "（NG: インスペクション・ソルブ中に出た）" : ""}`);
+      if (quietBad) failures++;
       // 開始・停止のずれ（リアルタイムの速報値。+ = 遅い）と、インスペクションの長さ
       console.log(`  why: ${JSON.stringify(r.result?.edges ?? null)}`);
       console.log(`  ${await turnStats(page)}`);

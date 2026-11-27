@@ -34,9 +34,11 @@ export async function exportRecording(): Promise<void> {
     // 録画の設定（hw = 頼んだハードウェアの使い方）と数（frames = 圧縮に回したフレーム・dropped = 圧縮が追いつかずに間引いたフレーム）
     recorder: { ...cap.recorder, config: { codec: cap.recording.config.codec, codedWidth: cap.recording.config.codedWidth, codedHeight: cap.recording.config.codedHeight, colorSpace: cap.recording.config.colorSpace }, chunks: chunks.length, keyframes: chunks.filter((c) => c.type === "key").length, bytes },
     // 精密解析: input = 解析に渡したもの（時刻は performance.now() の時間軸の ms。録画の時刻 = timeOriginUs / 1000 + 動画の時刻）
-    analysis: { input: cap.input, solvingFrom: cap.solvingFrom, target: cap.target, live: cap.live, result: cap.result, error: cap.error, retried: cap.retried, pending: !cap.result && !cap.error },
+    analysis: { input: cap.input, solvingFrom: cap.solvingFrom, target: cap.target, live: cap.live, result: cap.result, error: cap.error, retried: cap.retried, pending: !cap.result && !cap.error, waitMs: cap.waitMs, solveLoad: cap.solveLoad },
     // 記録（タイム・手順・開始と停止の理由 edges・精密解析の方法）
     solve,
+    // 1 秒ごとの処理の様子（src/app/perfLog.ts）: 録画の始まりから
+    perf: controller.perf.between(cap.input.from - 30000),
   };
   let muxed: ReturnType<typeof muxRecording>;
   try {

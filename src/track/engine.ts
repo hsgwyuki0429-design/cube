@@ -1,11 +1,11 @@
 // 追跡エンジン: フレームの読み取り → 安定観測 → デコーダ → 結果。カメラも DOM も知らない。
 // Worker の中でもテストの中でも同じコードが動く。
 import { type RecoverOptions, orientsOf, recoverFrom } from "./recover";
-import { type CubeState, NORMAL, VIEW, applyMove, faceletGeometry, inverseMove, isSolved, moveFace, solvedState } from "../cube/model";
+import { type CubeState, NORMAL, VIEW, applyMove, faceletGeometry, inverseMove, isSolved, moveFace, solvedState, statesEqual } from "../cube/model";
 import { stickerIdAt } from "../cube/stickers";
 import type { Lab } from "../vision/color";
 import { ColorModel, type ColorModelOptions } from "./colorModel";
-import { type DecoderOptions, type Hypothesis, MoveDecoder, observationCost } from "./decoder";
+import { type DecoderOptions, type Hypothesis, type HypothesisOrigin, MoveDecoder, observationCost } from "./decoder";
 import { movePrior } from "./prior";
 import { snapToObservation } from "./snap";
 import { FaceObserver, type FrameReading, type ObserverOptions } from "./observer";
@@ -165,6 +165,16 @@ export function turnHint(s: TurnSnapshot): TurnHint | null {
   return { slot: s.slot, quarters: reliable && settled ? ((q % 4) + 4) % 4 : null };
 }
 
+export interface EngineCheckpoint {
+  state: number[];
+  orients: number[];
+  moves: number; // そのときの一番の仮説の手の数
+  origin: HypothesisOrigin | null;
+  snaps: number;
+  refs: Lab[];
+  lastSeen: number[];
+}
+
 export class TrackerEngine {
   readonly colors: ColorModel;
   readonly observer: FaceObserver;
@@ -285,6 +295,40 @@ export class TrackerEngine {
       this.watchCenters = true;
       this.setPieces(options.pieces);
     }
+  }
+
+  // ライブの記録（src/track/liveLog.ts）の区切りの始まり: 古い読みを捨てても、ここから新しい TrackerEngine で通し直せば実機と同じに
+  // なるように、追跡が落ち着いている（推定中でない・見失っていない・一番の状態から confirmMargin 以内の仮説がどれも同じ状態）ときの
+  // 一番の状態と、その状態の仮説の姿勢・代表色・作り変えの数・最後に見た時刻を返す。落ち着いていなければ null
+  checkpoint(): EngineCheckpoint | null {
+    if (this.live || this.decoder.status !== "tracking") return null;
+    const hyps = this.decoder.hypotheses();
+    const best = hyps[0];
+    if (!best) return null;
+    const margin = this.decoder.options.confirmMargin;
+    const orients: number[] = [];
+    for (const h of hyps) {
+      if (h.cost > best.cost + margin) break;
+      if (!statesEqual(h.state, best.state) || (h.origin?.n ?? 0) !== (best.origin?.n ?? 0)) return null;
+      if (!orients.includes(h.orient)) orients.push(h.orient);
+    }
+    return {
+      state: Array.from(best.state),
+      orients,
+      moves: this.decoder.bestMoves().length,
+      origin: best.origin ? { ...best.origin } : null,
+      snaps: this.snaps,
+      refs: this.colors.refs.map((r) => [...r] as Lab),
+      lastSeen: Array.from(this.lastSeen),
+    };
+  }
+
+  // checkpoint() から始める（ライブの記録の通し直し）。手の数は 0 から数え直す（手の数を実機と比べるときは cp.moves を足す）
+  resume(cp: EngineCheckpoint): void {
+    this.colors.refs = cp.refs.map((r) => [...r] as Lab);
+    this.snaps = cp.snaps;
+    this.lastSeen.set(cp.lastSeen);
+    if (cp.origin) this.decoder.setOrigin({ ...cp.origin, at: Math.max(0, cp.origin.at - cp.moves) });
   }
 
   reset(state: CubeState, orients?: number[]): void {

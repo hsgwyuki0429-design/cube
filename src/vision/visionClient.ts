@@ -9,6 +9,7 @@ import type { Recording } from "./recorder";
 import type { LiveStop } from "../track/stopCut";
 import type { RefineInput, RefineResult } from "./refine";
 import type { VideoFileInfo } from "./videoFile";
+import type { WorkerPerf } from "../app/perfLog";
 
 // Worker に送って結果がまだ来ていないフレームの上限。Worker は待っているフレームのうち動きのいちばん小さいものを処理する
 // （src/vision/vision.worker.ts の pickFrame）。処理が速ければ待つフレームはほとんどない
@@ -24,6 +25,27 @@ const MAX_INFLIGHT_EACH = 2; // Worker 2 つのとき、それぞれに送って
 // （約 4MB の読み込みと、Worker 1 個あたり 134MB のヒープがいらない。src/vision/arucoFrame.ts の usesQuad と同じ条件）
 const NEEDS_OPENCV = !(markerSize(stickerScheme(STICKERS.stickers)) === 3 && designOf(STICKERS.arucoDesign).at.length === 4);
 
+// Worker に処理の様子（累計）を聞く（src/app/perfLog.ts）。忙しくて 900ms 以内に答えなければ null
+const perfAsks = new Map<number, (p: WorkerPerf | null) => void>();
+let perfId = 1;
+function askPerf(w: Worker | null): Promise<WorkerPerf | null> {
+  if (!w) return Promise.resolve(null);
+  const id = perfId++;
+  return new Promise((resolve) => {
+    perfAsks.set(id, resolve);
+    w.postMessage({ type: "perf", id } satisfies ToWorker);
+    setTimeout(() => {
+      if (perfAsks.delete(id)) resolve(null);
+    }, 900);
+  });
+}
+function perfAnswer(m: FromWorker): boolean {
+  if (m.type !== "perf") return false;
+  perfAsks.get(m.id)?.(m.perf);
+  perfAsks.delete(m.id);
+  return true;
+}
+
 export class VisionClient {
   private worker: Worker;
   // Worker に送って結果がまだ来ていないフレームの数。MAX_INFLIGHT まで送る（処理している間に次のフレームを Worker に待たせておく）:
@@ -36,6 +58,7 @@ export class VisionClient {
   private helperInflight = 0;
   private nextSeq = 1;
   helperFrames = 0; // 補助の Worker が認識したフレームの数（調査用）
+  videoFrames = false; // カメラのフレームを VideoFrame のまま送る（?solveload=vframe）
   // 補助の Worker に送ってよいか（録画の圧縮が詰まっている間は休ませる: 精密解析の録画の方が大事。controller が決める）
   useHelper = true;
   private listeners = new Set<(m: FrameMessage) => void>();
@@ -51,12 +74,15 @@ export class VisionClient {
   skipped = 0; // 待っている間に、より動きの小さいフレームを選んで処理しなかった数
   lastProcMs = 0;
   lastError: string | null = null;
+  // 調査用（src/app/perfLog.ts）: 送った・補助に送った・送れなかった・選ばず捨てた
+  onStat: ((k: "sent" | "sentHelper" | "full" | "skipped") => void) | null = null;
 
   constructor() {
     this.worker = new Worker(new URL("./vision.worker.ts", import.meta.url), { type: "module" });
     this.ready = new Promise((resolve, reject) => {
       this.worker.onmessage = (e: MessageEvent<FromWorker>) => {
         const m = e.data;
+        if (perfAnswer(m)) return;
         if (m.type === "ready") {
           this.isReady = true;
           this.opencv = m.opencv;
@@ -69,6 +95,7 @@ export class VisionClient {
         } else if (m.type === "frame-skipped") {
           this.inflight = Math.max(0, this.inflight - 1);
           this.skipped++;
+          this.onStat?.("skipped");
         } else if (m.type === "frame") {
           if (m.foreign) this.helperFrames++;
           else this.inflight = Math.max(0, this.inflight - 1);
@@ -106,6 +133,7 @@ export class VisionClient {
       this.helper = w;
       w.onmessage = (e: MessageEvent<FromWorker>) => {
         const m = e.data;
+        if (perfAnswer(m)) return;
         if (m.type === "ready") this.helperReady = true;
         else if (m.type === "recognized") {
           this.helperInflight = Math.max(0, this.helperInflight - 1);
@@ -113,6 +141,7 @@ export class VisionClient {
         } else if (m.type === "frame-skipped") {
           this.helperInflight = Math.max(0, this.helperInflight - 1);
           this.skipped++;
+          this.onStat?.("skipped");
           if (m.seq !== undefined) this.worker.postMessage({ type: "foreign-skip", seq: m.seq } satisfies ToWorker);
         } else if (m.type === "error") this.dropHelper(m.message);
       };
@@ -150,18 +179,23 @@ export class VisionClient {
     // 送り先: 補助の Worker があれば、送って結果の来ていない数の少ない方（同じなら主）
     const both = this.helperReady && !!this.helper && this.useHelper;
     const toHelper = both && this.helperInflight < this.inflight && this.helperInflight < MAX_INFLIGHT_EACH;
-    if (!toHelper && this.inflight >= (both ? MAX_INFLIGHT_EACH : MAX_INFLIGHT)) return false;
+    if (!toHelper && this.inflight >= (both ? MAX_INFLIGHT_EACH : MAX_INFLIGHT)) {
+      this.onStat?.("full");
+      return false;
+    }
     if (toHelper) this.helperInflight++;
     else this.inflight++;
+    this.onStat?.(toHelper ? "sentHelper" : "sent");
     const seq = this.nextSeq++;
     try {
       // 長辺を workWidth に（縦向きの映像で幅を基準にすると画素が 3 倍になり、認識が追いつかない）
       const s = Math.min(1, this.workWidth / Math.max(video.videoWidth, video.videoHeight));
       const w = Math.round(video.videoWidth * s);
       const h = Math.round(video.videoHeight * s);
-      let bitmap: ImageBitmap;
+      let bitmap: ImageBitmap | VideoFrame;
       try {
-        bitmap = await createImageBitmap(video, { resizeWidth: w, resizeHeight: h, resizeQuality: "low" });
+        // ?solveload=vframe: カメラのフレームをそのまま渡し、縮めるのは Worker で（メインスレッドの 1 枚ごとの時間を減らす）
+        bitmap = this.videoFrames && typeof VideoFrame !== "undefined" ? new VideoFrame(video, { timestamp: Math.round(t * 1000) }) : await createImageBitmap(video, { resizeWidth: w, resizeHeight: h, resizeQuality: "low" });
       } catch {
         // resize オプション非対応のブラウザ向け
         if (!this.fallbackCanvas) this.fallbackCanvas = typeof OffscreenCanvas !== "undefined" ? new OffscreenCanvas(w, h) : document.createElement("canvas");
@@ -171,8 +205,8 @@ export class VisionClient {
         ctx.drawImage(video, 0, 0, w, h);
         bitmap = await createImageBitmap(this.fallbackCanvas);
       }
-      if (toHelper && this.helper) this.helper.postMessage({ type: "recognize", id: this.nextId++, t, bitmap, seq } satisfies ToWorker, [bitmap]);
-      else this.post({ type: "frame", id: this.nextId++, t, bitmap, seq }, [bitmap]);
+      if (toHelper && this.helper) this.helper.postMessage({ type: "recognize", id: this.nextId++, t, bitmap, seq, w, h } satisfies ToWorker, [bitmap]);
+      else this.post({ type: "frame", id: this.nextId++, t, bitmap, seq, w, h }, [bitmap]);
       return true;
     } catch (e) {
       if (toHelper) {
@@ -218,6 +252,12 @@ export class VisionClient {
     });
   }
 
+  // 処理の様子（src/app/perfLog.ts）: 主の Worker と補助の Worker
+  async perf(): Promise<{ live: WorkerPerf | null; helper: WorkerPerf | null }> {
+    const [live, helper] = await Promise.all([askPerf(this.worker), askPerf(this.helperReady ? this.helper : null)]);
+    return { live, helper };
+  }
+
   // 観測を待たずに、今の追跡結果（各手の時刻はその時点までのフレームから）をもらう
   query(): Promise<TrackUpdate | null> {
     const id = this.nextId++;
@@ -242,6 +282,11 @@ export class RefineClient {
   private nextId = 1;
   private jobs = new Map<number, { resolve: (r: RefineResult) => void; reject: (e: Error) => void; progress?: (p: number) => void }>();
 
+  // 処理の様子（src/app/perfLog.ts）。Worker がなければ null
+  perf(): Promise<WorkerPerf | null> {
+    return askPerf(this.worker);
+  }
+
   private ensure(): Promise<boolean> {
     if (this.worker && this.ready) return this.ready;
     const worker = new Worker(new URL("./vision.worker.ts", import.meta.url), { type: "module" });
@@ -249,6 +294,7 @@ export class RefineClient {
     this.ready = new Promise((resolve) => {
       worker.onmessage = (e: MessageEvent<FromWorker>) => {
         const m = e.data;
+        if (perfAnswer(m)) return;
         if (m.type === "ready") resolve(m.opencv);
         else if (m.type === "refine-progress") this.jobs.get(m.id)?.progress?.(Math.min(1, m.done / Math.max(1, m.total)));
         else if (m.type === "refine-phase") this.onPhase?.(m.phase);
@@ -350,6 +396,14 @@ export class RefineClient {
   // 回し始めた: 時刻 from から後のフレームは全部処理させる
   solving(id: number, from: number): void {
     this.worker?.postMessage({ type: "stream-solving", id, from } satisfies ToWorker);
+  }
+
+  setDuty(id: number, duty: number): void {
+    this.worker?.postMessage({ type: "stream-duty", id, duty } satisfies ToWorker);
+  }
+
+  setLazy(id: number): void {
+    this.worker?.postMessage({ type: "stream-lazy", id } satisfies ToWorker);
   }
 
   // 終わりの時刻と状態（完成なら solved）を渡し、全体の結果をもらう

@@ -1000,6 +1000,11 @@ export class MoveDecoder {
     return this.beam.length > 1 ? this.beam[1].cost - this.beam[0].cost : Infinity;
   }
 
+  // 仮説すべてを作り変えの続きにする（ライブの記録を区切りの途中から通し直すとき: TrackerEngine.resume）
+  setOrigin(origin: HypothesisOrigin): void {
+    for (const h of this.beam) h.origin = origin;
+  }
+
   // 状態を外から確定させる（再スキャン後など）
   reset(state: CubeState, orients?: number[]): void {
     const os = orients ?? Array.from({ length: NUM_ORIENTATIONS }, (_, i) => i);

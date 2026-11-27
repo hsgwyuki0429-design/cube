@@ -16,9 +16,10 @@ export type ToWorker =
   | { type: "init"; opencv?: boolean } // opencv: false なら OpenCV を読み込まない（専用の検出だけを使う。本体のステッカー）
   | { type: "config"; config: Partial<PipelineConfig> }
   // seq: 送った順の通し番号（認識を Worker 2 つで交互に処理するとき、追跡はこの順に入れる）
-  | { type: "frame"; id: number; t: number; bitmap: ImageBitmap; seq?: number }
+  // bitmap は VideoFrame のこともある（?solveload=vframe: 縮めるのを Worker で。w・h = 縮めた大きさ）
+  | { type: "frame"; id: number; t: number; bitmap: ImageBitmap | VideoFrame; seq?: number; w?: number; h?: number }
   // 補助の Worker: 認識だけして結果を返す（追跡はしない）
-  | { type: "recognize"; id: number; t: number; bitmap: ImageBitmap; seq: number }
+  | { type: "recognize"; id: number; t: number; bitmap: ImageBitmap | VideoFrame; seq: number; w?: number; h?: number }
   // 主の Worker へ: 補助の Worker の認識結果（seq の順に追跡に入れる）・補助が処理しなかったフレーム
   | { type: "foreign"; id: number; seq: number; t: number; width: number; height: number; result: RecognizedFrame; procMs: number }
   | { type: "foreign-skip"; seq: number }
@@ -28,6 +29,8 @@ export type ToWorker =
   | { type: "track-stop" }
   | { type: "track-query"; id: number }
   | { type: "live-log"; id: number }
+  // 1 秒ごとの処理の様子（src/app/perfLog.ts）: この Worker の忙しさ・処理した枚数の累計
+  | { type: "perf"; id: number }
   | { type: "refine"; id: number; recording: Recording; input: RefineInput }
   // 追跡を精密解析の結果に乗り換える（t までを解き直した状態・姿勢・手順。keep はそれより前からあった手の数）
   // ソルブ中から進める精密解析: 録画の増えた分を少しずつ渡し、最後に終わりの時刻と状態を渡して結果をもらう
@@ -35,6 +38,10 @@ export type ToWorker =
   | { type: "stream-feed"; id: number; input?: RefineInput; recording: Recording; inspection?: boolean }
   // 回し始めた（リアルタイムの開始の判定）: 時刻 from から後のフレームは全部処理する
   | { type: "stream-solving"; id: number; from: number }
+  // ソルブ中の重さの配り方（src/app/controller.ts の SOLVE_LOAD）: duty = 処理していた時間の割合の上限（1 = 制限なし）・
+  // lazy = インスペクションの間引きで処理しないフレームを画素にしない
+  | { type: "stream-duty"; id: number; duty: number }
+  | { type: "stream-lazy"; id: number }
   | { type: "stream-end"; id: number; to: number; target: number[] | null; stop?: LiveStop }
   | { type: "stream-cancel"; id: number }
   // フリーで完成した（時刻 t に状態 target）: そこまでを前後から解き直す
@@ -74,6 +81,8 @@ export interface FrameMessage {
   // キューブ固定フレーム → カメラの回転は R · ORIENTATIONS[orient]
   pose?: { R: number[]; err: number; orient: number };
   foreign?: boolean; // 補助の Worker が認識したフレーム（主の Worker が追跡して送った）
+  // キューブの周りと画面全体の明るさ（撮り方の案内: src/app/captureAdvice.ts。主の Worker が 250ms に 1 回ほど）
+  light?: { cube: number; frame: number };
 }
 
 export type FromWorker =
@@ -82,6 +91,7 @@ export type FromWorker =
   | FrameMessage
   | { type: "track-snapshot"; id: number; track: TrackUpdate | null }
   | { type: "live-log"; id: number; log: unknown }
+  | { type: "perf"; id: number; perf: import("../app/perfLog").WorkerPerf }
   | { type: "refine-progress"; id: number; done: number; total: number }
   | { type: "refine-phase"; id: number; phase: "flush" | "decode" | "timing" }
   | { type: "refine-result"; id: number; result: RefineResult }

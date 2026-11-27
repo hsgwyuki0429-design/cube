@@ -138,6 +138,9 @@ export function SettingsPage() {
           <Field label="3D キューブの向き">
             <Select k="cube3dView" options={[["camera", "カメラの映像と同じ向き"], ["fixed", "固定（白上・緑前）"]]} />
           </Field>
+          <Field label="撮り方の案内" desc="キューブが小さい・暗い・端に寄っているときなどに、直してほしいことを画面の上に 1 行で出します（ソルブ中・インスペクション中は出しません）">
+            <Toggle k="captureAdvice" />
+          </Field>
         </div>
       </div>
 

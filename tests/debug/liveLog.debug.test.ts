@@ -6,13 +6,20 @@
 //     など設定つき。記録した版が推定を使っていなければ、記録の「設定の変更」の pieces は無視する）。直前のソルブがあれば、3D の見せ方
 //     （src/ui/liveShow.ts を模擬の 3D に通す）の回して見せた手・本当の手と結びつかない手・本当の手を回した数・3D の一致と、追跡が数えた手の
 //     結びつかない数（liveReplay の LIVE_ANIM・LIVE_MOVES と同じ物差し）も出す。LIVE_LOG_TRUTH=ファイルで正解の手順を渡せる（下）。LIVE_LOG_PIECES=off で推定を使わない（記録の pieces を無視）
+//   LIVE_LOG_REC=録画の書き出し（同じソルブの cubevision-rec-….mp4）: 正解をその精密解析の結果（始まりの状態・手の時刻はフレームの時間軸）にする
+//     （記録の Solve.moves の時刻は精密解析の回し始めからで、timer.startT（ライブの開始）からではない）
+//   版 2 の記録（src/track/liveLog.ts）は古い読みを捨てても区切りの始まり（resume）から通し直せる。版 1 の記録は LIVE_LOG_FROM=inspect で
+//     「インスペクションの始まり（作り変えを始めた設定の変更）から、タイマーのスクランブルの状態」で通す（手の数は直前の実機の観測の数を足して比べる）
+//   LIVE_LOG_TRIM=ミリ秒: 記録を一度通し直して、その長さだけ残す新しい記録（本体と同じ LiveLog）を作り、それを通し直す（捨てた後も実機と同じに
+//     なるかの確かめ。本体は 120000）
 import { readFileSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
 import { it } from "vitest";
 import { ARUCO_REFS } from "../../src/aruco/palette";
 import { MOVE_NAMES, applyMove, applyMoves, parseMoves, solvedState, statesEqual } from "../../src/cube/model";
 import { type EngineOptions, TrackerEngine } from "../../src/track/engine";
-import type { LiveLogSegment, LoggedReading } from "../../src/track/liveLog";
+import { LiveLog, type LiveLogSegment, type LoggedReading, mergeOptions } from "../../src/track/liveLog";
+import { loadExport } from "./lib/recording";
 import { StartDetector } from "../../src/app/startDetect";
 import { LiveShow, seenMoves } from "../../src/ui/liveShow";
 import { SimScene } from "../liveShowSim";
@@ -26,6 +33,24 @@ interface TruthMove {
   move: number;
   start: number;
   end: number;
+}
+
+// 3D の状態と、遅れ lag までの本当の状態のうちいちばん近いものの、違う facelet の数（センターは数えない）
+function nearest(start: Uint8Array, moves: TruthMove[], t: number, lag: number, shown: Uint8Array): number {
+  let st: Uint8Array = start;
+  let best = 99;
+  for (let j = 0; j <= moves.length; j++) {
+    const began = j === 0 || moves[j - 1].start <= t;
+    const still = j === moves.length || moves[j].end > t - lag;
+    if (!began) break;
+    if (still) {
+      let d = 0;
+      for (let k = 0; k < 54; k++) if (k % 9 !== 4 && st[k] !== shown[k]) d++;
+      best = Math.min(best, d);
+    }
+    if (j < moves.length) st = applyMove(st, moves[j].move);
+  }
+  return best;
 }
 
 function matches(start: Uint8Array, moves: TruthMove[], t: number, lag: number, shown: Uint8Array): boolean {
@@ -87,23 +112,82 @@ it("実機のライブの記録", () => {
   const scrambleState: Uint8Array | null = Array.isArray(data.timer?.scramble) && data.timer.scramble.length ? applyMoves(solvedState(), data.timer.scramble) : null;
   // LIVE_LOG_TRUTH=ファイル（{start, moves: [{move, start, end}]}）: 直前のソルブの記録がないとき、正解の代わりに使う手順（記録の読みを精密解析の
   // 解き直しに通したものなど）
-  if (process.env.LIVE_LOG_TRUTH) {
+  if (process.env.LIVE_LOG_REC) {
+    const m = loadExport(process.env.LIVE_LOG_REC);
+    const res = m?.analysis.result;
+    if (!m || !res) throw new Error("LIVE_LOG_REC に精密解析の結果がない");
+    const end = res.moves[res.moves.length - 1]?.end ?? data.timer.startT;
+    truth = { start: Uint8Array.from(res.startState ?? m.analysis.input.state), moves: res.moves.map((x) => ({ move: x.move, start: x.start, end: x.end })), from: res.start ?? data.timer.startT, to: end + 1000 };
+    console.log(`正解: 録画の精密解析 ${res.moves.length} 手・推定 ${res.moves.filter((x) => x.inferred).length}・${res.solved ? "完成" : "完成しない"}（${((end - (res.start ?? 0)) / 1000).toFixed(2)} 秒）`);
+  } else if (!process.env.LIVE_LOG_TRUTH && data.analysis?.moves?.length && solve && own && data.analysis.solveId === solve.id) {
+    // 書き出しに添えた直前のソルブの精密解析（2026-11-27 から）
+    const a = data.analysis;
+    const end = a.moves[a.moves.length - 1].end;
+    truth = { start: Uint8Array.from(a.startState), moves: a.moves, from: a.start ?? data.timer.startT, to: end + 1000 };
+    console.log(`正解: 書き出しに添えた精密解析 ${a.moves.length} 手・${a.solved ? "完成" : "完成しない"}`);
+  } else if (process.env.LIVE_LOG_TRUTH) {
     const j = JSON.parse(readFileSync(process.env.LIVE_LOG_TRUTH, "utf8")) as { start: number[]; moves: TruthMove[] };
     const end = j.moves[j.moves.length - 1]?.end ?? data.timer.startT;
     truth = { start: Uint8Array.from(j.start), moves: j.moves, from: data.timer.startT, to: end + 1000 };
     console.log(`正解の代わり: ${process.env.LIVE_LOG_TRUTH}（${j.moves.length} 手）`);
   } else if (solve && own && data.timer?.startT) {
+    // Solve.moves の時刻は記録の回し始め（精密解析で確定したら解析の最初の手の回し始め）から。timer.startT はライブの開始で、
+    // 解析で確定した記録とは 0.1〜0.6 秒ずれる（2026-11-27 の 2 本）。正しい時刻は LIVE_LOG_REC か、書き出しに添えた analysis で
     const t0 = data.timer.startT;
+    if (solve.analysis === "done" || solve.analysis === "partial") console.log("注意: 記録の手の時刻の基準が timer.startT とずれうる（LIVE_LOG_REC=同じソルブの録画の書き出し を渡すと正しい時刻になる）");
     const moves = solve.moves.map((m: { m: string; s?: number; t: number }) => ({ move: parseMoves(m.m)[0], start: t0 + (m.s ?? m.t), end: t0 + m.t }));
     // 始まりの状態: タイマーの scramble（手の番号。直前のソルブのもの）。記録の Solve.scramble は表記の向きの文字列で、キューブ固定の手と違うことがある
     const scramble: number[] = Array.isArray(data.timer.scramble) && data.timer.scramble.length ? data.timer.scramble : parseMoves(solve.scramble);
     truth = { start: applyMoves(solvedState(), scramble), moves, from: t0, to: t0 + solve.timeMs + 1000 };
     console.log(`直前のソルブ ${(solve.timeMs / 1000).toFixed(2)} 秒・${solve.moves.length} 手・解析 ${solve.analysis}`);
   }
-  const segs = data.log.segments as LiveLogSegment[];
+  let segs = data.log.segments as LiveLogSegment[];
+  console.log(`記録の版 ${data.log.version ?? 1}・区切り ${segs.length}${segs.some((s) => s.resume) ? `・途中から（${segs.filter((s) => s.resume).map((s) => `${(s.resume!.t / 1000).toFixed(2)}s`).join(" ")}）` : ""}${segs.some((s) => s.unknownStart) ? "・始まりの状態が分からない区切りあり" : ""}`);
+  // 版 1 の記録: インスペクションの始まりから、タイマーのスクランブルの状態で
+  const moveOffset = new Map<LiveLogSegment, { moves: number; base: number }>();
+  if (process.env.LIVE_LOG_FROM === "inspect" && scrambleState && solveFrom !== null) {
+    segs = segs.map((seg) => {
+      let cut = -1;
+      for (const e of seg.events) if (e.kind === "options" && e.t < solveFrom && (e.data as { snapToView?: boolean })?.snapToView === true) cut = e.t;
+      if (cut < 0 || cut < seg.readings[0]?.t) return seg;
+      let options: unknown = seg.options;
+      for (const e of seg.events) if (e.t <= cut && e.kind === "options") options = mergeOptions(options, e.data);
+      const before = seg.readings.filter((r) => r.t <= cut && r.out);
+      const last = before[before.length - 1]?.out;
+      const out: LiveLogSegment = { ...seg, start: Array.from(scrambleState), orients: undefined, options, events: seg.events.filter((e) => e.t > cut), readings: seg.readings.filter((r) => r.t > cut) };
+      moveOffset.set(out, { moves: last?.moves ?? 0, base: last?.base ?? 0 });
+      console.log(`インスペクションの始まり ${(cut / 1000).toFixed(2)}s から、スクランブルの状態で通す（その前の実機の手 ${last?.moves ?? 0}・作り変え ${last?.base ?? 0}）`);
+      return out;
+    });
+  }
+  // LIVE_LOG_TRIM: 本体と同じ LiveLog で記録し直して（短く残す）、それを通し直す
+  if (process.env.LIVE_LOG_TRIM) {
+    const keep = Number(process.env.LIVE_LOG_TRIM);
+    const relog = new LiveLog(keep);
+    for (const seg of segs) {
+      const eng = new TrackerEngine(Uint8Array.from(seg.start), ARUCO_REFS, seg.options as Partial<EngineOptions>, seg.orients);
+      relog.start(seg.start, seg.options, seg.orients);
+      let ev = 0;
+      for (const r of seg.readings) {
+        while (ev < seg.events.length && seg.events[ev].t < r.t) {
+          const e = seg.events[ev++];
+          if (e.kind === "options") {
+            eng.setOptions(e.data as Partial<EngineOptions>);
+            relog.event("options", e.data);
+          }
+        }
+        const u = eng.push(r.dropped ? { ...r, faces: [] } : r, r.sight);
+        const { out: _o, ...rest } = r;
+        relog.add({ ...rest, ...(u ? { out: { status: u.status, obsCost: u.obsCost, moves: u.moves.length, last: u.moves.slice(-4).map((m) => m.move), base: u.base?.n ?? 0, view: u.view?.n ?? 0 } } : {}) }, () => eng.checkpoint());
+      }
+    }
+    segs = JSON.parse(JSON.stringify(relog.toJSON())).segments;
+    console.log(`記録し直した（${keep}ms 残す）: 区切り ${segs.length}・${segs.map((s) => `${s.readings.length} 枚${s.resume ? `（${(s.resume.t / 1000).toFixed(2)}s から・手 ${s.resume.moves}）` : ""}${s.unknownStart ? "（始まりが分からない）" : ""}`).join("・")}`);
+  }
   segs.forEach((seg, si) => {
     const rs = seg.readings as LoggedReading[];
     if (!rs.length) return;
+    const off = seg.resume ? { moves: seg.resume.moves, base: -1 } : (moveOffset.get(seg) ?? { moves: 0, base: -1 });
     const opts = { ...(seg.options as Partial<EngineOptions>), ...over };
     // LIVE_LOG_PIECES=off: 推定を使わない（#113 の版。記録の pieces を無視する）
     const piecesOff = process.env.LIVE_LOG_PIECES === "off";
@@ -111,6 +195,7 @@ it("実機のライブの記録", () => {
     const opts0 = { ...opts };
     if (piecesOff) delete opts0.pieces;
     const engine = new TrackerEngine(Uint8Array.from(seg.start), ARUCO_REFS, piecesOpt ? { ...opts0, pieces: false } : opts0, seg.orients);
+    if (seg.resume) engine.resume({ ...seg.resume, state: seg.start, orients: seg.orients ?? [] });
     // ソルブ中のライブの状態の推定: インスペクション（スクランブルの状態）からタイマーの開始の判定で切り替える
     const starter = new StartDetector();
     const target = truth?.start ?? scrambleState;
@@ -183,11 +268,15 @@ it("実機のライブの記録", () => {
       if (engine.base && engine.base.n !== lastBase) snaps++;
       lastBase = engine.base?.n ?? 0;
       if (u && r.out) {
-        const ok = u.moves.length === r.out.moves && (u.base?.n ?? 0) === r.out.base && u.moves.slice(-4).every((m, k) => m.move === r.out!.last[k]);
+        // 途中から通したとき: 手の数は、その時点までの実機の手を足して比べる。最後の 4 手は通し直した分だけ比べる
+        const ub = u.base?.n ?? 0;
+        const tail = u.moves.slice(-4);
+        const lastDev = r.out.last.slice(r.out.last.length - tail.length);
+        const ok = u.moves.length + off.moves === r.out.moves && (ub === r.out.base || (off.base >= 0 && ub === 0 && r.out.base === off.base)) && tail.every((m, k) => m.move === lastDev[k]);
         if (ok) same++;
         else {
           differ++;
-          if (!firstDiff) firstDiff = `${(r.t / 1000).toFixed(2)}s 実機 ${r.out.moves} 手 ${r.out.last.map((m) => MOVE_NAMES[m]).join(" ")} / 再生 ${u.moves.length} 手 ${u.moves.slice(-4).map((m) => MOVE_NAMES[m.move]).join(" ")}`;
+          if (!firstDiff) firstDiff = `${(r.t / 1000).toFixed(2)}s 実機 ${r.out.moves} 手 ${r.out.last.map((m) => MOVE_NAMES[m]).join(" ")} / 再生 ${u.moves.length + off.moves} 手 ${u.moves.slice(-4).map((m) => MOVE_NAMES[m.move]).join(" ")}`;
         }
       }
       if (process.env.LIVE_LOG_DUMP && u)
@@ -200,6 +289,7 @@ it("実機のライブの記録", () => {
         acc.counted += dt;
         const ok = matches(truth.start, truth.moves, r.t, 300, shown);
         if (ok) acc.same += dt;
+        if (process.env.LIVE_LOG_DIFF && (i % 30 === 0)) console.log(`  ${((r.t - truth.from) / 1000).toFixed(2)}s 違う facelet ${nearest(truth.start, truth.moves, r.t, 300, shown)}`);
         if (!ok && runStart === null) runStart = r.t;
         if (ok && runStart !== null) {
           runs.push([runStart, r.t]);

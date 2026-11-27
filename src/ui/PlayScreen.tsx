@@ -18,6 +18,8 @@ import { moveLabel } from "./notation";
 import { ScanPanel } from "./ScanPanel";
 import { shareSolve } from "./shareCard";
 import { AnalysisBadge, PenaltyRow, bestGain, openSolve, useTicker } from "./solveUi";
+import { ADVICE_TEXT } from "../app/captureAdvice";
+import { adviceStore } from "../app/captureGuide";
 
 // タイマーで計測している間（下のバー・切り替え・記録を隠す）
 export const useFocus = () => useStore(timerStore, (t) => t.phase === "solving");
@@ -129,12 +131,24 @@ function Records() {
   );
 }
 
+// 撮り方の案内（src/app/captureGuide.ts）: 直してほしいことを短い文 1 行で。映像の上には何も描かない
+function CaptureAdvice() {
+  const key = useStore(adviceStore, (a) => a.key);
+  if (!key) return null;
+  return (
+    <p class="capture-advice glass" role="status" key={key}>
+      {ADVICE_TEXT[key]}
+    </p>
+  );
+}
+
 function TopBar() {
   return (
     <header class="stage-top">
       <div class="stage-bar chrome">
         <StatusDot />
       </div>
+      <CaptureAdvice />
       <div class="stage-time">
         <TimerTop />
         <Records />

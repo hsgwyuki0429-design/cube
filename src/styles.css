@@ -927,6 +927,19 @@ input[type="range"] {
 .status-dot.bad .dot {
   background: #ff453a;
 }
+/* 撮り方の案内: 上の点の下に短い文 1 行（ボタンではない。アクセントの黄色は使わない） */
+.capture-advice {
+  align-self: center;
+  margin: 8px auto 0;
+  max-width: min(92vw, 520px);
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  line-height: 1.35;
+  color: rgba(245, 245, 247, 0.95);
+  text-align: center;
+  animation: rise 0.35s var(--ease-out);
+}
 .stage-time {
   display: flex;
   flex-direction: column;

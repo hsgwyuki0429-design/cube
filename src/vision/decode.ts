@@ -35,6 +35,11 @@ export class StreamDecoder {
   private readonly queue: DecodeQueue;
   private work: Promise<void> = Promise.resolve();
   frames = 0;
+  readMs = 0; // 画素にした時間の合計（調査用: src/app/perfLog.ts）
+  unread = 0; // want が false で画素にしなかったフレーム
+  // 画素にするか（省略 = 全部）。false のフレームは onFrame の代わりに onSkip
+  want: ((t: number) => boolean) | null = null;
+  onSkip: ((t: number) => void) | null = null;
 
   constructor(
     config: VideoDecoderConfig,
@@ -53,7 +58,9 @@ export class StreamDecoder {
 
   // 復号の様子（RefineResult.decodeInfo）
   info(): DecodeInfo {
-    return this.reader.info();
+    const i = this.reader.info();
+    // 画素にしなかったフレームも YUV のまま取り出したとして数える（処理していないので画素の違いは出ない）
+    return this.unread ? { ...i, decoded: i.decoded + this.unread, copied: i.copied + this.unread } : i;
   }
 
   // onFrame が Promise を返したら待つ（検出を別の Worker に頼んでいる間は、次のフレームを復号しすぎない）
@@ -61,7 +68,18 @@ export class StreamDecoder {
     while (this.queue.pending.length) {
       const f = this.queue.pending.shift()!;
       const t = f.timestamp / 1000;
-      await this.onFrame(await this.reader.read(f), t);
+      if (this.want && !this.want(t)) {
+        // 画素にしない（処理しないフレーム）
+        f.close();
+        this.unread++;
+        this.onSkip?.(t);
+        this.frames++;
+        continue;
+      }
+      const a = performance.now();
+      const img = await this.reader.read(f);
+      this.readMs += performance.now() - a;
+      await this.onFrame(img, t);
       this.frames++;
     }
   }
