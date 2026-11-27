@@ -1,6 +1,7 @@
 // 認識 Worker: OpenCV.js（約13MB）の読み込み、1フレームの処理、追跡エンジンの実行。
 // メインスレッドは描画と UI だけを受け持つ。
 import { sightFrame } from "../track/sight";
+import { brightness, viewMetrics } from "./captureMetrics";
 import { slotsPlausible } from "../track/slotCheck";
 import { type Mat3, ORIENTATIONS, mul } from "../cube/model";
 import { TrackerEngine, focusCells } from "../track/engine";
@@ -26,6 +27,11 @@ let ctx: OffscreenCanvasRenderingContext2D | null = null;
 let engine: TrackerEngine | null = null;
 // ライブの記録（src/track/liveLog.ts。設定画面の「ライブの記録を書き出す」）: 追跡に渡した読みと結果の要点を直近 120 秒だけ残す
 const liveLog = new LiveLog();
+// 1 秒ごとの処理の様子（src/app/perfLog.ts）: この Worker が処理していた時間・枚数の累計
+const perf = { busyMs: 0, frames: 0 };
+let doneReadMs = 0; // 終わった解析の、画素にした時間
+let lastLight = -Infinity;
+const LIGHT_EVERY_MS = 250;
 const memory = {}; // フレームの間で引き継ぐもの（processFrame）
 // 焦点距離の見積もり（カメラごとに違う。超広角は長辺の 0.4 倍ほど: src/vision/pose.ts）
 const focal = new FocalTracker();
@@ -55,8 +61,11 @@ interface Stream {
   lastSeen: number;
   solvingAt: number | null;
   endAt: number | null;
+  duty: number; // 処理していた時間の割合の上限（stream-duty）
+  lazy: boolean; // 間引くフレームを画素にしない（stream-lazy）
 }
 const streams = new Map<number, Stream>();
+const pendingLazy = new Set<number>(); // 解析が始まる前に届いた stream-lazy
 // 中止を頼まれた動画の解析
 const videoCancels = new Set<number>();
 
@@ -81,6 +90,9 @@ function releaseChunks(id: number, s: Stream): void {
   });
 }
 
+// インスペクションの間引きで処理しないフレームか（streamFrame と同じ決まり）
+const thinned = (s: Stream, t: number) => t < s.fullFrom && t - s.lastInspect < INSPECT_EVERY_MS;
+
 async function streamFrame(id: number, s: Stream, img: PixelSource, t: number): Promise<void> {
   s.lastSeen = t;
   if (t < s.fullFrom) {
@@ -89,10 +101,15 @@ async function streamFrame(id: number, s: Stream, img: PixelSource, t: number): 
   }
   const par = await s.par;
   // 止まっている間は飛ばして追いつく（動き出したら直前の 1 枚も処理する）
+  const t0 = performance.now();
   for (const f of s.still.next(img, t)) {
     if (par) await par.feeder.push(f.img, f.t);
     else s.refiner.push(f.img, f.t);
   }
+  const spent = performance.now() - t0;
+  perf.busyMs += spent;
+  // ソルブ中の重さの配り方（stream-duty）: 処理していた時間の割合を duty までにする（止めた知らせの後は制限しない）
+  if (s.duty < 1 && !s.end && spent > 0) await new Promise((r) => setTimeout(r, spent * (1 / Math.max(0.05, s.duty) - 1)));
   if (s.end && performance.now() - s.end.posted > 200) {
     s.end.posted = performance.now();
     post({ type: "refine-progress", id, done: Math.max(0, t - s.end.from), total: Math.max(1, s.end.to - s.end.from) });
@@ -250,6 +267,7 @@ interface Recognized {
   result: FrameResult;
   procMs: number;
   foreign: boolean;
+  light?: { cube: number; frame: number };
 }
 const ready = new Map<number, Recognized | null>(); // 通し番号 → 認識結果（null = 処理しなかった）
 let nextSeq = -1; // 次に追跡に入れる通し番号（-1 = まだ）
@@ -306,15 +324,33 @@ function processLiveFrame(msg: QueuedFrame): void {
   const img = ctx!.getImageData(0, 0, w, h);
   const result: FrameResult = cv || !wantCv ? processFrame(cv as CV, img, msg.t, focus?.length ? { ...config, focus } : config, memory) : { faces: [], quads: [] };
   const procMs = performance.now() - t0;
+  perf.busyMs += procMs;
+  perf.frames++;
+  // 撮り方の案内の明るさ（主の Worker だけ。250ms に 1 回ほど。1ms もかからない）
+  let light: { cube: number; frame: number } | undefined;
+  if (!msg.helper && msg.t - lastLight >= LIGHT_EVERY_MS) {
+    lastLight = msg.t;
+    const sight = result.faces.length ? sightFrame(msg.t, result) : undefined;
+    light = brightness(img, viewMetrics(sight, w, h).box, 32);
+  }
   if (msg.helper) {
     post({ type: "recognized", id: msg.id, seq: msg.seq!, t: msg.t, width: w, height: h, result: { faces: result.faces, quads: result.quads, turn: result.turn }, procMs });
     return;
   }
-  deliver(msg.seq, { id: msg.id, t: msg.t, width: w, height: h, result, procMs, foreign: false });
+  deliver(msg.seq, { id: msg.id, t: msg.t, width: w, height: h, result, procMs, foreign: false, light });
 }
 
 // 認識した結果を追跡に入れ、画面に送る
 function track(r: Recognized): void {
+  const t0 = performance.now();
+  try {
+    trackInner(r);
+  } finally {
+    perf.busyMs += performance.now() - t0;
+  }
+}
+
+function trackInner(r: Recognized): void {
   const { result } = r;
   const w = r.width;
   const h = r.height;
@@ -349,7 +385,7 @@ function track(r: Recognized): void {
       pose = { R: p.R, err: p.err, orient };
     }
   }
-  post({ type: "frame", id: r.id, t: r.t, width: w, height: h, faces: result.faces, quads: result.quads, procMs: r.procMs, track, sight, pose, ...(r.foreign ? { foreign: true } : {}) });
+  post({ type: "frame", id: r.id, t: r.t, width: w, height: h, faces: result.faces, quads: result.quads, procMs: r.procMs, track, sight, pose, ...(r.foreign ? { foreign: true } : {}), ...(r.light ? { light: r.light } : {}) });
 }
 
 self.onmessage = async (event: MessageEvent<ToWorker>) => {
@@ -394,6 +430,21 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
       case "live-log":
         post({ type: "live-log", id: msg.id, log: liveLog.toJSON() });
         return;
+      case "perf": {
+        // 精密解析: 復号した・処理した枚数と遅れ（ソルブ中から進めている解析）。画素にする時間も忙しさに入れる
+        let decoded = 0;
+        let refined = 0;
+        let readMs = 0;
+        let behindMs: number | undefined;
+        for (const s of streams.values()) {
+          decoded += s.decoder?.frames ?? 0;
+          refined += s.refiner.frames;
+          readMs += s.decoder?.readMs ?? 0;
+          behindMs = Math.max(0, s.fedUntil - s.refiner.lastT);
+        }
+        post({ type: "perf", id: msg.id, perf: { busyMs: perf.busyMs + readMs + doneReadMs, frames: streams.size ? refined : perf.frames, decoded, ...(behindMs !== undefined ? { behindMs } : {}) } });
+        return;
+      }
       case "track-query":
         post({ type: "track-snapshot", id: msg.id, track: engine ? engine.snapshot() : null });
         return;
@@ -439,16 +490,32 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
           if (!msg.input) return;
           const refiner = newRefiner(msg.input);
           const par = parallelFeeder(refiner, msg.input.parallel === undefined ? 0 : poolFor(msg.input));
-          s = { refiner, decoder: null, fedUntil: 0, lastPartial: -Infinity, still: new StillSkipper(), fullFrom: msg.inspection ? Infinity : -Infinity, held: [], lastInspect: -Infinity, par, lastSeen: -Infinity, solvingAt: null, endAt: null };
+          s = { refiner, decoder: null, fedUntil: 0, lastPartial: -Infinity, still: new StillSkipper(), fullFrom: msg.inspection ? Infinity : -Infinity, held: [], lastInspect: -Infinity, par, lastSeen: -Infinity, solvingAt: null, endAt: null, duty: 1, lazy: false };
+          if (pendingLazy.delete(msg.id)) s.lazy = true;
           streams.set(msg.id, s);
         }
         const st = s;
         const rec = msg.recording;
         if (!rec.chunks.length) return;
-        st.decoder ??= new StreamDecoder(rec.config, rec.width, rec.height, (img, t) => streamFrame(msg.id, st, img, t));
+        if (!st.decoder) {
+          st.decoder = new StreamDecoder(rec.config, rec.width, rec.height, (img, t) => streamFrame(msg.id, st, img, t));
+          st.decoder.want = (t) => !st.lazy || !thinned(st, t);
+          st.decoder.onSkip = (t) => (st.lastSeen = t);
+        }
         st.fedUntil = Math.max(st.fedUntil, rec.chunks[rec.chunks.length - 1].timestamp / 1000);
         st.held.push(...rec.chunks);
         releaseChunks(msg.id, st);
+        return;
+      }
+      case "stream-duty": {
+        const s = streams.get(msg.id);
+        if (s) s.duty = msg.duty;
+        return;
+      }
+      case "stream-lazy": {
+        const s = streams.get(msg.id);
+        if (s) s.lazy = true;
+        else pendingLazy.add(msg.id);
         return;
       }
       case "stream-solving": {
@@ -484,7 +551,9 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
           par?.pool.close();
           const t1 = performance.now();
           post({ type: "refine-phase", id: msg.id, phase: "decode" });
+          const tr = performance.now();
           const result = s.refiner.result(msg.target ? Uint8Array.from(msg.target) : null, phasePoster(msg.id));
+          perf.busyMs += performance.now() - tr;
           if (s.decoder) result.decodeInfo = { ...s.decoder.info(), refined: s.refiner.frames, gated: s.refiner.gated, stream: { solvingAt: s.solvingAt, endAt: s.endAt, fullFrom: s.fullFrom } };
           // 調査用: 止めた時点の遅れ・残りの処理・解き直しの時間
           console.info(`[analysis] behind ${behind.toFixed(0)}ms rest ${(t1 - t0).toFixed(0)}ms result ${(performance.now() - t1).toFixed(0)}ms frames ${s.refiner.frames} gated ${s.refiner.gated} copied ${s.decoder?.copied ?? 0} pool ${pool}`);
@@ -493,6 +562,7 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
           post({ type: "refine-error", id: msg.id, message: errorMessage(e) });
         } finally {
           s.decoder?.close();
+          doneReadMs += s.decoder?.readMs ?? 0;
           void s.par.then((p) => p?.pool.close());
           streams.delete(msg.id);
         }

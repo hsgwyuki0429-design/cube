@@ -37,6 +37,8 @@ export async function exportRecording(): Promise<void> {
     analysis: { input: cap.input, solvingFrom: cap.solvingFrom, target: cap.target, live: cap.live, result: cap.result, error: cap.error, retried: cap.retried, pending: !cap.result && !cap.error },
     // 記録（タイム・手順・開始と停止の理由 edges・精密解析の方法）
     solve,
+    // 1 秒ごとの処理の様子（src/app/perfLog.ts）: 録画の始まりから
+    perf: controller.perf.between(cap.input.from - 30000),
   };
   let muxed: ReturnType<typeof muxRecording>;
   try {

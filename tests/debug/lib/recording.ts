@@ -34,6 +34,7 @@ export interface ExportMeta {
     pending?: boolean;
   };
   solve?: { timeMs: number; edges?: unknown; analysis?: string; refineMethod?: string; moves?: unknown[] };
+  perf?: import("../../../src/app/perfLog").PerfRow[]; // 1 秒ごとの処理の様子（2026-11-27 から）
 }
 
 // 書き出した録画なら、そのメタデータ（ふつうの動画なら null）

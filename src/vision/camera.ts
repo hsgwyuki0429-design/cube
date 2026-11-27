@@ -41,6 +41,7 @@ export class CameraSource {
   private endedCallbacks = new Set<() => void>();
   private frameTimes: number[] = [];
   private running = false;
+  private gen = 0; // attach の通し番号（重なった開始の古い方を止める）
   private handle = 0;
   private captureOffset: number | null = null;
   private lastT = 0;
@@ -70,6 +71,9 @@ export class CameraSource {
   // 合成カメラ（デモ）など任意のストリーム
   async attach(stream: MediaStream): Promise<CameraInfo> {
     this.stop();
+    // 開始が 2 つ重なった（以前に許可したカメラの自動の開始と、ボタン）: 後の開始だけを使う。前の開始の後半で loop を始めると、
+    // フレームのコールバックが 2 重になり、1 フレームを 2 回送っていた（E2E で見つけた）
+    const gen = ++this.gen;
     this.stream = stream;
     this.video.srcObject = stream;
     await this.video.play().catch(() => undefined);
@@ -88,8 +92,12 @@ export class CameraSource {
       deviceId: s.deviceId,
       facingMode: s.facingMode,
     };
+    if (gen !== this.gen) {
+      if (this.stream !== stream) stream.getTracks().forEach((t) => t.stop());
+      return this.info;
+    }
     this.running = true;
-    this.loop();
+    this.loop(gen);
     return this.info;
   }
 
@@ -127,11 +135,11 @@ export class CameraSource {
     return t;
   }
 
-  private loop(): void {
+  private loop(gen: number): void {
     this.captureOffset = null;
     this.lastT = 0;
     const tick = (now: number, meta?: VideoFrameCallbackMetadata) => {
-      if (!this.running) return;
+      if (!this.running || gen !== this.gen) return;
       this.frameTimes.push(now);
       while (this.frameTimes.length && now - this.frameTimes[0] > 1000) this.frameTimes.shift();
       this.fps = this.frameTimes.length;

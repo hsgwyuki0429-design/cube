@@ -4,7 +4,7 @@
 // 止めた瞬間はリアルタイムの追跡からの速報値を出し、計測中に録画しておいた全フレームを別の Worker で
 // 1枚ずつ解析し直して、数秒〜数十秒後に時間と手順を確定する（リアルタイムでは処理が追いつかないフレームも使う）。
 import { cfopSplits } from "../cube/analysis";
-import { type CubeState, MOVE_NAMES, applyMoves, invertMoves, isSolved, moveFace, movesToString, relativeMove, rotateOrientation, solvedState, statesEqual } from "../cube/model";
+import { type CubeState, MOVE_NAMES, applyMoves, invertMoves, isSolved, moveFace, movesToString, parseMoves, relativeMove, rotateOrientation, solvedState, statesEqual } from "../cube/model";
 import { randomScramble, solveBetween, solveState } from "../cube/solver";
 import { StartDetector } from "./startDetect";
 import { StopDetector } from "./stopDetect";
@@ -124,7 +124,9 @@ async function makeScramble(): Promise<void> {
   const cube = controller.store.get().cube;
   if (!cube) return;
   timerStore.set({ phase: "preparing", message: null, result: null });
-  const scramble = await randomScramble();
+  // ?scramble=…: 決まったスクランブル（偽のカメラの動画で通す E2E: tests/debug/fakeCamVideo.debug.test.ts）
+  const fixed = typeof location === "undefined" ? null : new URLSearchParams(location.search).get("scramble");
+  const scramble = fixed ? parseMoves(fixed) : await randomScramble();
   target = applyMoves(solvedState(), scramble);
   const current = Uint8Array.from(track?.state ?? cube.state);
   timerStore.set({ phase: "scrambling", scramble });
@@ -547,3 +549,5 @@ timerStore.subscribe((t) => {
 });
 controller.onFrameResult(onFrame);
 onPadEvent(onPad);
+// 1 秒ごとの処理の様子（src/app/perfLog.ts）の場面: タイマーの場面
+controller.perf.phase = () => timerStore.get().phase;

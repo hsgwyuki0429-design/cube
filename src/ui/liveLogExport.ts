@@ -57,6 +57,9 @@ export async function exportLiveLog(): Promise<void> {
     solves: t.solves.slice(0, 3), // 新しい順（先頭が直前のソルブ）
     // 直前のソルブの精密解析（手の時刻はフレームの時間軸。Solve.moves の時刻は解析の回し始めからで、timer.startT からではない）
     analysis: analysisOf(),
+    // 1 秒ごとの処理の様子（src/app/perfLog.ts。ソルブ中に fps が落ちる原因を調べる）と、ソルブ中の重さの配り方（URL の ?solveload=）
+    perf: controller.perf.rows,
+    url: location.search,
     log,
   };
   const text = JSON.stringify(data);
