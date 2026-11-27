@@ -23,8 +23,8 @@ import { judgeBackwardStart, stableFrames } from "../../src/track/startCheck";
 import type { SightFrame } from "../../src/track/sight";
 import type { Observation } from "../../src/track/types";
 
-type RawObs = Omit<Observation, "faces"> & { faces: { slot: number; cost: number[]; labels: number[]; ids?: number[]; idCost?: number[] }[] };
-type Reading = { t: number; faces: { slot: number; ids: number[]; w?: number[]; rot?: number[]; quad?: number[]; held?: boolean; c?: number[] }[] };
+export type RawObs = Omit<Observation, "faces"> & { faces: { slot: number; cost: number[]; labels: number[]; ids?: number[]; idCost?: number[] }[] };
+export type Reading = { t: number; faces: { slot: number; ids: number[]; w?: number[]; rot?: number[]; quad?: number[]; held?: boolean; c?: number[] }[] };
 const KNOWN: Record<string, string> = { IMG_4970: "R U R' U' R' F R2 U' R' U' R U R' F' R U R' U' R' F R2 U' R' U' R U R' F'", IMG_4971: "R U R' U' R' F R2 U' R' U' R U R' F' R U R' U' R' F R2 U' R' U' R U R' F'" };
 
 export function editDistance(a: number[], b: number[]): number {
@@ -72,7 +72,7 @@ export function truthOf(name: string, rdStart: number[]): { start: CubeState; mo
 // 今の解き直し: 本体の精密解析と同じ（src/vision/refine.ts の result: 1 回目、前後がつながらなければ深い 2 回目）
 // 後ろ向きだけでたどり着いた始まりの状態は、回し始める前の確かな読みと照らす（Refiner.checkBackwardStart と同じ。インスペクションの
 // 終わりは書き出しにないので、答えの最初の手まで）
-function oldDecode(obs: Observation[], start: CubeState, end: CubeState, lastT: number, readings?: Reading[]): OfflineResult {
+export function oldDecode(obs: Observation[], start: CubeState, end: CubeState, lastT: number, readings?: Reading[]): OfflineResult {
   let rejected = false;
   const startCheck: OfflineOptions["startCheck"] = readings
     ? (s, until) => {
