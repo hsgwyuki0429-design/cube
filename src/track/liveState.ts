@@ -77,7 +77,7 @@ export const DEFAULT_LIVE_STATE: LiveStateOptions = {
   recoverMs: 2500,
   recoverGapMs: 150,
   lostBits: 20,
-  lostAll: true,
+  lostAll: false,
 };
 
 const KIND_DIRECT = 0;
@@ -923,30 +923,15 @@ export class LiveState {
     const o = this.options;
     const a = this.anchor;
     if (!a || fr.t - a.t > o.recoverMs || fr.t - this.lastRecover < o.recoverGapMs) return false;
-    const b = this.hyps[0];
-    // 式: このフレームの置き方の決まった読みと、決まらないピースのある仮説（見失った後）なら、その後に読んで決まったピース
-    const read = this.sureReads(fr, b, [0]);
-    if (!b.mask.every(single)) for (let p = 0; p < NUM_PIECES; p++) if (single(b.mask[p]) && !read.has(p)) read.set(p, bitIndex(b.mask[p]));
-    if (read.size < o.recoverMin) return false;
     this.lastRecover = fr.t;
     this.stats.recoverTries++;
-    const eqs: Eq[] = [];
-    for (const [p, y] of read) eqs.push({ from: positionOf(clsOf(p), bitIndex(a.h.mask[p])), to: positionOf(clsOf(p), y), w: 1 });
-    const centers: CenterEq[] = [];
-    const phiNow = b.phi.slice();
-    for (const ce of fr.centers) phiNow[ce.f] = ce.phi;
-    for (let f = 0; f < 6; f++) if (a.h.phi[f] >= 0 && phiNow[f] >= 0) centers.push({ f, d: (phiNow[f] - a.h.phi[f] + 4) & 3, w: 1 });
-    for (let k = 1; k <= o.recoverK; k++) {
-      const sols = solveExact(k, eqs, centers, 8);
-      if (!sols.length) continue;
-      if (sols.length > 4) return false;
-      const added = sols.map((seq) => this.applySeq(a.h, seq, a.t, fr.t));
-      this.stats.recovered++;
-      this.hyps = [...added, ...this.hyps.map((h) => ({ ...h, cost: h.cost + 2 }))].slice(0, o.maxHyps);
-      this.anchor = { h: added[0], t: fr.t };
-      return true;
-    }
-    return false;
+    const found = this.exact(a.h, a.h.phi, fr, 1, o.recoverK);
+    if (!found || found.seqs.length > 4) return false;
+    const added = found.seqs.map((seq) => this.applySeq(a.h, seq, a.t, fr.t));
+    this.stats.recovered++;
+    this.hyps = [...added, ...this.hyps.map((h) => ({ ...h, cost: h.cost + 2 }))].slice(0, o.maxHyps);
+    this.anchor = { h: added[0], t: fr.t };
+    return true;
   }
 
   private applySeq(h: LiveHyp, seq: number[], t0: number, t1: number): LiveHyp {
