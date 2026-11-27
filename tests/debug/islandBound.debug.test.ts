@@ -175,6 +175,9 @@ const subTable = (table: PieceTable, t0: number, t1: number): PieceTable => ({ .
 it("島に分けて解く上限", () => {
   const dir = process.env.IB_DIR;
   if (!dir) return;
+  // 正解の読み込み（piecesBench の truthOf）は PB_TRUTH・PB_BM を読む
+  if (process.env.IB_TRUTH) process.env.PB_TRUTH = process.env.IB_TRUTH;
+  if (process.env.IB_BM) process.env.PB_BM = process.env.IB_BM;
   for (const file of readdirSync(dir).filter((f) => f.endsWith(".read.json")).sort()) {
     const name = file.replace(".read.json", "");
     if (process.env.IB_ONLY && !new RegExp(process.env.IB_ONLY).test(name)) continue;
