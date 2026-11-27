@@ -48,6 +48,7 @@ export interface LiveStateOptions {
   recoverMin: number; // 探すのに要る、確かに読めたピースの数
   recoverMs: number; // 錨から探す時間の上限
   recoverGapMs: number; // 探す間隔
+  budgetMs: number; // 深く照らす・復帰で、5 手より長い手順（前後の突き合わせ）を探し始めてよい時間（1 フレームの中で）
   lostAll: boolean; // 見失ったとき、読めていないピースは全部「分からない」にする（false: 食い違いの続いていたピースだけ）
   lostBits: number; // 食い違いがこれ（ビット）以上続いたら、読めたピースをその場で読みの位置にする（見えていないピースは分からないまま）
 }
@@ -76,6 +77,7 @@ export const DEFAULT_LIVE_STATE: LiveStateOptions = {
   recoverMin: 6,
   recoverMs: 2500,
   recoverGapMs: 150,
+  budgetMs: Infinity,
   lostBits: 20,
   lostAll: false,
 };
@@ -472,6 +474,7 @@ export interface LiveStats {
   merged: number;
   maxHyps: number;
   evals: number;
+  timedOut: number; // 時間切れで長い手順を探さなかった回数
   ms: { pick: number; deep: number; child: number; recover: number; maxDeep: number; maxRecover: number };
   over: { pick: number; deep: number; child: number; recover: number }; // 2ms を超えたフレームの数（調査用）
 }
@@ -495,7 +498,7 @@ export class LiveState {
   // 錨: 食い違いのない最後の仮説（見失ったところからの復帰の始まり）
   private anchor: { h: LiveHyp; t: number } | null = null;
   private lastRecover = -Infinity;
-  readonly stats: LiveStats = { frames: 0, steps: 0, deep: 0, deepSkipped: 0, recovered: 0, recoverTries: 0, lost: 0, merged: 0, maxHyps: 0, evals: 0, ms: { pick: 0, deep: 0, child: 0, recover: 0, maxDeep: 0, maxRecover: 0 }, over: { pick: 0, deep: 0, child: 0, recover: 0 } };
+  readonly stats: LiveStats = { frames: 0, steps: 0, deep: 0, deepSkipped: 0, recovered: 0, recoverTries: 0, lost: 0, merged: 0, maxHyps: 0, evals: 0, timedOut: 0, ms: { pick: 0, deep: 0, child: 0, recover: 0, maxDeep: 0, maxRecover: 0 }, over: { pick: 0, deep: 0, child: 0, recover: 0 } };
   private nBase = 0;
 
   // phi: センターの向きの初め（分からない面は -1。TrackerEngine が切り替える前のフレームで見たセンターの向きから）
@@ -555,9 +558,10 @@ export class LiveState {
     if (bestLast >= o.deepAbove && o.deepK > o.maxK) {
       this.stats.deep++;
       const order = parents.map((h, i) => ({ h, c: bestOf[i] })).sort((a, b) => a.h.cost - b.h.cost).slice(0, o.deepHyps);
+      const deadline = performance.now() + o.budgetMs;
       for (const { h } of order) {
         const hp = this.learnPhi(h, fr);
-        const found = this.exact(h, hp, fr, o.maxK + 1, o.deepK);
+        const found = this.exact(h, hp, fr, o.maxK + 1, o.deepK, deadline);
         // 読みが少なくて深い手順が決まらない: 足さずに次の読みを待つ（食い違いのまま）
         if (!found || found.seqs.length > o.deepMax) {
           if (found) this.stats.deepSkipped++;
@@ -723,7 +727,8 @@ export class LiveState {
 
   // 読みの式を全部満たす k0〜k1 手の手順（表の AND・5 手からは前後の突き合わせ）。いちばん短いものだけ。センター 1 つの面は、
   // 置き方 r ごとに「その面を回した量 ≡ 読んだ向き − r − φ」を足した式の組。センターのない面（続きの置き方）は使わない
-  private exact(h: LiveHyp, hp: Int8Array, fr: LiveFrame, k0: number, k1: number): { seqs: number[][] } | null {
+  // deadline（performance.now()）を過ぎたら、それより長い手順は探さない（次の読みでまた探す）
+  private exact(h: LiveHyp, hp: Int8Array, fr: LiveFrame, k0: number, k1: number, deadline = Infinity): { seqs: number[][] } | null {
     type PEq = Eq & { p: number; y: number };
     const addEq = (list: PEq[], p: number, y: number) => {
       const m = h.mask[p];
@@ -757,6 +762,10 @@ export class LiveState {
     const pieces = Math.max(...variants.map((v) => v.eqs.length));
     if (pieces < this.options.recoverMin) return null;
     for (let k = k0; k <= k1; k++) {
+      if (k > 4 && performance.now() > deadline) {
+        this.stats.timedOut++;
+        return null;
+      }
       const out: number[][] = [];
       for (const v of variants) out.push(...solveExact(k, v.eqs, v.centers, this.options.deepMax + 1));
       if (out.length) return { seqs: out };
@@ -936,7 +945,7 @@ export class LiveState {
     if (!a || fr.t - a.t > o.recoverMs || fr.t - this.lastRecover < o.recoverGapMs) return false;
     this.lastRecover = fr.t;
     this.stats.recoverTries++;
-    const found = this.exact(a.h, a.h.phi, fr, 1, o.recoverK);
+    const found = this.exact(a.h, a.h.phi, fr, 1, o.recoverK, performance.now() + o.budgetMs);
     if (!found || found.seqs.length > 4) return false;
     const added = found.seqs.map((seq) => this.applySeq(a.h, seq, a.t, fr.t));
     this.stats.recovered++;
