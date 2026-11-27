@@ -1,6 +1,7 @@
 // ライブの 3D に、追跡の手順をどう見せるか（DOM も three.js も知らない: tests/liveShow.test.ts・tests/debug/liveReplay.debug.test.ts）。
 //
-// - 足された手は 1 手ずつ回して見せる。ただし**回して見せるのは、その手の層が動いたのをフレームで見た手だけ**（`moveSeen`。追跡の手の
+// - 足された手は 1 手ずつ回して見せる。ただし**回して見せるのは、その手の層が動いたのをフレームで見た手だけ**（ソルブ中のライブの状態の
+//   推定では、さらに候補の状態がどれも同じ手で説明できる手だけ: seenMoves の agreed）（`moveSeen`。追跡の手の
 //   MoveTiming.moved: 層の側面のマーカーが本体の格子からずれた。タイマーの開始の判定 src/app/startDetect.ts と同じ手がかり）。
 //   見ていない手（持ち替え・傾けで面の割り当てが一瞬入れ替わったのを追跡が手で説明したもの、推定した手）は回さずに、順番が来たら
 //   その場で塗り替える。追跡の仮説・手の数え方は変えない（3D の状態は同じで、見せ方だけが違う）
@@ -29,9 +30,10 @@ export interface ShowInput {
   view?: { n: number; state: ArrayLike<number> } | null;
 }
 
-// 追跡の手のうち、層が動いたのをフレームで見た手（推定した手は見ていない）
-export function seenMoves(moves: readonly DecodedMove[], timings: readonly (MoveTiming | null)[] | undefined): boolean[] {
-  return moves.map((m, i) => !m.inferred && !!timings?.[i]?.moved);
+// 追跡の手のうち、層が動いたのをフレームで見た手（推定した手は見ていない）。agreed: ソルブ中のライブの状態の推定（TrackUpdate.agreed）で、
+// 候補の状態がどれも同じ手順で説明できる手の数。それより後の手（候補が分かれている）は回さずに塗り替える
+export function seenMoves(moves: readonly DecodedMove[], timings: readonly (MoveTiming | null)[] | undefined, agreed?: number): boolean[] {
+  return moves.map((m, i) => !m.inferred && !!timings?.[i]?.moved && (agreed === undefined || i < agreed));
 }
 
 export class LiveShow {

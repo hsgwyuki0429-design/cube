@@ -12,6 +12,7 @@ import { FaceObserver, type FrameReading, type ObserverOptions } from "./observe
 import { DEFAULT_TIMING, type LoggedFrame, type MoveTiming, moveTiming } from "./timing";
 import { OrientTracker, type OrientOptions } from "./orient";
 import type { SightFrame } from "./sight";
+import { LiveState, type LiveStateOptions, liveFrame } from "./liveState";
 import type { DecodedMove, Observation, OrientHint, TrackStatus, TurnHint, TurnSnapshot } from "./types";
 
 export interface EngineOptions {
@@ -35,6 +36,10 @@ export interface EngineOptions {
   // キューブ全体の向きを手とは別に追う（ライブ。src/track/orient.ts）: 前後のフレームで同じ面を突き合わせ、観測ごとに前の観測から
   // 動いていないステッカーをデコーダに渡す（デコーダの trackedOrient で使う）。push に見え方（sight）を渡したときだけ外枠を使える
   orient?: boolean | Partial<OrientOptions>;
+  // ソルブ中のライブの状態の推定（ライブ 2 の後半。src/track/liveState.ts）: 有効にした時点の一番合う仮説の状態と手順から、ピース 20 個と
+  // センターの向きを表の AND で推定する（観測器・デコーダ・作り変え・復帰は止める）。無効にすると、その時点の状態と手順をデコーダに戻す。
+  // controller はタイマーの計測中だけ有効にする（スクランブル中・インスペクション・開始と停止の判定は今までの追跡のまま）
+  pieces?: boolean | Partial<LiveStateOptions>;
 }
 
 
@@ -79,6 +84,9 @@ export interface TrackUpdate {
   base: { n: number; at: number; state: number[]; t: number } | null;
   // ライブの表示だけの作り変え: 追跡（最良の仮説）では見え方をはっきり説明できない間、3D に出す見えている色に合う状態（null = 最良の仮説）
   view: { n: number; state: number[]; orient: number; t: number } | null;
+  // ライブの状態の推定（EngineOptions.pieces）: 候補の状態がどれも同じ手順で説明できる手の数（3D で層を回して見せてよいのはこれより前の手だけ。
+  // ほかは塗り替える）。今までの追跡では出さない
+  agreed?: number;
 }
 
 // マスごとの確からしさ。添え字はキューブ固定の facelet（最良の仮説の状態の並び）。
@@ -179,6 +187,52 @@ export class TrackerEngine {
     this.recoverOpts = options.recover ? (options.recover === true ? {} : options.recover) : null;
     if (options.personal?.length && this.decoder.prior) this.decoder.prior = movePrior(options.personal);
     if (options.orient) this.orient = new OrientTracker(options.orient === true ? {} : options.orient);
+    if (options.pieces !== undefined) this.watchCenters = true;
+    if (options.pieces) this.setPieces(options.pieces);
+  }
+  // ソルブ中のライブの状態の推定（EngineOptions.pieces。null = 今までの追跡）
+  live: LiveState | null = null;
+  private liveOpts: Partial<LiveStateOptions> | null = null;
+  private liveView: TrackUpdate["view"] = null;
+  private liveStart: CubeState | null = null; // 推定の手順の始まり（base がないとき）の状態
+  private lastFrameT = 0;
+  private lastReading: FrameReading | null = null;
+
+  // 置き方の決まった面で最後に見たセンターの向き（面ごと。推定に切り替えたときの初めの向き）。watchCenters: pieces を渡したとき（false でも）だけ見る
+  private readonly centerSeen: ({ phi: number; t: number } | null)[] = new Array(6).fill(null);
+  watchCenters = false;
+
+  private setPieces(p: boolean | Partial<LiveStateOptions>): void {
+    if (p) {
+      this.liveOpts = p === true ? {} : p;
+      if (this.live) return;
+      const best = this.decoder.best();
+      const moves = this.decoder.bestMoves();
+      const phi = this.centerSeen.map((c, f) => {
+        if (!c) return -1;
+        let v = c.phi;
+        for (const m of moves) if (m.t > c.t && ((m.move / 3) | 0) === f) v = (v + (m.move % 3) + 1) & 3;
+        return v;
+      });
+      let start: CubeState = new Uint8Array(best.state);
+      for (let i = moves.length - 1; i >= 0; i--) start = applyMove(start, inverseMove(moves[i].move));
+      this.liveStart = best.origin ? null : start;
+      this.live = new LiveState(best.state, best.orient, this.lastFrameT, moves, best.origin ?? null, this.liveOpts, phi);
+      this.liveView = this.view;
+      return;
+    }
+    if (!this.live) return;
+    // ふだんの追跡に戻す: 推定の状態と手順をそのままデコーダへ
+    const live = this.live;
+    const b = live.best();
+    const state = live.display(b);
+    const known = live.known(b);
+    this.decoder.adopt(state, live.orient, live.moves(b), known ? (b.base ?? null) : { n: (b.base?.n ?? 0) + 1000, at: live.moves(b).length, state: Array.from(state), t: this.lastFrameT });
+    this.observer.reset();
+    this.live = null;
+    this.liveOpts = null;
+    this.view = null;
+    this.snapStreak = 0;
   }
   // キューブ全体の向き（orient）: 追う部品と、前の観測のフレームの時刻
   readonly orient: OrientTracker | null = null;
@@ -219,9 +273,15 @@ export class TrackerEngine {
       }
     }
     if (options.personal && this.decoder.options.priorWeight > 0) this.decoder.prior = movePrior(options.personal);
+    if (options.pieces !== undefined) {
+      this.watchCenters = true;
+      this.setPieces(options.pieces);
+    }
   }
 
   reset(state: CubeState, orients?: number[]): void {
+    const pieces = this.liveOpts;
+    this.live = null;
     this.decoder.reset(state, orients);
     this.view = null;
     this.snapStreak = 0;
@@ -232,12 +292,25 @@ export class TrackerEngine {
     this.turnHints = [];
     this.lastSeen.fill(-1);
     this.timingCache.clear();
+    if (pieces) this.setPieces(pieces);
   }
 
   push(frame: FrameReading, sight?: SightFrame): TrackUpdate | null {
     this.orient?.push(frame, sight);
     this.frames.push({ t: frame.t, faces: frame.faces.map((f) => ({ slot: f.slot, labs: f.labs, valid: f.valid, spread: f.spread, masked: f.masked, shift: f.shift, ids: f.ids })) });
     while (this.frames.length && frame.t - this.frames[0].t > this.logMs) this.frames.shift();
+    this.lastFrameT = frame.t;
+    if (!this.live && this.watchCenters && sight?.faces.length) {
+      // 推定に切り替えたときのセンターの向き: 置き方の決まった面で最後に見たセンターの向きと、その後の追跡の手から
+      for (const c of liveFrame(sight).centers) this.centerSeen[c.f] = { phi: c.phi, t: frame.t };
+    }
+    if (this.live) {
+      // ソルブ中のライブの状態の推定: 読み（面の置き方はセンターの ID と面の接し方から。スロットには頼らない）をそのまま渡す
+      if (!sight?.faces.length) return null;
+      this.lastReading = frame;
+      if (!this.live.pushSight(sight)) return null;
+      return this.liveSnapshot(frame);
+    }
     this.collectTurn(frame);
     const repeat = this.repeatMs > 0 && this.repeats < MAX_REPEATS && this.decoder.lastObservationCost >= REPEAT_COST && frame.t - this.lastObsT >= this.repeatMs;
     const obs = this.observer.push(frame, repeat);
@@ -427,7 +500,7 @@ export class TrackerEngine {
   // （1 面だけ・センターが隠れて 1 色）に、90° ずつ違う向きのどれかへ跳ねないように直前の向きに近いものを選ぶ
   frameOrient(frame: FrameReading, labels = this.labelsOf(frame), continuity?: (o: number) => number): number {
     // 3D に出している状態（表示だけの作り変えの間はそれ）と照らす
-    const best = this.view ? { state: this.view.state, orient: this.view.orient } : this.decoder.best();
+    const best = this.live ? { state: this.live.display(), orient: this.live.orient } : this.view ? { state: this.view.state, orient: this.view.orient } : this.decoder.best();
     let bestO = best.orient;
     let bestCost = Infinity;
     for (let o = 0; o < 24; o++) {
@@ -503,7 +576,60 @@ export class TrackerEngine {
     return tm;
   }
 
+  // ライブの状態の推定の TrackUpdate: 3D に出すのは一番よい仮説。決まらないピースのある間は、決まったピースだけを動かした状態を view にする
+  // （手を回して見せない）。決まったピースの位置が手順から決まる位置と違ったら（見失って読みの位置にした後）、そこで手順を切る（base）
+  private liveSnapshot(frame?: FrameReading): TrackUpdate {
+    const live = this.live!;
+    const b = live.best();
+    const moves = live.moves(b);
+    const known = live.known(b);
+    const shown = live.display(b);
+    if (known) {
+      // 手順から決まる状態と違えば、そこで手順を切る
+      const from = b.base ? Uint8Array.from(b.base.state) : this.liveStart;
+      if (from) {
+        let st: CubeState = from;
+        for (let i = b.base?.at ?? 0; i < moves.length; i++) st = applyMove(st, moves[i].move);
+        if (!st.every((c, i) => c === shown[i])) {
+          b.base = { n: (b.base?.n ?? 0) + 1, at: moves.length, state: Array.from(shown), t: frame?.t ?? this.lastFrameT };
+        }
+      }
+      this.liveView = null;
+    } else if (!this.liveView || !this.liveView.state.every((c, i) => c === shown[i])) this.liveView = { n: (this.liveView?.n ?? 0) + 1, state: Array.from(shown), orient: live.orient, t: frame?.t ?? this.lastFrameT };
+    const near = live.hyps.filter((h) => h.cost <= b.cost + BELIEF_MARGIN * 2);
+    const certainty = new Array<number>(54).fill(1);
+    if (near.length > 1) {
+      const ids = near.map((h) => live.stateOf(h));
+      for (let f = 0; f < 54; f++) {
+        let same = 0;
+        for (const st of ids) if (stickerIdAt(st, f) === stickerIdAt(ids[0], f)) same++;
+        certainty[f] = same / ids.length;
+      }
+    }
+    const fr = frame ?? this.lastReading;
+    return {
+      status: !known ? "lost" : b.last >= live.options.deepAbove ? "uncertain" : "tracking",
+      moves,
+      timings: moves.map((m) => this.timing(m)),
+      confirmed: live.agreed(),
+      agreed: known ? live.agreed() : 0,
+      state: Array.from(shown),
+      orient: live.orient,
+      solved: live.solved(),
+      margin: live.hyps.length > 1 ? live.hyps[1].cost - b.cost : Infinity,
+      obsCost: b.last,
+      observations: live.stats.steps,
+      recoveries: live.stats.recovered,
+      refs: this.colors.refs.map((r) => [...r] as Lab),
+      observation: { t: fr?.t ?? 0, faces: (fr?.faces ?? []).map((f) => ({ slot: f.slot, labels: Array.from({ length: 9 }, (_, c) => (f.ids && f.ids[c] >= 0 && f.valid[c] ? Math.floor(f.ids[c] / 9) : -1)) })) },
+      cells: { certainty, seenAt: new Array(54).fill(-1), movedAt: new Array(54).fill(-1) },
+      base: b.base,
+      view: this.liveView,
+    };
+  }
+
   snapshot(obs?: Observation): TrackUpdate {
+    if (this.live) return this.liveSnapshot();
     const best = this.decoder.best();
     const moves = this.decoder.bestMoves();
     return {

@@ -10,6 +10,10 @@
 //   LIVE_MOVES=1: 追跡が数えた手（3D の見せ方とは別）。最後の一番合う仮説の手順（「数えた」）と、一度でも一番合う仮説の手順に出た手
 //     （「出した」。手と時刻が同じものは 1 つ）を、回して見せた手と同じ決まりで本当の手に結びつける: ソルブの前（傾け・持ち替え）の手・
 //     ソルブ中の結びつかない手・本当の手のうち結びついた数。LIVE_MOVES=2 で偽の手の時刻も。追跡の 1 フレームの時間の最大・99% も出す
+//   ソルブ中のライブの状態の推定（ライブ 2 の後半: EngineOptions.pieces。src/track/liveState.ts）: 本体と同じく、タイマーの開始の判定
+//     （src/app/startDetect.ts。読みの始まりがインスペクションの始まり）で始めたと決めたフレームから有効にする。LIVE_OLD=1 で使わない
+//     （向きを別に追う版: 2026-11-22 の #113）・LIVE_OLD=2 でさらに向きも追わない（その前）。LIVE_PIECES='{"rate":4}' で設定を上書き・
+//     LIVE_SWITCH=0 で始めから有効
 import { readFileSync } from "node:fs";
 import { it } from "vitest";
 import { ARUCO_REFS } from "../../src/aruco/palette";
@@ -22,14 +26,15 @@ import type { SightFrame } from "../../src/track/sight";
 import { slotsPlausible } from "../../src/track/slotCheck";
 import { LIVE_TRACKED_ORIENT, OrientTracker } from "../../src/track/orient";
 import { LiveShow, seenMoves } from "../../src/ui/liveShow";
+import { StartDetector } from "../../src/app/startDetect";
 import { SimScene, type SimTurn } from "../liveShowSim";
 
 const LAGS = [150, 300, 600];
 
 export function liveEngineOptions(over: Partial<EngineOptions> = {}): Partial<EngineOptions> {
   // 本体のライブ（src/app/controller.ts の liveEngineOptions）
-  // LIVE_OLD=1: 向きを別に追う前（2026-11-22 まで）
-  const orient = process.env.LIVE_OLD ? {} : { orient: true, trackedOrient: LIVE_TRACKED_ORIENT };
+  // LIVE_OLD=2: 向きを別に追う前（2026-11-22 まで）
+  const orient = process.env.LIVE_OLD === "2" ? {} : { orient: true, trackedOrient: LIVE_TRACKED_ORIENT };
   return { orient: orient.orient, ...over, observer: { ...ARUCO_OBSERVER, ...LIVE_OBSERVER, ...over.observer }, decoder: { priorWeight: 0, confirmMargin: 1, deepHyps: 4, bridgeDepth: 5, trackedOrient: orient.trackedOrient, ...over.decoder }, snapToView: over.snapToView ?? true, recover: over.recover ?? true };
 }
 
@@ -98,6 +103,16 @@ it("書き出したライブの読みの追跡", () => {
     const res = JSON.parse(readFileSync(`${dir}/${rf}`, "utf8")) as RefineResult;
     const st0 = Uint8Array.from(start);
     const engine = new TrackerEngine(st0, ARUCO_REFS, liveEngineOptions(over));
+    // ソルブ中のライブの状態の推定に切り替える（本体はタイマーの開始で: controller.solvingStarted）
+    const usePieces = !process.env.LIVE_OLD;
+    const piecesOpts = JSON.parse(process.env.LIVE_PIECES ?? "{}");
+    const starter = new StartDetector();
+    let switched = -1;
+    if (usePieces) engine.setOptions({ pieces: false });
+    if (usePieces && process.env.LIVE_SWITCH === "0") {
+      engine.setOptions({ pieces: piecesOpts });
+      switched = 0;
+    }
     const s0 = res.start ?? res.moves[0]?.start ?? Infinity;
     const s1 = (res.end ?? res.moves[res.moves.length - 1]?.end ?? -Infinity) + 1000;
     const acc = LAGS.map(() => ({ same: 0, counted: 0 }));
@@ -145,9 +160,14 @@ it("書き出したライブの読みの追跡", () => {
         lone.push(r, sight);
         orientMs.push(performance.now() - b);
       }
+      if (usePieces && switched < 0) starter.frame(r.t, sight, st0);
       const a = performance.now();
       const u = engine.push(r, sight);
       const spent = performance.now() - a;
+      if (usePieces && switched < 0 && u && starter.push(u, 0, r.t) !== null) {
+        engine.setOptions({ pieces: piecesOpts });
+        switched = r.t;
+      }
       ms += spent;
       frameMs.push(spent);
       if (u)
@@ -177,7 +197,7 @@ it("書き出したライブの読みの追跡", () => {
               epoch: 1,
               setupMoves: [],
               moves: u.moves.map((m) => m.move),
-              moveSeen: a.name === "前" ? u.moves.map(() => true) : seenMoves(u.moves, u.timings),
+              moveSeen: a.name === "前" ? u.moves.map(() => true) : seenMoves(u.moves, u.timings, u.agreed),
               base: u.base ?? { n: 0, at: 0, state: st0 },
               view: u.view,
             });
@@ -187,7 +207,7 @@ it("書き出したライブの読みの追跡", () => {
       if (engine.base && engine.base.n !== lastBase) snaps++;
       lastBase = engine.base?.n ?? 0;
       const best = engine.decoder.best();
-      let shown: Uint8Array = Uint8Array.from(engine.view?.state ?? best.state);
+      let shown: Uint8Array = Uint8Array.from(engine.live ? engine.live.display() : (engine.view?.state ?? best.state));
       // LIVE_DELAY=ms: 表示を遅らせる（いまの一番合う仮説の手順で、delay ms 前の状態を出す。後の観測で確かめてから見せる）。
       // 比べるのも delay ms 前の本当の状態（遅れは別に delay ms 足される）
       const delay = Number(process.env.LIVE_DELAY ?? 0);
@@ -201,7 +221,7 @@ it("書き出したライブの読みの追跡", () => {
       if (process.env.LIVE_DUMP === "2" && !u) process.stdout.write(`${(r.t / 1000).toFixed(3)}   - ${r.faces.map((f) => `${f.slot}:${(f.ids ?? []).map((id, c) => (f.valid[c] && id >= 0 ? id : ".")).join(",")}`).join(" ")}\n`);
       if (process.env.LIVE_DUMP && u)
         process.stdout.write(
-          `${(r.t / 1000).toFixed(3)} ${matches(st0, res, r.t, 300, shown) ? "=" : "≠"} ${engine.decoder.status} ${u.obsCost.toFixed(1)} ${engine.base?.n ?? 0}/${engine.view?.n ?? 0}${engine.orient ? ` [${engine.lastOrient ? `s${engine.lastOrient.still.length}` : "-"}]` : ""} ${r.faces.map((f) => `${f.slot}:${(f.ids ?? []).map((id, c) => (f.valid[c] && id >= 0 ? id : ".")).join(",")}`).join(" ")} | ${engine.decoder.bestMoves().slice(-10).map((m) => MOVE_NAMES[m.move]).join(" ")}\n`,
+          `${(r.t / 1000).toFixed(3)} ${matches(st0, res, r.t, 300, shown) ? "=" : "≠"} ${engine.decoder.status} ${u.obsCost.toFixed(1)} ${engine.base?.n ?? 0}/${engine.view?.n ?? 0}${engine.orient ? ` [${engine.lastOrient ? `s${engine.lastOrient.still.length}` : "-"}]` : ""} ${r.faces.map((f) => `${f.slot}:${(f.ids ?? []).map((id, c) => (f.valid[c] && id >= 0 ? id : ".")).join(",")}`).join(" ")} | ${(engine.live ? `${engine.live.hyps.length}h ` : "") + (engine.live ? engine.live.moves() : engine.decoder.bestMoves()).slice(-10).map((m) => MOVE_NAMES[m.move]).join(" ")}\n`,
         );
       if (r.t < s0 || r.t > s1) continue;
       const dt = (readings[i + 1]?.t ?? r.t) - r.t;
@@ -226,7 +246,7 @@ it("書き出したライブの読みの追跡", () => {
           a.counted += dt;
           if (matches(st0, res, tEval, 300, a.sim.state)) a.same += dt;
         }
-      if (matchesSeen(st0, res, tEval, 300, shown, engine.view?.orient ?? best.orient)) seenAcc.same += dt;
+      if (matchesSeen(st0, res, tEval, 300, shown, engine.live ? engine.live.orient : (engine.view?.orient ?? best.orient))) seenAcc.same += dt;
       LAGS.forEach((lag, k) => {
         acc[k].counted += dt;
         const ok = matches(st0, res, tEval, lag, shown);
@@ -256,7 +276,7 @@ it("書き出したライブの読みの追跡", () => {
         animTotals[a.name].mean += a.same / Math.max(1, a.counted);
         if (process.env.LIVE_ANIM === "3" && a.name === "後") {
           // 本当の手に結びついた「前」の手のうち、「後」で回さなかったもの: 届いたときと最後の時刻の印
-          const fin = engine.decoder.bestMoves();
+          const fin = engine.live ? engine.live.moves() : engine.decoder.bestMoves();
           const rows = fin.map((mv) => {
             const tm = engine.timing(mv);
             return `${MOVE_NAMES[mv.move]}@${(mv.t / 1000).toFixed(2)}${mv.inferred ? "?" : ""}[${tm ? `${tm.exact ? "x" : "-"}${tm.endExact ? "e" : "-"}${tm.moved ? "m" : "-"}` : "null"}]`;
@@ -294,8 +314,9 @@ it("書き出したライブの読みの追跡", () => {
     if (process.env.LIVE_MOVES) {
       // 数えた: 最後の手順（まとめる前）。正しく: 同じ面の手をまとめた形を、手そのものが同じ本当の手に結びつける。出した: 一度でも出した手。
       // 正しく以外は面が同じなら結びつける
-      const raw = engine.decoder.bestMoves().map((m) => ({ move: m.move, t: m.t, instant: false }));
-      const fin = simplifyMoves(engine.decoder.bestMoves()).map((m) => ({ move: m.move, t: m.t, instant: false }));
+      const finalMoves = engine.live ? engine.live.moves() : engine.decoder.bestMoves();
+      const raw = finalMoves.map((m) => ({ move: m.move, t: m.t, instant: false }));
+      const fin = simplifyMoves(finalMoves).map((m) => ({ move: m.move, t: m.t, instant: false }));
       const parts = [
         ["数えた", raw, false],
         ["正しく", fin, true],
@@ -331,14 +352,14 @@ it("書き出したライブの読みの追跡", () => {
       totals[k].same += acc[k].same;
       totals[k].counted += acc[k].counted;
     });
-    const moves = simplifyMoves(engine.decoder.bestMoves());
+    const moves = simplifyMoves(engine.live ? engine.live.moves() : engine.decoder.bestMoves());
     const truth = res.moves.map((m) => MOVE_NAMES[m.move]).join(" ");
     const got = moves.map((m) => MOVE_NAMES[m.move]).join(" ");
     // 手順の頭から何手まで精密解析と同じか
     let same = 0;
     while (same < moves.length && same < res.moves.length && moves[same].move === res.moves[same].move) same++;
     lines.push(
-      `${rd.padEnd(13)} 一致 ${LAGS.map((lag, k) => `${lag}ms ${((acc[k].same / Math.max(1, acc[k].counted)) * 100).toFixed(1).padStart(5)}%`).join("・")} | 手順 ${got === truth ? "同じ" : `頭から ${same}/${res.moves.length} 手`}・見失い 0.5 秒以上 ${long.length} 回 計 ${(long.reduce((a, b) => a + b, 0) / 1000).toFixed(1)} 秒 最長 ${(Math.max(0, ...runs) / 1000).toFixed(1)} 秒・作り変え ${snaps}${engine.recoveries ? `・復帰 ${engine.recoveries}/${engine.recoverTries}（最大 ${engine.recoverMax.toFixed(0)}ms）` : ""}・${engine.decoder.status}${dropped ? `・捨てた ${dropped}` : ""}${engine.orient ? `・向き 突き合わせ ${engine.orient.matched}/${engine.orient.faces}` : ""} | 追跡 ${(ms / readings.length).toFixed(2)}ms/フレーム・観測 ${obs}・評価 ${(evals / Math.max(1, obs)).toFixed(0)}/観測`,
+      `${rd.padEnd(13)} 一致 ${LAGS.map((lag, k) => `${lag}ms ${((acc[k].same / Math.max(1, acc[k].counted)) * 100).toFixed(1).padStart(5)}%`).join("・")} | 手順 ${got === truth ? "同じ" : `頭から ${same}/${res.moves.length} 手`}・見失い 0.5 秒以上 ${long.length} 回 計 ${(long.reduce((a, b) => a + b, 0) / 1000).toFixed(1)} 秒 最長 ${(Math.max(0, ...runs) / 1000).toFixed(1)} 秒・作り変え ${snaps}${engine.recoveries ? `・復帰 ${engine.recoveries}/${engine.recoverTries}（最大 ${engine.recoverMax.toFixed(0)}ms）` : ""}・${engine.decoder.status}${dropped ? `・捨てた ${dropped}` : ""}${engine.live ? `・推定 ${(switched / 1000).toFixed(2)}s から（深く ${engine.live.stats.deep}・復帰 ${engine.live.stats.recovered}/${engine.live.stats.recoverTries}・見失い ${engine.live.stats.lost}・まとめた ${engine.live.stats.merged}・仮説 最大 ${engine.live.stats.maxHyps}）` : ""}${engine.orient ? `・向き 突き合わせ ${engine.orient.matched}/${engine.orient.faces}` : ""} | 追跡 ${(ms / readings.length).toFixed(2)}ms/フレーム・観測 ${obs}・評価 ${(evals / Math.max(1, obs)).toFixed(0)}/観測`,
     );
   }
   lines.push(`合計          一致 ${LAGS.map((lag, k) => `${lag}ms ${((totals[k].same / Math.max(1, totals[k].counted)) * 100).toFixed(1).padStart(5)}%`).join("・")}`);
