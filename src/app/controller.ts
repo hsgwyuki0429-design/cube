@@ -24,6 +24,7 @@ import { loadSolves, personalSequences } from "./storage";
 import { createStore } from "./store";
 import { markPhase } from "./crashGuard";
 import { PerfLog, summarizePerf } from "./perfLog";
+import { parseSolveLoad } from "./solveLoad";
 
 // 画面: プレイ・データ（グラフと履歴）・1 回の記録の詳しい画面・解析（スロー動画・ArUco の画面）・設定（使い方も）
 export type Screen = "play" | "data" | "solve" | "analyze" | "settings";
@@ -90,7 +91,12 @@ export const VIDEO_MAX_FPS = 120;
 const STALL_MS = 30000;
 // 回し始めの時刻（リアルタイムの判定）のこれだけ前から、解析は全部のフレームを処理する（最初の手の回し始めは 350ms 前まで遡って探す）
 const SOLVE_LEAD_MS = 500;
-const LIVE_REST_MAX_MS = 20000; // 止めた後の残りの解析の間、ライブの認識を休むのは長くてもこれだけ
+// 止めた後の残りの解析の間は、ライブの認識を止めて精密解析を先に終わらせる（休んでいる間に回した手は、再開したときに見えている色への
+// 作り変えで追いつく）。休むのは解析が終わるまで（時間では切らない。以前は 20 秒で切っていて、実機で vframe のとき、ライブが戻った後の
+// 精密解析が 1 秒 49 枚 → 4.5 枚に落ち、止めた後の待ちが 38.7 秒になった）。0.5 秒に 1 枚だけ認識するのも試したが、CPU 2 つに絞った E2E で
+// 止めた後の精密解析が 1 秒 19 → 14 枚に落ち、待ちが 21.0 → 27.9 秒に延びた（docs/history.md の「ライブ 2.5」）。LIVE_REST_GUARD_MS は
+// 解析が返ってこないときの保険
+const LIVE_REST_GUARD_MS = 180000;
 
 // 追跡の探索と観測器の設定（ライブと精密解析で共通の部分）
 const searchOptions = (s: Settings) => ({ beamWidth: s.beamWidth, maxMovesPerStep: s.maxMovesPerStep, rotationCost: s.rotationCost });
@@ -105,19 +111,8 @@ function refinePool(): Pick<RefineInput, "parallel" | "pieces"> {
   return { ...(v === null || !/^\d+$/.test(v) ? {} : { parallel: Number(v) }), ...(p === "1" || p === "and" ? { pieces: "and" as const } : p === "v1" ? { pieces: "v1" as const } : {}) };
 }
 
-// ?solveload=…: ソルブ中の重さの配り方（ライブ 2.5。実機で比べる。既定は今のまま: 精密解析はソルブ中も全部のフレームを処理し、
-// 補助の Worker も使う）。カンマで組み合わせる:
-//   pause = ソルブ中は精密解析に録画を渡さない（止めたらまとめて渡す。止めた後の待ちが延びる）
-//   duty50 など = ソルブ中は精密解析の Worker が処理していた時間の割合を 50% までにする（同じフレームを遅れて処理する。結果は同じ）
-//   helperoff = ソルブ中は認識の補助の Worker を休ませる（精密解析の Worker に CPU を回す）
-//   lazy = 精密解析で、インスペクションの間引きで処理しないフレームを画素にしない（結果は同じ。復号の後の画素の取り出しを省く）
-//   vframe = カメラのフレームを VideoFrame のままライブの Worker と録画に渡す（縮める・描くのをメインスレッドでしない。いつも）
+// ?solveload=…: ソルブ中の重さの配り方（src/app/solveLoad.ts）
 export const SOLVE_LOAD = parseSolveLoad(typeof location === "undefined" ? "" : (new URLSearchParams(location.search).get("solveload") ?? ""));
-export function parseSolveLoad(q: string): { refine: string; helper: "on" | "off"; lazy: boolean; vframe: boolean } {
-  const parts = q.split(",").map((x) => x.trim()).filter(Boolean);
-  const refine = parts.find((x) => x === "pause" || /^duty\d+$/.test(x)) ?? "full";
-  return { refine, helper: parts.includes("helperoff") ? "off" : "on", lazy: parts.includes("lazy"), vframe: parts.includes("vframe") };
-}
 
 // ?livepieces=0: ソルブ中のライブの状態の推定を使わない（今までの追跡のまま。比べるとき）
 const LIVE_PIECES = typeof location === "undefined" || new URLSearchParams(location.search).get("livepieces") !== "0";
@@ -231,7 +226,7 @@ class Controller {
       // 止めた後の残りの解析の間は、ライブの認識を休む（1 秒に何枚も作る画像でメモリの山が高くなり、iPhone で落ちる元になる。
       // 休んでいる間に回した手は、再開したときに見えている色への作り変えで追いつく）
       // 録画の圧縮が詰まっている間は、認識の補助の Worker を休ませる（CPU を圧縮に回す。録画を間引くと精密解析が悪くなる）
-      if (this.vision) this.vision.useHelper = !this.recorder.congested(t) && !this.helperRest();
+      if (this.vision) this.vision.useHelper = !this.recorder.congested(t) && !this.helperRest() && !this.liveResting;
       if (!this.liveResting) this.vision?.submit(this.camera.video, t);
       else perf.count("full");
       if (this.recorder.recording) {
@@ -608,6 +603,8 @@ class Controller {
     clearInterval(session.timer);
     this.session = null;
     this.store.set({ analysis: null });
+    // ライブは録画の残りを圧縮し終えるのを待つ間から休む（精密解析を先に終わらせる）
+    this.liveResting = true;
     await this.recorder.finish(to);
     if (session.id >= 0) this.feedAnalysis(session, to, true);
     // 解析が途中で失敗した（Worker が落ちた・例外・止まった）ときのために、録画全体を取っておく（圧縮した映像のかたまりを指すだけ）
@@ -651,8 +648,7 @@ class Controller {
         (e) => (cap.error = errorText(e)),
       );
     }
-    this.liveResting = true;
-    const rest = window.setTimeout(() => (this.liveResting = false), LIVE_REST_MAX_MS);
+    const rest = window.setTimeout(() => (this.liveResting = false), LIVE_REST_GUARD_MS);
     // 終わったら解析の Worker を閉じてメモリを返す（次のインスペクションで作り直す）
     void result
       .catch(() => undefined)

@@ -58,7 +58,16 @@ export class VisionClient {
   private helperInflight = 0;
   private nextSeq = 1;
   helperFrames = 0; // 補助の Worker が認識したフレームの数（調査用）
-  videoFrames = false; // カメラのフレームを VideoFrame のまま送る（?solveload=vframe）
+  videoFrames = false; // カメラのフレームを VideoFrame のまま送る（既定。?solveload=default で使わない）
+  videoFrameNote: string | null = null; // VideoFrame をやめた理由（調査用）
+
+  // VideoFrame を使えなかった: 今までのやり方（メインスレッドで画像にする）に戻す
+  private disableVideoFrames(why: string): void {
+    if (!this.videoFrames) return;
+    this.videoFrames = false;
+    this.videoFrameNote = why;
+    console.warn("VideoFrame を使わずに送ります:", why);
+  }
   // 補助の Worker に送ってよいか（録画の圧縮が詰まっている間は休ませる: 精密解析の録画の方が大事。controller が決める）
   useHelper = true;
   private listeners = new Set<(m: FrameMessage) => void>();
@@ -83,6 +92,10 @@ export class VisionClient {
       this.worker.onmessage = (e: MessageEvent<FromWorker>) => {
         const m = e.data;
         if (perfAnswer(m)) return;
+        if (m.type === "vframe-failed") {
+          this.disableVideoFrames(`Worker で描けない: ${m.message}`);
+          return;
+        }
         if (m.type === "ready") {
           this.isReady = true;
           this.opencv = m.opencv;
@@ -134,7 +147,8 @@ export class VisionClient {
       w.onmessage = (e: MessageEvent<FromWorker>) => {
         const m = e.data;
         if (perfAnswer(m)) return;
-        if (m.type === "ready") this.helperReady = true;
+        if (m.type === "vframe-failed") this.disableVideoFrames(`補助の Worker で描けない: ${m.message}`);
+        else if (m.type === "ready") this.helperReady = true;
         else if (m.type === "recognized") {
           this.helperInflight = Math.max(0, this.helperInflight - 1);
           this.worker.postMessage({ type: "foreign", id: m.id, seq: m.seq, t: m.t, width: m.width, height: m.height, result: m.result, procMs: m.procMs } satisfies ToWorker);
@@ -192,10 +206,27 @@ export class VisionClient {
       const s = Math.min(1, this.workWidth / Math.max(video.videoWidth, video.videoHeight));
       const w = Math.round(video.videoWidth * s);
       const h = Math.round(video.videoHeight * s);
-      let bitmap: ImageBitmap | VideoFrame;
+      const id = this.nextId++;
+      const send = (bitmap: ImageBitmap | VideoFrame) => {
+        if (toHelper && this.helper) this.helper.postMessage({ type: "recognize", id, t, bitmap, seq, w, h } satisfies ToWorker, [bitmap]);
+        else this.post({ type: "frame", id, t, bitmap, seq, w, h }, [bitmap]);
+      };
+      // vframe（既定）: カメラのフレームを VideoFrame のまま渡し、縮める・画素にするのは Worker で（メインスレッドの 1 枚ごとの時間を減らす。
+      // 実機の iPhone でメインスレッド 580 → 30ms/秒）。作れない・渡せない端末では、今までのやり方に戻して以後も使わない
+      if (this.videoFrames && typeof VideoFrame !== "undefined") {
+        let frame: VideoFrame | null = null;
+        try {
+          frame = new VideoFrame(video, { timestamp: Math.round(t * 1000) });
+          send(frame);
+          return true;
+        } catch (e) {
+          frame?.close();
+          this.disableVideoFrames(`送れない: ${String(e)}`);
+        }
+      }
+      let bitmap: ImageBitmap;
       try {
-        // ?solveload=vframe: カメラのフレームをそのまま渡し、縮めるのは Worker で（メインスレッドの 1 枚ごとの時間を減らす）
-        bitmap = this.videoFrames && typeof VideoFrame !== "undefined" ? new VideoFrame(video, { timestamp: Math.round(t * 1000) }) : await createImageBitmap(video, { resizeWidth: w, resizeHeight: h, resizeQuality: "low" });
+        bitmap = await createImageBitmap(video, { resizeWidth: w, resizeHeight: h, resizeQuality: "low" });
       } catch {
         // resize オプション非対応のブラウザ向け
         if (!this.fallbackCanvas) this.fallbackCanvas = typeof OffscreenCanvas !== "undefined" ? new OffscreenCanvas(w, h) : document.createElement("canvas");
@@ -205,8 +236,7 @@ export class VisionClient {
         ctx.drawImage(video, 0, 0, w, h);
         bitmap = await createImageBitmap(this.fallbackCanvas);
       }
-      if (toHelper && this.helper) this.helper.postMessage({ type: "recognize", id: this.nextId++, t, bitmap, seq, w, h } satisfies ToWorker, [bitmap]);
-      else this.post({ type: "frame", id: this.nextId++, t, bitmap, seq, w, h }, [bitmap]);
+      send(bitmap);
       return true;
     } catch (e) {
       if (toHelper) {

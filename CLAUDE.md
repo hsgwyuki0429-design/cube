@@ -74,7 +74,7 @@ src/vision Vision             ← 映像 → マーカー → 見えている面
 - 画像認識と追跡エンジンは `src/vision/vision.worker.ts`。ソルバーは `src/cube/solver.worker.ts`
 - 精密解析は同じ Worker スクリプトの**別インスタンス**（`RefineClient`）。動画ファイルの解析もさらに別のインスタンス
 - ライブの認識はコアが 4 つ以上なら Worker 2 つで交互に処理する（補助の Worker は認識だけ。追跡は主の Worker が通し番号の順に。
-  録画の圧縮が詰まっている間は補助を休ませる: `FrameRecorder.congested`）
+  録画の圧縮が詰まっている間・止めた後の精密解析の間は補助を休ませる: `FrameRecorder.congested`）
 - フレーム取得は `requestVideoFrameCallback`。結果の来ていないフレームは 3 枚まで（`MAX_INFLIGHT`）、Worker は空いたら待っている中で
   **動きのいちばん小さいもの**を処理する（`pickFrame`）。時刻は撮影時刻（`captureTime`）。タイム・手の時刻はすべてこの時間軸
 - ライブの認識はフレームを長辺 `workWidth`（既定 1280。1280 未満にしない）に縮める
@@ -83,9 +83,12 @@ src/vision Vision             ← 映像 → マーカー → 見えている面
 - **cubing.js のソルバーはブラウザでは必ず `solver.worker.ts` 経由**（`src/cube/solver.ts`）。メインのバンドルから使うと、cubing.js の Worker が
   アプリ本体のチャンクを読み込んで落ちる
 - **ソルブ中の重さ**（ライブ 2.5）: ソルブ中は精密解析の Worker が 1 コアを使い切り（実機で止めた時 6〜12 秒遅れ）、カメラのフレームが本体に
-  届く数が 60 → 42〜52fps に落ちる。1 秒ごとの処理の様子（`src/app/perfLog.ts`: カメラ・画面の更新・メインスレッドの時間・各 Worker の忙しさ・
-  録画・精密解析の遅れ）を書き出し（ライブの記録・録画）に入れる。直し方の候補は URL の `?solveload=`（`pause`・`duty50`・`helperoff`・`lazy`・
-  `vframe`。既定は今のまま。実機で比べてから決める: `docs/history.md` の「ライブ 2.5」）
+  届く数が落ちる。**カメラのフレームは `VideoFrame` のままライブの Worker と録画に渡す**（`vframe`。画像にする・縮める・描くのはメインスレッドで
+  しない。実機の iPhone でソルブ中のカメラ 36〜38 → 52〜55fps・メインスレッド 580 → 30ms/秒）。VideoFrame を作れない・渡せない・Worker で
+  描けない端末では自動で今までのやり方に戻す。URL の `?solveload=default` で今までのやり方（ほかの候補 `pause`・`duty50`・`helperoff`・`lazy` は
+  比べる用: `src/app/solveLoad.ts`）。**止めた後は精密解析が終わるまでライブの認識を止める**（時間では切らない。間引いて 0.5 秒に 1 枚でも遅くなった:
+  20 秒で切っていたら、ライブが戻った後の精密解析が 1 秒 49 → 4.5 枚に落ち、待ちが 38.7 秒になった）。1 秒ごとの処理の様子
+  （`src/app/perfLog.ts`）を書き出しに入れる: `docs/history.md` の「ライブ 2.5」
 - **`solver.worker.ts` の受け口は、名前（`cubevision-solver`）で自分の Worker の中だけ、自分の形のメッセージ（数字の id と決まった種類）だけを
   受けること。** cubing.js の探索の Worker も同じまとまりを読み込むので、そうしないと Worker が際限なく増える（iPhone でタブごと落ちた
   本当の原因だった）。Worker の数とメモリは偽のカメラ（Chromium の `--use-file-for-fake-video-capture`）で測る
