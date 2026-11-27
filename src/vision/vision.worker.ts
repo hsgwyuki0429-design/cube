@@ -335,7 +335,7 @@ function track(r: Recognized): void {
       ...(track
         ? { out: { status: track.status, obsCost: Math.round(track.obsCost * 100) / 100, moves: track.moves.length, last: track.moves.slice(-4).map((m) => m.move), base: track.base?.n ?? 0, view: track.view?.n ?? 0 } }
         : {}),
-    });
+    }, () => engine!.checkpoint());
   if (track) focus = focusCells(track.cells, track.orient);
   let pose: FrameMessage["pose"];
   if (engine && reading.faces.length) {

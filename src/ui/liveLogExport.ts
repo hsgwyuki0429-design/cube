@@ -15,6 +15,20 @@ async function gzip(text: string): Promise<Blob | null> {
   }
 }
 
+function analysisOf() {
+  const cap = controller.lastRecording;
+  const r = cap?.result;
+  if (!cap || !r) return undefined;
+  return {
+    solveId: cap.live?.solveId,
+    solved: r.solved,
+    start: r.start,
+    end: r.end,
+    startState: r.startState ?? cap.input.state,
+    moves: r.moves.map((m) => ({ move: m.move, start: m.start, end: m.end, ...(m.inferred ? { inferred: true } : {}) })),
+  };
+}
+
 export async function exportLiveLog(): Promise<void> {
   const vision = controller.vision;
   if (!vision) {
@@ -41,6 +55,8 @@ export async function exportLiveLog(): Promise<void> {
     timer: { phase: t.phase, startT: t.startT, startIndex: t.startIndex, scramble: t.scramble },
     // 直前のソルブ（精密解析の手順と時刻: 本当の動きとして比べる）
     solves: t.solves.slice(0, 3), // 新しい順（先頭が直前のソルブ）
+    // 直前のソルブの精密解析（手の時刻はフレームの時間軸。Solve.moves の時刻は解析の回し始めからで、timer.startT からではない）
+    analysis: analysisOf(),
     log,
   };
   const text = JSON.stringify(data);
