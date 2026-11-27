@@ -441,7 +441,7 @@ facelet の直接置換テーブルを手書きすると必ず間違える。**3
 - 処理時間を測るベンチ（`seqBench` の `@k` など）は**他の重い処理と同時に走らせない**
 - 主な計測の道具: `seqBench`（合成の手順とタイムの誤差）・`refineProfile`（1 フレームの時間、`PROFILE=1` で関数ごと）・`decodeBench`
   （書き出した観測で解き直しを比べる。正解づくりの `buildTruth` と確認役 `tests/debug/lib/exact.ts`）・`betweenMoves`（手と手の間の状態が
-  読めたか）・`liveLog`（実機のライブの記録）・`piecesBench`（ステッカーの動きの方程式と今の解き直しを、書き出した読みと観測で比べる）
+  読めたか）・`liveLog`（実機のライブの記録）・`piecesBench`（ステッカーの動きの方程式と今の解き直しを、書き出した読みと観測で比べる）・`islandBound`（島に分けて解く案の上限。`docs/history.md`）
 
 ---
 
