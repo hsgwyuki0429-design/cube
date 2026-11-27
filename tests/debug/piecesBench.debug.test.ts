@@ -390,7 +390,7 @@ it("ステッカーの動きの方程式で解き直す", async () => {
       const cancelledSure = solved ? cancelled(moves).filter(({ m }) => !m.inferred).map(({ m }) => `${MOVE_NAMES[m.move]}@${((m as { t?: number }).t ?? 0) / 1000}`) : [];
       const cancelledTruth = cancelled(truth.moves).length;
       const byState = solved ? wrongByState(moves, truth.moves, start) : { wrong: 0, at: [] };
-      const row = { name, method, solved, same: solved && dist === 0, dist, n: want.length, wrongSure: ws.wrong, inferred, ms: Math.round(ms), memMB: Math.round(mem), note: truth.note, reasons, cancelledSure, cancelledTruth, wrongByState: byState.wrong, wrongByStateAt: byState.at, ...(stats ? { stats } : {}) };
+      const row = { name, method, solved, same: solved && dist === 0, dist, n: want.length, wrongSure: ws.wrong, okSure: ws.ok, inferred, ms: Math.round(ms), memMB: Math.round(mem), note: truth.note, reasons, cancelledSure, cancelledTruth, wrongByState: byState.wrong, wrongByStateAt: byState.at, ...(stats ? { stats } : {}) };
       const line = `${name.padEnd(16)} ${method.padEnd(3)} ${solved ? "完成" : "未完"} ${row.same ? "正解と同じ" : `距離 ${String(dist).padStart(3)}`}/${want.length} 確定で間違い ${ws.wrong} 推定 ${String(inferred).padStart(2)} ${(ms / 1000).toFixed(1).padStart(5)}秒 メモリ +${row.memMB}MB ${info}${truth.note}`;
       out.push(line);
       process.stdout.write(`${line}\n`);
