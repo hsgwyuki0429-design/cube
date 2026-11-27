@@ -15,7 +15,7 @@
 // 点数（ビット）: k 手の手順 1 つ = −log2(ポアソン(k; rate·Δt) / 冗長でない k 手の数)（Δt = 前の読めたフレームから）。
 // 読みとの食い違い = 読み違いの割合 ε（MEASURED_EPS: 種類 × 続いた長さ）から log2((1 − ε)·23 / ε)。同じピースの食い違いが続いた分は、
 // 続いた長さの ε で 1 本ぶんになるように差分だけ足す（1 枚だけの食い違い 9.5 ビット・10 枚続いても 13 ビット）
-import { type CubeState, NUM_ORIENTATIONS, VIEW, isSolved } from "../cube/model";
+import { type CubeState, NUM_ORIENTATIONS, VIEW, isSolved, solvedState } from "../cube/model";
 import { PARTNERS } from "../cube/stickers";
 import { IS_CORNER, NUM_PIECES, PIECE_OF, PIECE_REF, REF_AT, EXPECT_ROT, toCubeState } from "./pieces/model";
 import { CLS, IDX, positionOf, seqTable, solveExact, type CenterEq, type Eq } from "./pieces/tables";
@@ -49,6 +49,7 @@ export interface LiveStateOptions {
   recoverMs: number; // 錨から探す時間の上限
   recoverGapMs: number; // 探す間隔
   budgetMs: number; // 深く照らす・復帰で、5 手より長い手順（前後の突き合わせ）を探し始めてよい時間（1 フレームの中で）
+  solvedMin: number; // 揃った状態にしてよい、揃った位置に読めたピースの数（preferSolved）
   lostAll: boolean; // 見失ったとき、読めていないピースは全部「分からない」にする（false: 食い違いの続いていたピースだけ）
   lostBits: number; // 食い違いがこれ（ビット）以上続いたら、読めたピースをその場で読みの位置にする（見えていないピースは分からないまま）
 }
@@ -80,6 +81,7 @@ export const DEFAULT_LIVE_STATE: LiveStateOptions = {
   budgetMs: Infinity,
   lostBits: 20,
   lostAll: false,
+  solvedMin: 8,
 };
 
 const KIND_DIRECT = 0;
@@ -924,6 +926,21 @@ export class LiveState {
     let missBits = 0;
     for (let k = 0; k < 26; k++) if (b.miss[k] >= 2) missBits += W[k < 20 ? KIND_DIRECT : KIND_CENTER][lenBucket(b.miss[k])];
     if (missBits >= o.lostBits) this.teleport(fr);
+    this.preferSolved(fr);
+  }
+
+  // 揃った: 一番よい仮説が揃っていない（見失った後で、見えていないピースが分からない・推測のまま）のに、置き方の決まった読みが solvedMin 個
+  // 以上あってどれも揃った位置なら、揃った状態の仮説を一番にする（手順はここでつながらない。止める判定にも使う）
+  private preferSolved(fr: LiveFrame): void {
+    const b = this.hyps[0];
+    if (this.solved()) return;
+    const read = this.sureReads(fr, b, [0, 1]);
+    if (read.size < this.options.solvedMin) return;
+    for (const [p, y] of read) if (y !== IDX[PIECE_REF[p]]) return;
+    const mask = Uint32Array.from({ length: NUM_PIECES }, (_, p) => 1 << IDX[PIECE_REF[p]]);
+    const h: LiveHyp = { mask, guess: Uint8Array.from(mask, (m) => bitIndex(m)), phi: b.phi.slice(), miss: new Uint8Array(26), cost: 0, last: 0, rs: b.rs, tail: b.tail, base: { n: ++this.nBase, at: b.tail?.len ?? 0, state: Array.from(solvedState()), t: fr.t } };
+    this.stats.lost++;
+    this.hyps = [h, ...this.hyps.map((x) => ({ ...x, cost: x.cost + 4 }))].slice(0, this.options.maxHyps);
   }
 
   // 置き方の決まった読み（一番よい仮説の置き方で）: ピース → 位置

@@ -147,11 +147,20 @@ class Controller {
   private session: AnalysisSession | null = null;
   private liveResting = false; // 止めた後の残りの解析の間（ライブの認識を休む）
   private snapLive = true; // ライブの作り変えを使うか（タイマーのスクランブル中は使わない）
+  private piecesLive = false; // ソルブ中のライブの状態の推定を使うか（タイマーの計測中だけ）
 
   // ライブの作り変え（見えている色に合わせる）を使うか。タイマーのスクランブル中は、前のライブ（一番合う手順を回して見せる）にする
   setLiveSnap(on: boolean): void {
     if (this.snapLive === on) return;
     this.snapLive = on;
+    this.vision?.setTrackingOptions(this.liveEngineOptions());
+  }
+
+  // ソルブ中のライブの状態の推定（src/track/liveState.ts。ライブ 2 の後半）: タイマーの計測中だけ使う。スクランブル中・インスペクション・
+  // 開始の判定は今までの追跡のまま。切り替えた時点の一番合う状態と手順から推定し、止めたらその状態と手順を今までの追跡に戻す
+  setLivePieces(on: boolean): void {
+    if (this.piecesLive === on) return;
+    this.piecesLive = on;
     this.vision?.setTrackingOptions(this.liveEngineOptions());
   }
 
@@ -238,6 +247,8 @@ class Controller {
       snapToView: this.snapLive,
       // 見失ったら、見失う前の確かな状態から後で読めたステッカーが全部合う手順を探して戻る（src/track/recover.ts）
       recover: true,
+      // ソルブ中は状態を表の AND で推定する（setLivePieces。false の間もセンターの向きを見ておく）
+      pieces: this.piecesLive,
     };
   }
 
