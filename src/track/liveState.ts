@@ -39,12 +39,16 @@ export interface LiveStateOptions {
   minDt: number; // 手数のコストの Δt の下限（ms）
   contMs: number; // センターの見えない面を、これ以内に置いた同じ面の続きとして置く
   contBits: number; // そのとき、続きと違う置き方のコスト
+  chainBits: number; // センター 1 つの面で、仮説のセンターの向きから決まる置き方が、画像の上の向きの続き（前のフレーム）と違うときのコスト
+  chainMs: number; // その続きに使う、前に置いた同じ面の古さの上限
   contCap: number; // そのまとまりの食い違いの上限（面の取り違え: 手を足す理由にはしない）
   held: boolean; // 1 列・1 枚の面（外枠が推定）を、同じフレームの置き方の決まった面から分かるカメラの姿勢で置く
   // 見失ったところからの復帰: 錨（食い違いのない最後の仮説）から、読めたピースが全部合う手順を表で探す
   recoverK: number; // 探す手数の上限（5 以上は前後から突き合わせる）
   recoverMin: number; // 探すのに要る、確かに読めたピースの数
   recoverMs: number; // 錨から探す時間の上限
+  recoverGapMs: number; // 探す間隔
+  lostAll: boolean; // 見失ったとき、読めていないピースは全部「分からない」にする（false: 食い違いの続いていたピースだけ）
   lostBits: number; // 食い違いがこれ（ビット）以上続いたら、読めたピースをその場で読みの位置にする（見えていないピースは分からないまま）
 }
 
@@ -65,11 +69,15 @@ export const DEFAULT_LIVE_STATE: LiveStateOptions = {
   contMs: 300,
   contBits: 4.5,
   contCap: 5,
+  chainBits: 4.5,
+  chainMs: 500,
   held: true,
-  recoverK: 6,
+  recoverK: 8,
   recoverMin: 6,
   recoverMs: 2500,
+  recoverGapMs: 150,
   lostBits: 20,
+  lostAll: true,
 };
 
 const KIND_DIRECT = 0;
@@ -161,11 +169,13 @@ const quadSize = (q: number[]): number => (Math.hypot(q[2] - q[0], q[3] - q[1]) 
 
 // 面の置き方の記憶（キューブの面ごと）: センターの見えない面を、前のフレームで置いた同じ面の続きとして置く
 export interface FaceMemory {
-  faces: ({ t: number; c: [number, number]; size: number; ang: number; ids: number[] } | null)[];
+  // ang: 置き方の決まった面の続き（センターのない面に使う）。sure: 置き方がほかの面との接し方で決まったときだけの向きと時刻（センター 1 つの
+  // 面の続きに使う。その面だけで置いた向きは、その面を回している途中の格子に付いていくので使わない）
+  faces: ({ t: number; c: [number, number]; size: number; ang: number; ids: number[]; sure: { t: number; ang: number } | null } | null)[];
 }
 export const newFaceMemory = (): FaceMemory => ({ faces: new Array(6).fill(null) });
 
-export function liveFrame(sight: SightFrame, mem: FaceMemory | null = null, opts: Pick<LiveStateOptions, "touch" | "contMs" | "contBits" | "held"> = DEFAULT_LIVE_STATE): LiveFrame {
+export function liveFrame(sight: SightFrame, mem: FaceMemory | null = null, opts: Pick<LiveStateOptions, "touch" | "contMs" | "contBits" | "held" | "chainBits" | "chainMs"> = DEFAULT_LIVE_STATE): LiveFrame {
   const piece: number[] = [];
   const cls: number[] = [];
   const kind: number[] = [];
@@ -267,7 +277,16 @@ export function liveFrame(sight: SightFrame, mem: FaceMemory | null = null, opts
     }
     if (valid.length > 1) {
       for (const r of valid) for (const pl of options[r]!) if (pl) usedFaces.add(pl.face);
-      addGroup({ mode: 1, face: face0, cr: fs[root].rot[4], prior: [0, 0, 0, 0], faces: fs, placed: options }, fs, valid);
+      // 画像の上の向きの続き: 前のフレームで置いた同じ面の「上」の向きにいちばん近い置き方は 0、ほかは chainBits（その面だけが見えて
+      // いるとき、その面を回したのか、キューブ全体をその面のまわりに回したのかを分ける。キューブ全体は 1 フレームで 90° は回らない）
+      const m = mem?.faces[face0]?.sure;
+      const prior = [0, 0, 0, 0];
+      if (m && sight.t - m.t <= opts.chainMs && opts.chainBits > 0) {
+        let r0 = valid[0];
+        for (const r of valid) if (Math.cos(upAngle(fs[root].quad, options[r]![root]!.r) - m.ang) > Math.cos(upAngle(fs[root].quad, options[r0]![root]!.r) - m.ang)) r0 = r;
+        for (const r of valid) prior[r] = r === r0 ? 0 : opts.chainBits;
+      }
+      addGroup({ mode: 1, face: face0, cr: fs[root].rot[4], prior, faces: fs, placed: options }, fs, valid);
     }
   }
   let orient = -1;
@@ -358,6 +377,7 @@ export interface LiveBase {
 
 export interface LiveHyp {
   mask: Uint32Array; // ピースごとの取り得る位置（種類の中の番号のビット）。1 つだけなら決まっている
+  guess: Uint8Array; // 3D に出す位置の見込み（決まらないピースも手に合わせて動かす。式には使わない）
   phi: Int8Array; // センターの向き（-1 = 分からない）
   miss: Uint8Array; // ピース（0〜19）・センター（20〜25）ごとの、読みと食い違い続けている枚数
   cost: number;
@@ -406,10 +426,11 @@ function moveMask(img: Uint8Array, base: number, m: number): number {
 
 // 手順を当てる（ピースの取り得る位置・センターの向き。その場で書き換える）
 const T1 = () => seqTable(1);
-function applyMoves(mask: Uint32Array, phi: Int8Array, seq: readonly number[]): void {
+function applyMoves(mask: Uint32Array, phi: Int8Array, seq: readonly number[], guess?: Uint8Array): void {
   const tb = T1();
   for (const m of seq) {
     for (let p = 0; p < NUM_PIECES; p++) mask[p] = moveMask(tb.img, (m * 2 + clsOf(p)) * 24, mask[p]);
+    if (guess) for (let p = 0; p < NUM_PIECES; p++) guess[p] = tb.img[(m * 2 + clsOf(p)) * 24 + guess[p]];
     const f = (m / 3) | 0;
     if (phi[f] >= 0) phi[f] = (phi[f] + (m % 3) + 1) & 3;
   }
@@ -446,6 +467,7 @@ export interface LiveStats {
   merged: number;
   maxHyps: number;
   evals: number;
+  ms: { pick: number; deep: number; child: number; recover: number; maxDeep: number; maxRecover: number };
 }
 
 interface Child {
@@ -467,7 +489,7 @@ export class LiveState {
   // 錨: 食い違いのない最後の仮説（見失ったところからの復帰の始まり）
   private anchor: { h: LiveHyp; t: number } | null = null;
   private lastRecover = -Infinity;
-  readonly stats: LiveStats = { frames: 0, steps: 0, deep: 0, deepSkipped: 0, recovered: 0, recoverTries: 0, lost: 0, merged: 0, maxHyps: 0, evals: 0 };
+  readonly stats: LiveStats = { frames: 0, steps: 0, deep: 0, deepSkipped: 0, recovered: 0, recoverTries: 0, lost: 0, merged: 0, maxHyps: 0, evals: 0, ms: { pick: 0, deep: 0, child: 0, recover: 0, maxDeep: 0, maxRecover: 0 } };
   private nBase = 0;
 
   // phi: センターの向きの初め（分からない面は -1。TrackerEngine が切り替える前のフレームで見たセンターの向きから）
@@ -481,7 +503,8 @@ export class LiveState {
       tail = { move: m.move, t0: m.t0 ?? m.t, t: m.t, orient: m.orient, inferred: !!m.inferred, prev: tail, len };
     }
     this.nBase = base?.n ?? 0;
-    const h: LiveHyp = { mask: hypOf(state), phi: phi ? Int8Array.from(phi) : new Int8Array(6).fill(-1), miss: new Uint8Array(26), cost: 0, last: 0, rs: null, tail, base };
+    const mask0 = hypOf(state);
+    const h: LiveHyp = { mask: mask0, guess: Uint8Array.from(mask0, (m) => (single(m) ? bitIndex(m) : 0)), phi: phi ? Int8Array.from(phi) : new Int8Array(6).fill(-1), miss: new Uint8Array(26), cost: 0, last: 0, rs: null, tail, base };
     this.hyps = [h];
     this.anchor = { h, t };
   }
@@ -516,10 +539,13 @@ export class LiveState {
     const children: Child[] = [];
     const glob = { best: Infinity };
     const bestOf: number[] = [];
+    const tA = performance.now();
     for (const h of parents) bestOf.push(this.pick(h, fr, 0, o.maxK, moveBits, glob, children));
     // 深く照らす: 一番よい子でもこのフレームの読みと食い違う（3 手以上を 1 つの間に回した）
     let bestLast = Infinity;
     for (const c of children) if (c.cost <= glob.best + 1e-9) bestLast = Math.min(bestLast, c.last);
+    const tB = performance.now();
+    this.stats.ms.pick += tB - tA;
     if (bestLast >= o.deepAbove && o.deepK > o.maxK) {
       this.stats.deep++;
       const order = parents.map((h, i) => ({ h, c: bestOf[i] })).sort((a, b) => a.h.cost - b.h.cost).slice(0, o.deepHyps);
@@ -540,6 +566,9 @@ export class LiveState {
         }
       }
     }
+    const tC = performance.now();
+    this.stats.ms.deep += tC - tB;
+    this.stats.ms.maxDeep = Math.max(this.stats.ms.maxDeep, tC - tB);
     // 子を作る
     const made = new Map<string, LiveHyp>();
     const t0 = this.lastT;
@@ -568,7 +597,12 @@ export class LiveState {
     this.hyps = next;
     this.lastT = fr.t;
     this.remember(fr);
+    const tD = performance.now();
+    this.stats.ms.child += tD - tC;
     this.afterStep(fr);
+    const tE = performance.now();
+    this.stats.ms.recover += tE - tD;
+    this.stats.ms.maxRecover = Math.max(this.stats.ms.maxRecover, tE - tD);
     return true;
   }
 
@@ -639,6 +673,7 @@ export class LiveState {
             const ph = hp[g.face];
             if (ph < 0) continue;
             r = (g.cr - ph - amt[i * 6 + g.face] + 8) & 3;
+            last += g.prior[r];
           }
           for (let j = g.from; j < g.to; j++) {
             const y = fr.ys[j * 4 + r];
@@ -714,6 +749,19 @@ export class LiveState {
       for (const v of variants) out.push(...solveExact(k, clean([...base, ...v.eqs]), v.centers, this.options.deepMax + 1));
       if (out.length) return { seqs: out };
     }
+    // どの手数でも全部は満たせない（読み違いがある）: 式を 1 本外して、表の範囲（4 手まで）で
+    if (pieces < this.options.recoverMin + 2) return null;
+    for (let k = k0; k <= Math.min(4, k1); k++) {
+      const out: number[][] = [];
+      for (const v of variants) {
+        const eqs = clean([...base, ...v.eqs]);
+        for (let e = 0; e < eqs.length && out.length <= this.options.deepMax; e++) out.push(...solveExact(k, eqs.filter((_, q) => q !== e), v.centers, this.options.deepMax + 1));
+      }
+      if (out.length) {
+        const seen = new Set<string>();
+        return { seqs: out.filter((x) => !seen.has(x.join()) && !!seen.add(x.join())) };
+      }
+    }
     return null;
   }
 
@@ -742,6 +790,7 @@ export class LiveState {
       if (g.mode === 1) {
         if (phi[g.face] < 0) continue;
         r = (g.cr - phi[g.face] + 8) & 3;
+        last += g.prior[r];
       }
       for (let j = g.from; j < g.to; j++) {
         const y = fr.ys[j * 4 + r];
@@ -757,7 +806,8 @@ export class LiveState {
     const seq = ch.seq ?? (k ? Array.from(seqTable(k).moves.subarray(i * k, (i + 1) * k)) : []);
     const mask = h.mask.slice();
     const phi = ch.hp.slice();
-    applyMoves(mask, phi, seq);
+    const guess = h.guess.slice();
+    applyMoves(mask, phi, seq, guess);
     const miss = h.miss.slice();
     const rs = new Int8Array(fr.groups.length).fill(-1);
     let multi = false;
@@ -791,6 +841,7 @@ export class LiveState {
             mask[p] = 1 << y;
             multi = true;
           }
+          guess[p] = y;
           miss[p] = 0;
         } else miss[p] = Math.min(255, miss[p] + 1);
       }
@@ -809,7 +860,7 @@ export class LiveState {
       const b = t0 + ((fr.t - t0) * (j + 1)) / seq.length;
       tail = { move: seq[j], t0: a, t: b, orient: this.orient, inferred: false, prev: tail, len: (tail?.len ?? 0) + 1 };
     }
-    return { mask, phi, miss, cost: ch.cost, last: ch.last, rs, tail, base: h.base };
+    return { mask, guess, phi, miss, cost: ch.cost, last: ch.last, rs, tail, base: h.base };
   }
 
   // 一番よい仮説の置き方で、面の置き方を覚える（センターの見えない面の続きに使う）
@@ -823,7 +874,9 @@ export class LiveState {
       g.faces.forEach((f, k) => {
         const pl = placed[k];
         if (!pl || f.quad?.length !== 8 || f.held) return;
-        this.memory.faces[pl.face] = { t: fr.t, c: quadCenter(f.quad), size: quadSize(f.quad), ang: upAngle(f.quad, pl.r), ids: f.ids.filter((x) => x >= 0) };
+        const ang = upAngle(f.quad, pl.r);
+        const sure = g.mode === 0 && g.faces.length > 1 ? { t: fr.t, ang } : (this.memory.faces[pl.face]?.sure ?? null);
+        this.memory.faces[pl.face] = { t: fr.t, c: quadCenter(f.quad), size: quadSize(f.quad), ang, ids: f.ids.filter((x) => x >= 0), sure };
       });
     });
   }
@@ -838,7 +891,7 @@ export class LiveState {
       for (let f = 0; f < 6; f++) if (h.phi[f] !== phi[f]) phi[f] = -1;
     }
     propagate(mask);
-    return { mask, phi, miss: b.miss.slice(), cost: 0, last: b.last, rs: b.rs, tail: b.tail, base: b.base };
+    return { mask, guess: b.guess.slice(), phi, miss: b.miss.slice(), cost: 0, last: b.last, rs: b.rs, tail: b.tail, base: b.base };
   }
 
   private afterStep(fr: LiveFrame): void {
@@ -871,18 +924,20 @@ export class LiveState {
   private recover(fr: LiveFrame): boolean {
     const o = this.options;
     const a = this.anchor;
-    if (!a || fr.t - a.t > o.recoverMs || fr.t - this.lastRecover < 80) return false;
-    const read = this.sureReads(fr, this.hyps[0], [0]);
+    if (!a || fr.t - a.t > o.recoverMs || fr.t - this.lastRecover < o.recoverGapMs) return false;
+    const b = this.hyps[0];
+    // 式: このフレームの置き方の決まった読みと、決まらないピースのある仮説（見失った後）なら、その後に読んで決まったピース
+    const read = this.sureReads(fr, b, [0]);
+    if (!b.mask.every(single)) for (let p = 0; p < NUM_PIECES; p++) if (single(b.mask[p]) && !read.has(p)) read.set(p, bitIndex(b.mask[p]));
     if (read.size < o.recoverMin) return false;
     this.lastRecover = fr.t;
     this.stats.recoverTries++;
     const eqs: Eq[] = [];
     for (const [p, y] of read) eqs.push({ from: positionOf(clsOf(p), bitIndex(a.h.mask[p])), to: positionOf(clsOf(p), y), w: 1 });
     const centers: CenterEq[] = [];
-    for (const ce of fr.centers) {
-      const ph = a.h.phi[ce.f];
-      if (ph >= 0) centers.push({ f: ce.f, d: (ce.phi - ph + 4) & 3, w: 1 });
-    }
+    const phiNow = b.phi.slice();
+    for (const ce of fr.centers) phiNow[ce.f] = ce.phi;
+    for (let f = 0; f < 6; f++) if (a.h.phi[f] >= 0 && phiNow[f] >= 0) centers.push({ f, d: (phiNow[f] - a.h.phi[f] + 4) & 3, w: 1 });
     for (let k = 1; k <= o.recoverK; k++) {
       const sols = solveExact(k, eqs, centers, 8);
       if (!sols.length) continue;
@@ -899,17 +954,15 @@ export class LiveState {
   private applySeq(h: LiveHyp, seq: number[], t0: number, t1: number): LiveHyp {
     const mask = h.mask.slice();
     const phi = h.phi.slice();
+    const guess = h.guess.slice();
     let tail = h.tail;
-    const t1s = seqTable(1);
+    applyMoves(mask, phi, seq, guess);
     seq.forEach((m, j) => {
-      for (let p = 0; p < NUM_PIECES; p++) mask[p] = moveMask(t1s.img, (m * 2 + clsOf(p)) * 24, mask[p]);
-      const f = (m / 3) | 0;
-      if (phi[f] >= 0) phi[f] = (phi[f] + (m % 3) + 1) & 3;
       const a = t0 + ((t1 - t0) * j) / seq.length;
       const b = t0 + ((t1 - t0) * (j + 1)) / seq.length;
       tail = { move: m, t0: a, t: b, orient: this.orient, inferred: true, prev: tail, len: (tail?.len ?? 0) + 1 };
     });
-    return { mask, phi, miss: new Uint8Array(26), cost: 0, last: 0, rs: h.rs, tail, base: h.base };
+    return { mask, guess, phi, miss: new Uint8Array(26), cost: 0, last: 0, rs: h.rs, tail, base: h.base };
   }
 
   // 見失った: 一番よい仮説の、食い違い続けているピースを読みの位置にし、そこにいたはずのピースは「分からない」にする
@@ -930,11 +983,13 @@ export class LiveState {
         else if (mask[p] & taken) mask[p] = FULL24 & ~taken;
       }
     }
-    // 読めていないのに食い違いの続いていたピースも分からない
-    for (let p = 0; p < NUM_PIECES; p++) if (b.miss[p] >= 2 && !read.has(p)) mask[p] = FULL24;
+    // 読めていないピースは分からない（推測で埋めない。3D は前に出した位置のまま: display）
+    for (let p = 0; p < NUM_PIECES; p++) if (!read.has(p) && (this.options.lostAll || b.miss[p] >= 2)) mask[p] = FULL24;
     propagate(mask);
     this.stats.lost++;
-    const h: LiveHyp = { mask, phi, miss: new Uint8Array(26), cost: 0, last: 0, rs: b.rs, tail: b.tail, base: { n: ++this.nBase, at: b.tail?.len ?? 0, state: [], t: fr.t } };
+    const guess = b.guess.slice();
+    for (const [p, y] of read) guess[p] = y;
+    const h: LiveHyp = { mask, guess, phi, miss: new Uint8Array(26), cost: 0, last: 0, rs: b.rs, tail: b.tail, base: { n: ++this.nBase, at: b.tail?.len ?? 0, state: [], t: fr.t } };
     h.base!.state = Array.from(this.display(h));
     this.hyps = [h, ...this.hyps.map((x) => ({ ...x, cost: x.cost + 4 }))].slice(0, this.options.maxHyps);
     this.anchor = null;
@@ -956,7 +1011,8 @@ export class LiveState {
       const c = clsOf(p);
       const free = h.mask[p] & ~used[c];
       let pick = -1;
-      if (prev && single(prev[p]) && free & prev[p]) pick = bitIndex(prev[p]);
+      if (free & (1 << h.guess[p])) pick = h.guess[p];
+      else if (prev && single(prev[p]) && free & prev[p]) pick = bitIndex(prev[p]);
       if (pick < 0) {
         const cand = free || (FULL24 & ~used[c]);
         if (cand) pick = bitIndex(cand & -cand);
