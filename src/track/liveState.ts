@@ -32,12 +32,14 @@ export interface LiveStateOptions {
   deepMax: number; // 深く照らした子がこれより多ければ（読みが少なくて決まらない）、足さずに次の読みを待つ
   keepBits: number; // 一番よい仮説からこれより悪い仮説は落とす
   childBits: number; // 1 つの仮説の子のうち、一番よい子からこれより悪いものは作らない
-  maxHyps: number; // 仮説の上限（超えたら、ピースごとの取り得る位置にまとめる）
+  maxHyps: number; // 仮説の上限（超えたら点数の悪い方から落とす）
+  tieBits: number; // 一番よい仮説からこれ以内の仮説だけで上限を超えたら、ピースごとの取り得る位置にまとめる
   agreeBits: number; // 3D で回して見せてよい手: 一番よい仮説からこれ以内の仮説がどれも同じ手順のとき
   touch: number; // 面どうしの接し方（table.ts の touch）
   minDt: number; // 手数のコストの Δt の下限（ms）
   contMs: number; // センターの見えない面を、これ以内に置いた同じ面の続きとして置く
   contBits: number; // そのとき、続きと違う置き方のコスト
+  contCap: number; // そのまとまりの食い違いの上限（面の取り違え: 手を足す理由にはしない）
   held: boolean; // 1 列・1 枚の面（外枠が推定）を、同じフレームの置き方の決まった面から分かるカメラの姿勢で置く
   // 見失ったところからの復帰: 錨（食い違いのない最後の仮説）から、読めたピースが全部合う手順を表で探す
   recoverK: number; // 探す手数の上限（5 以上は前後から突き合わせる）
@@ -49,18 +51,20 @@ export interface LiveStateOptions {
 export const DEFAULT_LIVE_STATE: LiveStateOptions = {
   rate: 5,
   maxK: 2,
-  deepK: 3,
+  deepK: 6,
   deepHyps: 4,
   deepAbove: 6,
   deepMax: 24,
   keepBits: 14,
   childBits: 6,
   maxHyps: 48,
+  tieBits: 1,
   agreeBits: 6,
   touch: 0.45,
   minDt: 16,
   contMs: 300,
   contBits: 4.5,
+  contCap: 5,
   held: true,
   recoverK: 6,
   recoverMin: 6,
@@ -78,8 +82,10 @@ const MISS_INC = W.map((row) => {
   for (let m = 1; m < 256; m++) out[m] = m === 1 ? row[lenBucket(1)] : Math.max(0, row[lenBucket(m)] - row[lenBucket(m - 1)]);
   return out;
 });
-const NSEQ = [1, 18, 243, 3240, 43254];
+// 冗長でない k 手の手順の数（5 手からは 1 手ごとにほぼ 13.35 倍）
+const NSEQ = [1, 18, 243, 3240, 43254, 43254 * 13.35, 43254 * 13.35 ** 2, 43254 * 13.35 ** 3, 43254 * 13.35 ** 4];
 const LOG2_NSEQ = NSEQ.map((n) => Math.log2(n));
+const MAX_DEEP = 8;
 const FULL24 = (1 << 24) - 1;
 // 種類 c の番号 b の位置が占める「場所」（同じキュービーの向き違い）のビット
 const PLACE = [0, 1].map((c) => {
@@ -398,6 +404,17 @@ function moveMask(img: Uint8Array, base: number, m: number): number {
   return out;
 }
 
+// 手順を当てる（ピースの取り得る位置・センターの向き。その場で書き換える）
+const T1 = () => seqTable(1);
+function applyMoves(mask: Uint32Array, phi: Int8Array, seq: readonly number[]): void {
+  const tb = T1();
+  for (const m of seq) {
+    for (let p = 0; p < NUM_PIECES; p++) mask[p] = moveMask(tb.img, (m * 2 + clsOf(p)) * 24, mask[p]);
+    const f = (m / 3) | 0;
+    if (phi[f] >= 0) phi[f] = (phi[f] + (m % 3) + 1) & 3;
+  }
+}
+
 // 決まったピースの場所を、同じ種類のほかのピースの取り得る位置から除く（同じ場所に 2 つはない）
 function propagate(mask: Uint32Array): void {
   for (let round = 0; round < 4; round++) {
@@ -435,7 +452,8 @@ interface Child {
   h: LiveHyp;
   hp: Int8Array;
   k: number;
-  i: number;
+  i: number; // 表の手順の番号（-1 = seq）
+  seq?: number[];
   cost: number;
   last: number;
 }
@@ -489,11 +507,11 @@ export class LiveState {
     // k 手の手順 1 つのコスト: −log2(e^-λ λ^k / k!) + log2(N_k)。0 手を 0 にそろえる（どの仮説にも同じだけ足すもの）
     const moveBits: number[] = [];
     let logFact = 0;
-    for (let k = 0; k <= 4; k++) {
+    for (let k = 0; k <= MAX_DEEP; k++) {
       if (k) logFact += Math.log2(k);
       moveBits.push((lam - k * Math.log(lam)) / Math.LN2 + logFact + LOG2_NSEQ[k]);
     }
-    for (let k = 4; k >= 0; k--) moveBits[k] -= moveBits[0];
+    for (let k = MAX_DEEP; k >= 0; k--) moveBits[k] -= moveBits[0];
     const parents = this.hyps;
     const children: Child[] = [];
     const glob = { best: Infinity };
@@ -505,14 +523,22 @@ export class LiveState {
     if (bestLast >= o.deepAbove && o.deepK > o.maxK) {
       this.stats.deep++;
       const order = parents.map((h, i) => ({ h, c: bestOf[i] })).sort((a, b) => a.h.cost - b.h.cost).slice(0, o.deepHyps);
-      const deep: Child[] = [];
-      const g2 = { best: glob.best };
-      for (const { h } of order) this.pick(h, fr, o.maxK + 1, o.deepK, moveBits, g2, deep);
-      // 読みが少なくて深い手順が決まらない: 足さずに次の読みを待つ（食い違いのまま）
-      if (deep.length <= o.deepMax) {
-        children.push(...deep);
-        glob.best = g2.best;
-      } else this.stats.deepSkipped++;
+      for (const { h } of order) {
+        const hp = this.learnPhi(h, fr);
+        const found = this.exact(h, hp, fr, o.maxK + 1, o.deepK);
+        // 読みが少なくて深い手順が決まらない: 足さずに次の読みを待つ（食い違いのまま）
+        if (!found || found.seqs.length > o.deepMax) {
+          if (found) this.stats.deepSkipped++;
+          continue;
+        }
+        for (const seq of found.seqs) {
+          const last = this.scoreSeq(h, hp, fr, seq);
+          const cost = h.cost + moveBits[seq.length] + last;
+          if (cost > glob.best + o.keepBits) continue;
+          children.push({ h, hp, k: seq.length, i: -1, seq, cost, last });
+          if (cost < glob.best) glob.best = cost;
+        }
+      }
     }
     // 子を作る
     const made = new Map<string, LiveHyp>();
@@ -530,9 +556,13 @@ export class LiveState {
     for (const h of next) h.cost -= off;
     next = next.filter((h) => h.cost <= o.keepBits);
     if (next.length > o.maxHyps) {
-      // 膨らんだ: ピースごとの取り得る位置の和にまとめる（手順は一番よい仮説のもの）
-      this.stats.merged++;
-      next = [this.mergeAll(next)];
+      // 膨らんだ: 一番よい仮説とほとんど同じ点数の仮説だけで上限を超えるなら（読みで決まらない）、ピースごとの取り得る位置の和に
+      // まとめる（手順は一番よい仮説のもの）。そうでなければ点数の悪い方から落とす
+      const ties = next.filter((h) => h.cost <= o.tieBits).length;
+      if (ties > o.maxHyps) {
+        this.stats.merged++;
+        next = [this.mergeAll(next.slice(0, ties))];
+      } else next = next.slice(0, o.maxHyps);
     }
     this.stats.maxHyps = Math.max(this.stats.maxHyps, next.length);
     this.hyps = next;
@@ -601,7 +631,7 @@ export class LiveState {
                 if (y < 0 || !((m >>> inv[base + y]) & 1)) v[r] += inc[j];
               }
             }
-            last += Math.min(v[0], v[1], v[2], v[3]);
+            last += Math.min(v[0], v[1], v[2], v[3], o.contCap);
             continue;
           }
           let r = 0;
@@ -645,13 +675,89 @@ export class LiveState {
     return localBest;
   }
 
+  // 読みの式を全部満たす k0〜k1 手の手順（表の AND・5 手からは前後の突き合わせ）。いちばん短いものだけ。センター 1 つの面は、
+  // 置き方 r ごとに「その面を回した量 ≡ 読んだ向き − r − φ」を足した式の組。センターのない面（続きの置き方）は使わない
+  private exact(h: LiveHyp, hp: Int8Array, fr: LiveFrame, k0: number, k1: number): { seqs: number[][] } | null {
+    const base: (Eq & { p: number })[] = [];
+    const seen = new Map<number, number>();
+    const bad = new Set<number>();
+    const addEq = (list: (Eq & { p: number })[], p: number, y: number) => {
+      const m = h.mask[p];
+      if (!single(m) || y < 0) return;
+      const prev = seen.get(p);
+      if (prev !== undefined && prev !== y) bad.add(p);
+      seen.set(p, y);
+      list.push({ from: positionOf(clsOf(p), bitIndex(m)), to: positionOf(clsOf(p), y), w: 1, p });
+    };
+    const centers: CenterEq[] = [];
+    for (const g of fr.groups) if (g.mode === 0) for (let j = g.from; j < g.to; j++) addEq(base, fr.piece[j], fr.ys[j * 4]);
+    for (const ce of fr.centers) if (hp[ce.f] >= 0) centers.push({ f: ce.f, d: (ce.phi - hp[ce.f] + 4) & 3, w: 1 });
+    const chain = fr.groups.filter((g) => g.mode === 1 && hp[g.face] >= 0).sort((a, b) => b.to - b.from - (a.to - a.from))[0];
+    const variants: { eqs: (Eq & { p: number })[]; centers: CenterEq[] }[] = [];
+    if (chain)
+      for (let r = 0; r < 4; r++) {
+        const eqs: (Eq & { p: number })[] = [];
+        for (let j = chain.from; j < chain.to; j++) addEq(eqs, fr.piece[j], fr.ys[j * 4 + r]);
+        variants.push({ eqs, centers: [...centers, { f: chain.face, d: (chain.cr - r - hp[chain.face] + 8) & 3, w: 1 }] });
+      }
+    else variants.push({ eqs: [], centers });
+    // 同じピースの読みが食い違えば、そのピースは使わない。同じ式は 1 本に
+    const clean = (list: (Eq & { p: number })[]): Eq[] => {
+      const out = new Map<number, Eq>();
+      for (const e of list) if (!bad.has(e.p)) out.set(e.p, e);
+      return [...out.values()];
+    };
+    const pieces = new Set([...seen.keys()].filter((p) => !bad.has(p))).size;
+    if (pieces < this.options.recoverMin) return null;
+    for (let k = k0; k <= k1; k++) {
+      const out: number[][] = [];
+      for (const v of variants) out.push(...solveExact(k, clean([...base, ...v.eqs]), v.centers, this.options.deepMax + 1));
+      if (out.length) return { seqs: out };
+    }
+    return null;
+  }
+
+  // 手順 seq を当てたときの、このフレームの読みとの食い違い（ビット）
+  private scoreSeq(h: LiveHyp, hp: Int8Array, fr: LiveFrame, seq: number[]): number {
+    const mask = h.mask.slice();
+    const phi = hp.slice();
+    applyMoves(mask, phi, seq);
+    let last = 0;
+    const inc = (j: number) => MISS_INC[fr.kind[j]][Math.min(255, h.miss[fr.piece[j]] + 1)];
+    for (const g of fr.groups) {
+      if (g.mode === 2) {
+        let best = this.options.contCap;
+        for (let r = 0; r < 4; r++) {
+          let v = g.prior[r];
+          for (let j = g.from; j < g.to; j++) {
+            const y = fr.ys[j * 4 + r];
+            if (y < 0 || !((mask[fr.piece[j]] >>> y) & 1)) v += inc(j);
+          }
+          best = Math.min(best, v);
+        }
+        last += best;
+        continue;
+      }
+      let r = 0;
+      if (g.mode === 1) {
+        if (phi[g.face] < 0) continue;
+        r = (g.cr - phi[g.face] + 8) & 3;
+      }
+      for (let j = g.from; j < g.to; j++) {
+        const y = fr.ys[j * 4 + r];
+        if (y < 0 || !((mask[fr.piece[j]] >>> y) & 1)) last += inc(j);
+      }
+    }
+    for (const ce of fr.centers) if (phi[ce.f] >= 0 && phi[ce.f] !== ce.phi) last += MISS_INC[KIND_CENTER][Math.min(255, h.miss[20 + ce.f] + 1)];
+    return last;
+  }
+
   private child(ch: Child, fr: LiveFrame, t0: number): LiveHyp {
     const { h, k, i } = ch;
-    const tb = seqTable(k);
-    const mask = new Uint32Array(NUM_PIECES);
-    for (let p = 0; p < NUM_PIECES; p++) mask[p] = moveMask(tb.img, (i * 2 + clsOf(p)) * 24, h.mask[p]);
-    const phi = new Int8Array(6);
-    for (let f = 0; f < 6; f++) phi[f] = ch.hp[f] < 0 ? -1 : (ch.hp[f] + tb.amount[i * 6 + f]) & 3;
+    const seq = ch.seq ?? (k ? Array.from(seqTable(k).moves.subarray(i * k, (i + 1) * k)) : []);
+    const mask = h.mask.slice();
+    const phi = ch.hp.slice();
+    applyMoves(mask, phi, seq);
     const miss = h.miss.slice();
     const rs = new Int8Array(fr.groups.length).fill(-1);
     let multi = false;
@@ -661,18 +767,20 @@ export class LiveState {
         if (phi[g.face] < 0) return;
         r = (g.cr - phi[g.face] + 8) & 3;
       } else if (g.mode === 2) {
+        // いちばん合う置き方。どれでも合わない（面の取り違え）なら使わない
         let best = Infinity;
         for (let rr = 0; rr < 4; rr++) {
           let v = g.prior[rr];
           for (let j = g.from; j < g.to; j++) {
             const y = fr.ys[j * 4 + rr];
-            if (y < 0 || !((mask[fr.piece[j]] >>> y) & 1)) v += 1;
+            if (y < 0 || !((mask[fr.piece[j]] >>> y) & 1)) v += MISS_INC[fr.kind[j]][1];
           }
           if (v < best) {
             best = v;
             r = rr;
           }
         }
+        if (best >= this.options.contCap) return;
       }
       rs[gi] = r;
       for (let j = g.from; j < g.to; j++) {
@@ -696,10 +804,10 @@ export class LiveState {
     }
     if (multi) propagate(mask);
     let tail = h.tail;
-    for (let j = 0; j < k; j++) {
-      const a = t0 + ((fr.t - t0) * j) / k;
-      const b = t0 + ((fr.t - t0) * (j + 1)) / k;
-      tail = { move: tb.moves[i * k + j], t0: a, t: b, orient: this.orient, inferred: false, prev: tail, len: (tail?.len ?? 0) + 1 };
+    for (let j = 0; j < seq.length; j++) {
+      const a = t0 + ((fr.t - t0) * j) / seq.length;
+      const b = t0 + ((fr.t - t0) * (j + 1)) / seq.length;
+      tail = { move: seq[j], t0: a, t: b, orient: this.orient, inferred: false, prev: tail, len: (tail?.len ?? 0) + 1 };
     }
     return { mask, phi, miss, cost: ch.cost, last: ch.last, rs, tail, base: h.base };
   }
@@ -740,7 +848,8 @@ export class LiveState {
     if (b.last < 1 && fr.pieces >= 4 && b.mask.every(single)) this.anchor = { h: b, t: fr.t };
     // 一番よい仮説でも食い違いが続く: 錨から読めたピースが全部合う手順を探す。見つからなければ、読めたピースを読みの位置にする
     const bad = b.miss.reduce((n, m, k) => n + (m >= 2 && k < 20 ? 1 : 0), 0);
-    if (b.last >= o.deepAbove && bad >= 1 && this.recover(fr)) return;
+    // 決まらないピースのある仮説（まとめた・見失った）も、錨からつなぎ直せれば決まった仮説に戻す
+    if (((b.last >= o.deepAbove && bad >= 1) || !b.mask.every(single)) && this.recover(fr)) return;
     let missBits = 0;
     for (let k = 0; k < 26; k++) if (b.miss[k] >= 2) missBits += W[k < 20 ? KIND_DIRECT : KIND_CENTER][lenBucket(b.miss[k])];
     if (missBits >= o.lostBits) this.teleport(fr);
