@@ -85,7 +85,7 @@ describe("ライブの状態の推定", () => {
     expect(last).not.toBeNull();
     expect(last!.moves.map((m) => MOVE_NAMES[m.move]).join(" ")).toBe("R U R'");
     expect(statesEqual(Uint8Array.from(last!.state), applyMoves(solvedState(), "R U R'"))).toBe(true);
-    expect(last!.agreed).toBeDefined();
+    expect(last!.agreed).toBeUndefined(); // 既定は候補がそろうのを待たない（agreeWait）
     engine.setOptions({ pieces: false });
     expect(engine.live).toBeNull();
     expect(engine.decoder.bestMoves().map((m) => MOVE_NAMES[m.move]).join(" ")).toBe("R U R'");

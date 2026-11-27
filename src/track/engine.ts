@@ -321,7 +321,7 @@ export class TrackerEngine {
       const b = performance.now();
       // 手順・状態が変わらなければ、100ms ごとにだけ出す（TrackUpdate づくり（手の時刻）がフレームの時間の大半だった）
       const lb = this.live.best();
-      const key = `${lb.tail?.len ?? 0}:${lb.tail?.move ?? -1}:${lb.tail?.t ?? 0}:${lb.base?.n ?? 0}:${this.live.known(lb) ? 1 : 0}:${this.live.agreed()}`;
+      const key = `${lb.tail?.len ?? 0}:${lb.tail?.move ?? -1}:${lb.tail?.t ?? 0}:${lb.base?.n ?? 0}:${this.live.known(lb) ? 1 : 0}:${this.live.options.agreeWait ? this.live.agreed() : 0}`;
       if (key === this.liveKey && frame.t - this.liveEmitT < LIVE_EMIT_MS) return null;
       this.liveKey = key;
       this.liveEmitT = frame.t;
@@ -630,7 +630,7 @@ export class TrackerEngine {
       moves,
       timings: moves.map((m) => this.timing(m)),
       confirmed: live.agreed(),
-      agreed: known ? live.agreed() : 0,
+      ...(live.options.agreeWait ? { agreed: known ? live.agreed() : 0 } : {}),
       state: Array.from(shown),
       orient: live.orient,
       solved: live.solved(),

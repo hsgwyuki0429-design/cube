@@ -71,7 +71,7 @@ function matches(start: Uint8Array, res: RefineResult, t: number, lag: number, s
 
 // 回して見せた手を本当の手（精密解析の手）に結びつける: 同じ面で、本当の手の回し始め 300ms 前〜回し終わり 1 秒後に回し始めたもの。
 // 本当の手 1 つに結びつけるのは 1 つだけ。返すのは結びつかなかった手と、回して見せた本当の手の数
-function matchTurns(turns: SimTurn[], res: RefineResult, s0: number, s1: number, exact = false): { fake: SimTurn[]; real: number; truth: number } {
+export function matchTurns(turns: SimTurn[], res: RefineResult, s0: number, s1: number, exact = false): { fake: SimTurn[]; real: number; truth: number } {
   const truth = res.moves.filter((m) => m.end >= s0 && m.start <= s1);
   const used = new Set<number>();
   const fake: SimTurn[] = [];

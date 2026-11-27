@@ -35,6 +35,9 @@ export interface LiveStateOptions {
   maxHyps: number; // 仮説の上限（超えたら点数の悪い方から落とす）
   tieBits: number; // 一番よい仮説からこれ以内の仮説だけで上限を超えたら、ピースごとの取り得る位置にまとめる
   agreeBits: number; // 3D で回して見せてよい手: 一番よい仮説からこれ以内の仮説がどれも同じ手順のとき
+  // 3D で、候補の状態がどれも同じ手順になるまで手を回して見せるのを待つ（TrackUpdate.agreed を出す。既定は待たない: 3D の一致が下がり、
+  // 回して見せる本当の手が減った。docs/history.md の「ソルブ中のライブの状態を表の AND で推定する」）
+  agreeWait: boolean;
   touch: number; // 面どうしの接し方（table.ts の touch）
   minDt: number; // 手数のコストの Δt の下限（ms）
   contMs: number; // センターの見えない面を、これ以内に置いた同じ面の続きとして置く
@@ -67,6 +70,7 @@ export const DEFAULT_LIVE_STATE: LiveStateOptions = {
   maxHyps: 48,
   tieBits: 1,
   agreeBits: 6,
+  agreeWait: false,
   touch: 0.45,
   minDt: 16,
   contMs: 300,
