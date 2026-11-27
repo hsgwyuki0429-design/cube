@@ -135,6 +135,7 @@ it("書き出したライブの読みの追跡", () => {
     const everKey = new Set<string>();
     const ever: { move: number; t: number }[] = [];
     const frameMs: number[] = [];
+    let lastU: ReturnType<typeof engine.push> = null;
     // 向きを追う部品だけの時間（同じフレームを別の OrientTracker に通す）
     const lone = new OrientTracker();
     for (let i = 0; i < readings.length; i++) {
@@ -189,17 +190,20 @@ it("書き出したライブの読みの追跡", () => {
         }
         lastLen = u.moves.length;
       }
+      if (u) lastU = u;
       if (anim) {
         for (const a of shows) {
           a.sim.advance(r.t);
-          if (u)
+          const uu = u ?? (a.show.held ? lastU : null);
+          if (uu)
             a.show.apply(a.sim, {
               epoch: 1,
               setupMoves: [],
-              moves: u.moves.map((m) => m.move),
-              moveSeen: a.name === "前" ? u.moves.map(() => true) : seenMoves(u.moves, u.timings, u.agreed),
-              base: u.base ?? { n: 0, at: 0, state: st0 },
-              view: u.view,
+              moves: uu.moves.map((m) => m.move),
+              moveSeen: a.name === "前" ? uu.moves.map(() => true) : seenMoves(uu.moves, uu.timings),
+              ...(a.name === "後" && uu.agreed !== undefined ? { agreed: uu.agreed, now: r.t } : {}),
+              base: uu.base ?? { n: 0, at: 0, state: st0 },
+              view: uu.view,
             });
           a.sim.advance(r.t);
         }

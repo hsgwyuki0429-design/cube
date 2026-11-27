@@ -12,7 +12,7 @@ import { controller } from "../app/controller";
 import { ORIENTATIONS, mul, type Mat3 } from "../cube/model";
 import { CubeScene, approach, matToQuat } from "./cubeScene";
 import { DEFAULT_GYRO, GyroFilter } from "./gyro";
-import { LiveShow } from "./liveShow";
+import { AGREE_WAIT_MS, LiveShow } from "./liveShow";
 
 export interface LiveCube3DProps {
   epoch: number;
@@ -24,6 +24,8 @@ export interface LiveCube3DProps {
   mirror: boolean; // 鏡像で描く（カメラのプレビューが鏡像のとき: インカメラ）
   base?: { n: number; at: number; state: number[] } | null;
   seen?: { n: number; state: number[] } | null;
+  // ソルブ中のライブの状態の推定（TrackUpdate.agreed）: 候補の状態がどれも同じ手順で説明できる手の数。それより後の手は少し待って確かめる
+  agreed?: number;
 }
 
 const NO_POSE_MS = 700; // これより姿勢が届かなければ持ち方の向きに戻す
@@ -116,12 +118,19 @@ export function LiveCube3D(props: LiveCube3DProps) {
   useEffect(() => scene.current?.setEye(props.follow), [props.follow]);
   useEffect(() => scene.current?.invalidate(), [props.orient, props.follow]);
 
+  const holdTimer = useRef(0);
   const apply = () => {
     const s = scene.current;
-    if (s) show.current.apply(s, { epoch: props.epoch, setupMoves: props.setupMoves, moves: props.moves, moveSeen: props.moveSeen, base: props.base, view: props.seen });
+    const p = propsRef.current;
+    if (!s) return;
+    show.current.apply(s, { epoch: p.epoch, setupMoves: p.setupMoves, moves: p.moves, moveSeen: p.moveSeen, base: p.base, view: p.seen, ...(p.agreed !== undefined ? { agreed: p.agreed, now: performance.now() } : {}) });
+    // 待っている手は、待ち終わったときにもう一度（新しい追跡の更新が来なくても出す）
+    clearTimeout(holdTimer.current);
+    if (show.current.held) holdTimer.current = window.setTimeout(apply, AGREE_WAIT_MS + 10);
   };
 
-  useEffect(apply, [props.epoch, props.setupMoves, props.moves, props.moveSeen, props.base?.n, props.seen?.n]);
+  useEffect(apply, [props.epoch, props.setupMoves, props.moves, props.moveSeen, props.base?.n, props.seen?.n, props.agreed]);
+  useEffect(() => () => clearTimeout(holdTimer.current), []);
 
   return (
     <div class={`cube3d live-cube${props.mirror && props.follow ? " mirrored" : ""}`} ref={host}>
