@@ -40,6 +40,7 @@ export interface LiveStateOptions {
   contMs: number; // センターの見えない面を、これ以内に置いた同じ面の続きとして置く
   contBits: number; // そのとき、続きと違う置き方のコスト
   chainBits: number; // センター 1 つの面で、仮説のセンターの向きから決まる置き方が、画像の上の向きの続き（前のフレーム）と違うときのコスト
+  chainRefresh: boolean; // センター 1 つの面の続きを、仮説の置き方が続きと同じだったフレームでも延ばす
   chainMs: number; // その続きに使う、前に置いた同じ面の古さの上限
   contCap: number; // そのまとまりの食い違いの上限（面の取り違え: 手を足す理由にはしない）
   held: boolean; // 1 列・1 枚の面（外枠が推定）を、同じフレームの置き方の決まった面から分かるカメラの姿勢で置く
@@ -73,6 +74,7 @@ export const DEFAULT_LIVE_STATE: LiveStateOptions = {
   contCap: 5,
   chainBits: 4.5,
   chainMs: 500,
+  chainRefresh: false,
   held: true,
   recoverK: 8,
   recoverMin: 6,
@@ -895,7 +897,9 @@ export class LiveState {
         const pl = placed[k];
         if (!pl || f.quad?.length !== 8 || f.held) return;
         const ang = upAngle(f.quad, pl.r);
-        const sure = g.mode === 0 && g.faces.length > 1 ? { t: fr.t, ang } : (this.memory.faces[pl.face]?.sure ?? null);
+        // センター 1 つの面は、仮説の置き方が続きと同じ（キューブ全体は回っていない）ときだけ続きを延ばす
+        const keep = (g.mode === 0 && g.faces.length > 1) || (this.options.chainRefresh && g.mode === 1 && k === 0 && g.prior.some((x) => x > 0) && g.prior[r] === 0);
+        const sure = keep ? { t: fr.t, ang } : (this.memory.faces[pl.face]?.sure ?? null);
         this.memory.faces[pl.face] = { t: fr.t, c: quadCenter(f.quad), size: quadSize(f.quad), ang, ids: f.ids.filter((x) => x >= 0), sure };
       });
     });
