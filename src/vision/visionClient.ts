@@ -58,6 +58,7 @@ export class VisionClient {
   private helperInflight = 0;
   private nextSeq = 1;
   helperFrames = 0; // 補助の Worker が認識したフレームの数（調査用）
+  videoFrames = false; // カメラのフレームを VideoFrame のまま送る（?solveload=vframe）
   // 補助の Worker に送ってよいか（録画の圧縮が詰まっている間は休ませる: 精密解析の録画の方が大事。controller が決める）
   useHelper = true;
   private listeners = new Set<(m: FrameMessage) => void>();
@@ -191,9 +192,10 @@ export class VisionClient {
       const s = Math.min(1, this.workWidth / Math.max(video.videoWidth, video.videoHeight));
       const w = Math.round(video.videoWidth * s);
       const h = Math.round(video.videoHeight * s);
-      let bitmap: ImageBitmap;
+      let bitmap: ImageBitmap | VideoFrame;
       try {
-        bitmap = await createImageBitmap(video, { resizeWidth: w, resizeHeight: h, resizeQuality: "low" });
+        // ?solveload=vframe: カメラのフレームをそのまま渡し、縮めるのは Worker で（メインスレッドの 1 枚ごとの時間を減らす）
+        bitmap = this.videoFrames && typeof VideoFrame !== "undefined" ? new VideoFrame(video, { timestamp: Math.round(t * 1000) }) : await createImageBitmap(video, { resizeWidth: w, resizeHeight: h, resizeQuality: "low" });
       } catch {
         // resize オプション非対応のブラウザ向け
         if (!this.fallbackCanvas) this.fallbackCanvas = typeof OffscreenCanvas !== "undefined" ? new OffscreenCanvas(w, h) : document.createElement("canvas");
@@ -203,8 +205,8 @@ export class VisionClient {
         ctx.drawImage(video, 0, 0, w, h);
         bitmap = await createImageBitmap(this.fallbackCanvas);
       }
-      if (toHelper && this.helper) this.helper.postMessage({ type: "recognize", id: this.nextId++, t, bitmap, seq } satisfies ToWorker, [bitmap]);
-      else this.post({ type: "frame", id: this.nextId++, t, bitmap, seq }, [bitmap]);
+      if (toHelper && this.helper) this.helper.postMessage({ type: "recognize", id: this.nextId++, t, bitmap, seq, w, h } satisfies ToWorker, [bitmap]);
+      else this.post({ type: "frame", id: this.nextId++, t, bitmap, seq, w, h }, [bitmap]);
       return true;
     } catch (e) {
       if (toHelper) {

@@ -16,9 +16,10 @@ export type ToWorker =
   | { type: "init"; opencv?: boolean } // opencv: false なら OpenCV を読み込まない（専用の検出だけを使う。本体のステッカー）
   | { type: "config"; config: Partial<PipelineConfig> }
   // seq: 送った順の通し番号（認識を Worker 2 つで交互に処理するとき、追跡はこの順に入れる）
-  | { type: "frame"; id: number; t: number; bitmap: ImageBitmap; seq?: number }
+  // bitmap は VideoFrame のこともある（?solveload=vframe: 縮めるのを Worker で。w・h = 縮めた大きさ）
+  | { type: "frame"; id: number; t: number; bitmap: ImageBitmap | VideoFrame; seq?: number; w?: number; h?: number }
   // 補助の Worker: 認識だけして結果を返す（追跡はしない）
-  | { type: "recognize"; id: number; t: number; bitmap: ImageBitmap; seq: number }
+  | { type: "recognize"; id: number; t: number; bitmap: ImageBitmap | VideoFrame; seq: number; w?: number; h?: number }
   // 主の Worker へ: 補助の Worker の認識結果（seq の順に追跡に入れる）・補助が処理しなかったフレーム
   | { type: "foreign"; id: number; seq: number; t: number; width: number; height: number; result: RecognizedFrame; procMs: number }
   | { type: "foreign-skip"; seq: number }

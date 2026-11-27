@@ -187,7 +187,9 @@ const newRefiner = (input: RefineInput) => new Refiner(needCv(), { ...input, pip
 interface QueuedFrame {
   id: number;
   t: number;
-  bitmap: ImageBitmap;
+  bitmap: ImageBitmap | VideoFrame;
+  w?: number; // 縮めた大きさ（VideoFrame のとき: Worker で縮める）
+  h?: number;
   motion?: number;
   seq?: number; // 送った順の通し番号（下の「認識を Worker 2 つで」）
   helper?: boolean; // 補助の Worker として受けた（認識だけして返す）
@@ -222,7 +224,7 @@ function runFrames(): void {
 }
 
 // 前に届いたフレームからの動き（縮小画像で変わった点の数）
-function motionOf(bitmap: ImageBitmap): number {
+function motionOf(bitmap: ImageBitmap | VideoFrame): number {
   if (!thumbCtx) thumbCtx = new OffscreenCanvas(THUMB_W, THUMB_H).getContext("2d", { willReadFrequently: true });
   if (!thumbCtx) return 0;
   thumbCtx.drawImage(bitmap, 0, 0, THUMB_W, THUMB_H);
@@ -316,10 +318,10 @@ function drain(): void {
 function processLiveFrame(msg: QueuedFrame): void {
   const t0 = performance.now();
   const { bitmap } = msg;
-  const w = bitmap.width;
-  const h = bitmap.height;
+  const w = msg.w ?? (bitmap as ImageBitmap).width;
+  const h = msg.h ?? (bitmap as ImageBitmap).height;
   if (!ctx || ctx.canvas.width !== w || ctx.canvas.height !== h) ctx = new OffscreenCanvas(w, h).getContext("2d", { willReadFrequently: true });
-  ctx!.drawImage(bitmap, 0, 0);
+  ctx!.drawImage(bitmap, 0, 0, w, h);
   bitmap.close();
   const img = ctx!.getImageData(0, 0, w, h);
   const result: FrameResult = cv || !wantCv ? processFrame(cv as CV, img, msg.t, focus?.length ? { ...config, focus } : config, memory) : { faces: [], quads: [] };
@@ -627,12 +629,12 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
         return;
       }
       case "frame": {
-        queue.push({ id: msg.id, t: msg.t, bitmap: msg.bitmap, seq: msg.seq });
+        queue.push({ id: msg.id, t: msg.t, bitmap: msg.bitmap, seq: msg.seq, w: msg.w, h: msg.h });
         scheduleFrames();
         return;
       }
       case "recognize": {
-        queue.push({ id: msg.id, t: msg.t, bitmap: msg.bitmap, seq: msg.seq, helper: true });
+        queue.push({ id: msg.id, t: msg.t, bitmap: msg.bitmap, seq: msg.seq, helper: true, w: msg.w, h: msg.h });
         scheduleFrames();
         return;
       }

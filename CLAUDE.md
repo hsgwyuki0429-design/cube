@@ -82,6 +82,10 @@ src/vision Vision             ← 映像 → マーカー → 見えている面
   URL の `?refinepool=1` で試せる（既定で使わない理由は `docs/history.md`）
 - **cubing.js のソルバーはブラウザでは必ず `solver.worker.ts` 経由**（`src/cube/solver.ts`）。メインのバンドルから使うと、cubing.js の Worker が
   アプリ本体のチャンクを読み込んで落ちる
+- **ソルブ中の重さ**（ライブ 2.5）: ソルブ中は精密解析の Worker が 1 コアを使い切り（実機で止めた時 6〜12 秒遅れ）、カメラのフレームが本体に
+  届く数が 60 → 42〜52fps に落ちる。1 秒ごとの処理の様子（`src/app/perfLog.ts`: カメラ・画面の更新・メインスレッドの時間・各 Worker の忙しさ・
+  録画・精密解析の遅れ）を書き出し（ライブの記録・録画）に入れる。直し方の候補は URL の `?solveload=`（`pause`・`duty50`・`helperoff`・`lazy`・
+  `vframe`。既定は今のまま。実機で比べてから決める: `docs/history.md` の「ライブ 2.5」）
 - **`solver.worker.ts` の受け口は、名前（`cubevision-solver`）で自分の Worker の中だけ、自分の形のメッセージ（数字の id と決まった種類）だけを
   受けること。** cubing.js の探索の Worker も同じまとまりを読み込むので、そうしないと Worker が際限なく増える（iPhone でタブごと落ちた
   本当の原因だった）。Worker の数とメモリは偽のカメラ（Chromium の `--use-file-for-fake-video-capture`）で測る
@@ -93,9 +97,14 @@ src/vision Vision             ← 映像 → マーカー → 見えている面
 - `src/synthetic/`（three.js の合成カメラ）でアプリ全体をヘッドレス Chromium で動かす（`npm run e2e`）
 - 重い計測は `tests/debug/*.debug.test.ts`（`npx vitest run -c vitest.debug.config.ts …`）。使い方は各ファイルの先頭
 - 実機のライブの記録: 設定画面の「ライブの記録を書き出す」（`src/track/liveLog.ts`）→ 手元で `LIVE_LOG=ファイル` で
-  `tests/debug/liveLog.debug.test.ts` に通し直す（追跡は読みだけで決まる）。`LIVE_LOG_PIECES`（`off`・`'{}'`）で推定のあり・なしを比べる。
+  `tests/debug/liveLog.debug.test.ts` に通し直す（追跡は読みだけで決まる）。古い読みを捨てるときは区切りの始まりを追跡が落ち着いていた時点
+  （`TrackerEngine.checkpoint`）に進めるので、捨てた後も通し直せる（版 2。版 1 は `LIVE_LOG_FROM=inspect`）。正解は `LIVE_LOG_REC=同じソルブの録画の書き出し`
+  か書き出しに添えた `analysis`（記録の `Solve.moves` の時刻は精密解析の回し始めからで、`timer.startT` からではない）。`LIVE_LOG_PIECES`（`off`・`'{}'`）で推定のあり・なしを比べる。
   記録に直前のソルブの解析がなければ `liveLogTruth.debug.test.ts` で読みから正解の代わりを作り `LIVE_LOG_TRUTH` に渡す。E2E は `E2E_LIVELOG=フォルダ`
 - 実機の録画: 設定画面の「録画を書き出す」→ 手元で `REAL_VIDEO=ファイル` で精密解析し直す（下の「検証」の「実機の録画で確かめる」）
+- 重さ（fps）を E2E で見るときは、デモの合成カメラ（メインスレッドで描くので 1 秒 15〜20 枚しか出ない）ではなく、偽のカメラに 60fps の合成動画を
+  流す（`tests/debug/fakeCamVideo.debug.test.ts` → `E2E_FAKECAM`・`E2E_SCRAMBLE`・`E2E_VIEWPORT=393x852`・`E2E_PERF` → `scripts/perf-table.mjs`）。
+  場面ごとの fps は実機の書き出しを `tests/debug/fpsPhases.debug.test.ts` で
 
 ---
 
@@ -368,6 +377,10 @@ facelet の直接置換テーブルを手書きすると必ず間違える。**3
   スクランブル（今の手を大きく黄色・次の手を小さく）・回した手・背景なしの 3D（右下）を重ねる。**タイマーの計測中は下のバー・切り替え・
   記録を隠す**（`useFocus`）。スクランブルを 1 手でも回したら best・ao5・ao12 をソルブが終わるまで隠す
   - **カメラの映像の上に面の格子・マスの読み・面の名前・追跡の案内は描かない**（`?debug` のときだけ。追跡の様子は上の点の色）
+  - **撮り方の案内**（`src/app/captureAdvice.ts`・`captureGuide.ts`）: 近づける・明るく・真ん中に・低く・横から・離す を、上の点の下に短い文 1 行で
+    （映像には描かない）。一度に 1 つ、直ったら消す、出しすぎない。インスペクション・ソルブ中は出さない。ソルブの後は、ソルブ中に面が組めなかった
+    割合が多ければ「もう少し明るく（近づける）と…」。見え方の計算は 250ms に 1 回。しきい値は `docs/history.md` の「ライブ 2.5」、設定で消せる。
+    確かめは `scripts/advice-e2e.mjs`（偽のカメラで場面ごと）
   - アクセントの黄色（`--stage-accent`）は次に回す手・最後の手・自己ベストだけ。形のあるボタンは主の「次のソルブ」だけ
   - スクランブルの表記はいつも白上・緑前。フリー（タイマーなし）と「スクランブルを出す」ボタンはない
   - 画面の高さは JS で測る（`src/ui/viewport.ts` の `--app-h`。iPhone で 100dvh が古いまま残る）

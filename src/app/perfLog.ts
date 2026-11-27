@@ -108,7 +108,7 @@ export class PerfLog {
       const w = ws[k];
       const p = this.prev.get(k);
       if (!w || !p) return 0;
-      return Math.max(0, w.busyMs - p.w.busyMs) / Math.max(1, at - p.at);
+      return Math.min(1, Math.max(0, w.busyMs - p.w.busyMs) / Math.max(1, at - p.at));
     };
     const row: PerfRow = {
       t: Math.round(t),

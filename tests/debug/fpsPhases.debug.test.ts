@@ -41,6 +41,7 @@ it("場面ごとの fps", () => {
     phases.push({ name: "止めた後 3〜10 秒", from: endT + 3000, to: endT + 10000 });
     phases.push({ name: "止めた後 10 秒〜", from: endT + 10000, to: lastT });
   } else phases.push({ name: "全部", from: firstT, to: lastT });
+  if (meta) console.log(`ソルブ中の重さの配り方 ?solveload=${meta.analysis.solveLoad ?? "（記録なし）"}・止めた後の待ち ${meta.analysis.waitMs !== undefined ? `${(meta.analysis.waitMs / 1000).toFixed(1)} 秒` : "（記録なし）"}・精密解析 ${meta.analysis.result ? `${meta.analysis.result.solved ? "完成" : "完成しない"}・推定 ${meta.analysis.result.moves.filter((m) => m.inferred).length}/${meta.analysis.result.moves.length}` : "-"}`);
   console.log(`インスペクション ${fmt((inspect ?? NaN) / 1000, 2)}s・ソルブ ${fmt((startT ?? NaN) / 1000, 2)}〜${fmt((endT ?? NaN) / 1000, 2)}s`);
   const st = meta?.analysis.result?.decodeInfo?.stream;
   if (st && startT !== undefined && endT !== undefined) {

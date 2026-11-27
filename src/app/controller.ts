@@ -111,11 +111,12 @@ function refinePool(): Pick<RefineInput, "parallel" | "pieces"> {
 //   duty50 など = ソルブ中は精密解析の Worker が処理していた時間の割合を 50% までにする（同じフレームを遅れて処理する。結果は同じ）
 //   helperoff = ソルブ中は認識の補助の Worker を休ませる（精密解析の Worker に CPU を回す）
 //   lazy = 精密解析で、インスペクションの間引きで処理しないフレームを画素にしない（結果は同じ。復号の後の画素の取り出しを省く）
+//   vframe = カメラのフレームを VideoFrame のままライブの Worker と録画に渡す（縮める・描くのをメインスレッドでしない。いつも）
 export const SOLVE_LOAD = parseSolveLoad(typeof location === "undefined" ? "" : (new URLSearchParams(location.search).get("solveload") ?? ""));
-export function parseSolveLoad(q: string): { refine: string; helper: "on" | "off"; lazy: boolean } {
+export function parseSolveLoad(q: string): { refine: string; helper: "on" | "off"; lazy: boolean; vframe: boolean } {
   const parts = q.split(",").map((x) => x.trim()).filter(Boolean);
   const refine = parts.find((x) => x === "pause" || /^duty\d+$/.test(x)) ?? "full";
-  return { refine, helper: parts.includes("helperoff") ? "off" : "on", lazy: parts.includes("lazy") };
+  return { refine, helper: parts.includes("helperoff") ? "off" : "on", lazy: parts.includes("lazy"), vframe: parts.includes("vframe") };
 }
 
 // ?livepieces=0: ソルブ中のライブの状態の推定を使わない（今までの追跡のまま。比べるとき）
@@ -216,6 +217,8 @@ class Controller {
     });
     const perf = this.perf;
     this.vision.onStat = (k) => perf.count(k);
+    this.vision.videoFrames = SOLVE_LOAD.vframe;
+    this.recorder.videoFrames = SOLVE_LOAD.vframe;
     this.recorder.onQueue = (n) => perf.queue(n);
     perf.workers = async () => {
       const [lv, refine] = await Promise.all([this.vision?.perf() ?? Promise.resolve({ live: null, helper: null }), this.refiner.perf()]);
@@ -636,10 +639,15 @@ class Controller {
         solvingFrom: session.solvingFrom,
         target: target ? Array.from(target) : null,
         ...(live ? { live } : {}),
+        solveLoad: typeof location === "undefined" ? "" : (new URLSearchParams(location.search).get("solveload") ?? ""),
       };
       this.lastRecording = cap;
+      const endAt = performance.now();
       result.then(
-        (r) => (cap.result = r),
+        (r) => {
+          cap.result = r;
+          cap.waitMs = Math.round(performance.now() - endAt);
+        },
         (e) => (cap.error = errorText(e)),
       );
     }
@@ -810,6 +818,8 @@ export interface SolveRecording {
   result?: RefineResult;
   error?: string;
   retried?: string; // ソルブ中から進めた解析が失敗し、録画全体を解析し直した（その理由）
+  waitMs?: number; // 止めてから解析の結果が出るまで（ms。止めた後の待ち）
+  solveLoad?: string; // ソルブ中の重さの配り方（URL の ?solveload=）
 }
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));

@@ -101,7 +101,8 @@ export class FrameRecorder {
   hw: HardwareAcceleration | null = null; // 頼んだハードウェアの使い方（prefer-hardware で対応していればハードウェアの圧縮）
   recording = false;
   dropped = 0;
-  onQueue: ((n: number) => void) | null = null; // 調査用（src/app/perfLog.ts）: 足すときの圧縮の待ち
+  onQueue: ((n: number) => void) | null = null;
+  videoFrames = false; // カメラのフレームをそのまま圧縮に渡す（?solveload=vframe） // 調査用（src/app/perfLog.ts）: 足すときの圧縮の待ち
   frames = 0;
   bitrate = 0; // いまの録画の圧縮の強さ（調査用）
   private lastDrop = -Infinity;
@@ -215,8 +216,10 @@ export class FrameRecorder {
       return;
     }
     if (this.encoder.encodeQueueSize > 3) this.lastDrop = t; // 詰まり始めた
-    this.ctx.drawImage(video, 0, 0, this.width, this.height);
-    const frame = new VideoFrame(this.canvas!, { timestamp: Math.round(t * 1000) });
+    // ?solveload=vframe: 大きさが同じなら、カメラのフレームをそのまま圧縮に渡す（canvas に描かない）
+    const direct = this.videoFrames && video.videoWidth === this.width && video.videoHeight === this.height;
+    if (!direct) this.ctx.drawImage(video, 0, 0, this.width, this.height);
+    const frame = direct ? new VideoFrame(video, { timestamp: Math.round(t * 1000) }) : new VideoFrame(this.canvas!, { timestamp: Math.round(t * 1000) });
     const keyFrame = t - this.lastKey > 1000;
     if (keyFrame) this.lastKey = t;
     this.encoder.encode(frame, { keyFrame });
