@@ -96,6 +96,8 @@ it("書き出したライブの読みの追跡", () => {
   for (const k of ["前", "後"]) animTotals[k] = { turns: 0, fake: 0, pre: 0, real: 0, truth: 0, same: 0, counted: 0, mean: 0 };
   const moveTotals: Record<string, { pre: number; fake: number; real: number; truth: number; n: number }> = {};
   const allFrameMs: number[] = [];
+  const solveMs: number[] = []; // ソルブ中（本当の最初の手の 300ms 前〜最後の手の 1 秒後）のフレーム
+  const liveMs: number[] = []; // 推定に切り替えた後のフレーム
   const orientMs: number[] = [];
   for (const set of sets) {
     const [rd, rf] = set.split(":");
@@ -171,6 +173,8 @@ it("書き出したライブの読みの追跡", () => {
       }
       ms += spent;
       frameMs.push(spent);
+      if (r.t >= s0 - 300 && r.t <= s1) solveMs.push(spent);
+      if (engine.live && r.t <= s1) liveMs.push(spent);
       if (u)
         for (const m of u.moves) {
           const key = `${m.move}@${Math.round(m.t)}`;
@@ -363,7 +367,7 @@ it("書き出したライブの読みの追跡", () => {
     let same = 0;
     while (same < moves.length && same < res.moves.length && moves[same].move === res.moves[same].move) same++;
     lines.push(
-      `${rd.padEnd(13)} 一致 ${LAGS.map((lag, k) => `${lag}ms ${((acc[k].same / Math.max(1, acc[k].counted)) * 100).toFixed(1).padStart(5)}%`).join("・")} | 手順 ${got === truth ? "同じ" : `頭から ${same}/${res.moves.length} 手`}・見失い 0.5 秒以上 ${long.length} 回 計 ${(long.reduce((a, b) => a + b, 0) / 1000).toFixed(1)} 秒 最長 ${(Math.max(0, ...runs) / 1000).toFixed(1)} 秒・作り変え ${snaps}${engine.recoveries ? `・復帰 ${engine.recoveries}/${engine.recoverTries}（最大 ${engine.recoverMax.toFixed(0)}ms）` : ""}・${engine.decoder.status}${dropped ? `・捨てた ${dropped}` : ""}${engine.live ? `・推定 ${(switched / 1000).toFixed(2)}s から（深く ${engine.live.stats.deep}・復帰 ${engine.live.stats.recovered}/${engine.live.stats.recoverTries}・見失い ${engine.live.stats.lost}・まとめた ${engine.live.stats.merged}・仮説 最大 ${engine.live.stats.maxHyps}・ms ${Object.entries(engine.live.stats.ms).map(([k, v]) => `${k} ${v.toFixed(0)}`).join(" ")}）` : ""}${engine.orient ? `・向き 突き合わせ ${engine.orient.matched}/${engine.orient.faces}` : ""} | 追跡 ${(ms / readings.length).toFixed(2)}ms/フレーム・観測 ${obs}・評価 ${(evals / Math.max(1, obs)).toFixed(0)}/観測`,
+      `${rd.padEnd(13)} 一致 ${LAGS.map((lag, k) => `${lag}ms ${((acc[k].same / Math.max(1, acc[k].counted)) * 100).toFixed(1).padStart(5)}%`).join("・")} | 手順 ${got === truth ? "同じ" : `頭から ${same}/${res.moves.length} 手`}・見失い 0.5 秒以上 ${long.length} 回 計 ${(long.reduce((a, b) => a + b, 0) / 1000).toFixed(1)} 秒 最長 ${(Math.max(0, ...runs) / 1000).toFixed(1)} 秒・作り変え ${snaps}${engine.recoveries ? `・復帰 ${engine.recoveries}/${engine.recoverTries}（最大 ${engine.recoverMax.toFixed(0)}ms）` : ""}・${engine.decoder.status}${dropped ? `・捨てた ${dropped}` : ""}${engine.live ? `・推定 ${(switched / 1000).toFixed(2)}s から（深く ${engine.live.stats.deep}・復帰 ${engine.live.stats.recovered}/${engine.live.stats.recoverTries}・見失い ${engine.live.stats.lost}・まとめた ${engine.live.stats.merged}・仮説 最大 ${engine.live.stats.maxHyps}・ms ${Object.entries(engine.live.stats.ms).map(([k, v]) => `${k} ${v.toFixed(0)}`).join(" ")}・engine ${JSON.stringify(engine.liveMs, (_k, v) => (typeof v === "number" ? Math.round(v) : v))}・2ms 超 ${Object.entries(engine.live.stats.over).map(([k, v]) => `${k} ${v}`).join(" ")}）` : ""}${engine.orient ? `・向き 突き合わせ ${engine.orient.matched}/${engine.orient.faces}` : ""} | 追跡 ${(ms / readings.length).toFixed(2)}ms/フレーム・観測 ${obs}・評価 ${(evals / Math.max(1, obs)).toFixed(0)}/観測`,
     );
   }
   lines.push(`合計          一致 ${LAGS.map((lag, k) => `${lag}ms ${((totals[k].same / Math.max(1, totals[k].counted)) * 100).toFixed(1).padStart(5)}%`).join("・")}`);
@@ -385,6 +389,12 @@ it("書き出したライブの読みの追跡", () => {
     const sorted = [...allFrameMs].sort((x, y) => x - y);
     const os = [...orientMs].sort((x, y) => x - y);
     lines.push(`向きを追う部品だけ: 平均 ${(orientMs.reduce((x, y) => x + y, 0) / Math.max(1, orientMs.length)).toFixed(3)}ms・99% ${os[Math.floor(os.length * 0.99)]?.toFixed(2)}ms・最大 ${os[os.length - 1]?.toFixed(2)}ms`);
+    const ss = [...solveMs].sort((x, y) => x - y);
+    lines.push(`ソルブ中の追跡の 1 フレーム: 平均 ${(solveMs.reduce((x, y) => x + y, 0) / Math.max(1, solveMs.length)).toFixed(2)}ms・99% ${ss[Math.floor(ss.length * 0.99)]?.toFixed(1)}ms・99.9% ${ss[Math.floor(ss.length * 0.999)]?.toFixed(1)}ms・最大 ${ss[ss.length - 1]?.toFixed(1)}ms・3ms を超えた ${((ss.filter((x) => x > 3).length / Math.max(1, ss.length)) * 100).toFixed(2)}%（${ss.length} フレーム）`);
+    if (liveMs.length) {
+      const ls = [...liveMs].sort((x, y) => x - y);
+      lines.push(`推定に切り替えた後の 1 フレーム: 平均 ${(liveMs.reduce((x, y) => x + y, 0) / liveMs.length).toFixed(2)}ms・99% ${ls[Math.floor(ls.length * 0.99)]?.toFixed(1)}ms・99.9% ${ls[Math.floor(ls.length * 0.999)]?.toFixed(1)}ms・最大 ${ls[ls.length - 1]?.toFixed(1)}ms・3ms を超えた ${((ls.filter((x) => x > 3).length / ls.length) * 100).toFixed(2)}%（${ls.length} フレーム）`);
+    }
     lines.push(`追跡の 1 フレーム: 平均 ${(allFrameMs.reduce((x, y) => x + y, 0) / Math.max(1, allFrameMs.length)).toFixed(2)}ms・99% ${sorted[Math.floor(sorted.length * 0.99)]?.toFixed(1)}ms・99.9% ${sorted[Math.floor(sorted.length * 0.999)]?.toFixed(1)}ms・最大 ${sorted[sorted.length - 1]?.toFixed(1)}ms・3ms を超えた ${((sorted.filter((x) => x > 3).length / Math.max(1, sorted.length)) * 100).toFixed(2)}%`);
   }
   console.log(lines.join("\n"));

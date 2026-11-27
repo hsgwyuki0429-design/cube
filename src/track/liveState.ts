@@ -173,6 +173,11 @@ export interface FaceMemory {
   // 面の続きに使う。その面だけで置いた向きは、その面を回している途中の格子に付いていくので使わない）
   faces: ({ t: number; c: [number, number]; size: number; ang: number; ids: number[]; sure: { t: number; ang: number } | null } | null)[];
 }
+// 表を先に作っておく（初めて深く探すフレームで 4 手の表を作ると 70ms ほどかかる。11MB）
+export function warmLiveTables(): void {
+  for (let k = 0; k <= 4; k++) seqTable(k);
+}
+
 export const newFaceMemory = (): FaceMemory => ({ faces: new Array(6).fill(null) });
 
 export function liveFrame(sight: SightFrame, mem: FaceMemory | null = null, opts: Pick<LiveStateOptions, "touch" | "contMs" | "contBits" | "held" | "chainBits" | "chainMs"> = DEFAULT_LIVE_STATE): LiveFrame {
@@ -468,6 +473,7 @@ export interface LiveStats {
   maxHyps: number;
   evals: number;
   ms: { pick: number; deep: number; child: number; recover: number; maxDeep: number; maxRecover: number };
+  over: { pick: number; deep: number; child: number; recover: number }; // 2ms を超えたフレームの数（調査用）
 }
 
 interface Child {
@@ -489,7 +495,7 @@ export class LiveState {
   // 錨: 食い違いのない最後の仮説（見失ったところからの復帰の始まり）
   private anchor: { h: LiveHyp; t: number } | null = null;
   private lastRecover = -Infinity;
-  readonly stats: LiveStats = { frames: 0, steps: 0, deep: 0, deepSkipped: 0, recovered: 0, recoverTries: 0, lost: 0, merged: 0, maxHyps: 0, evals: 0, ms: { pick: 0, deep: 0, child: 0, recover: 0, maxDeep: 0, maxRecover: 0 } };
+  readonly stats: LiveStats = { frames: 0, steps: 0, deep: 0, deepSkipped: 0, recovered: 0, recoverTries: 0, lost: 0, merged: 0, maxHyps: 0, evals: 0, ms: { pick: 0, deep: 0, child: 0, recover: 0, maxDeep: 0, maxRecover: 0 }, over: { pick: 0, deep: 0, child: 0, recover: 0 } };
   private nBase = 0;
 
   // phi: センターの向きの初め（分からない面は -1。TrackerEngine が切り替える前のフレームで見たセンターの向きから）
@@ -602,6 +608,11 @@ export class LiveState {
     this.afterStep(fr);
     const tE = performance.now();
     this.stats.ms.recover += tE - tD;
+    const ov = this.stats.over;
+    if (tB - tA > 2) ov.pick++;
+    if (tC - tB > 2) ov.deep++;
+    if (tD - tC > 2) ov.child++;
+    if (tE - tD > 2) ov.recover++;
     this.stats.ms.maxRecover = Math.max(this.stats.ms.maxRecover, tE - tD);
     return true;
   }

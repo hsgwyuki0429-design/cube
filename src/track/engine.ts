@@ -12,7 +12,7 @@ import { FaceObserver, type FrameReading, type ObserverOptions } from "./observe
 import { DEFAULT_TIMING, type LoggedFrame, type MoveTiming, moveTiming } from "./timing";
 import { OrientTracker, type OrientOptions } from "./orient";
 import type { SightFrame } from "./sight";
-import { LiveState, type LiveStateOptions, liveFrame } from "./liveState";
+import { LiveState, type LiveStateOptions, liveFrame, warmLiveTables } from "./liveState";
 import type { DecodedMove, Observation, OrientHint, TrackStatus, TurnHint, TurnSnapshot } from "./types";
 
 export interface EngineOptions {
@@ -43,7 +43,8 @@ export interface EngineOptions {
 }
 
 
-const TIMING_FINAL_MS = 1000; // 手の観測からこれだけたてば、その手の時刻はもう変わらない
+const TIMING_FINAL_MS = 1000;
+const LIVE_EMIT_MS = 100; // ソルブ中のライブの状態の推定: 手順も状態も変わらないときに TrackUpdate を出す間隔 // 手の観測からこれだけたてば、その手の時刻はもう変わらない
 const REPEAT_COST = 0.8;
 // 作り変え（ライブは見えているキューブにどんどん合わせる）: 最良の仮説の観測の矛盾がこれ以上（1 マスの色の矛盾 1.5）の観測が
 // 2 回続いたら、SNAP_NOW 以上なら（2 マス以上）すぐ、見えている色に合う状態を 3D に出す。作り変えた状態が観測をこれだけ以上よく
@@ -187,11 +188,17 @@ export class TrackerEngine {
     this.recoverOpts = options.recover ? (options.recover === true ? {} : options.recover) : null;
     if (options.personal?.length && this.decoder.prior) this.decoder.prior = movePrior(options.personal);
     if (options.orient) this.orient = new OrientTracker(options.orient === true ? {} : options.orient);
-    if (options.pieces !== undefined) this.watchCenters = true;
+    if (options.pieces !== undefined) {
+      this.watchCenters = true;
+      warmLiveTables();
+    }
     if (options.pieces) this.setPieces(options.pieces);
   }
   // ソルブ中のライブの状態の推定（EngineOptions.pieces。null = 今までの追跡）
   live: LiveState | null = null;
+  private liveKey = "";
+  private liveEmitT = -Infinity;
+  readonly liveMs = { push: 0, snap: 0, pushOver: 0, snapOver: 0 }; // 調査用: 推定と TrackUpdate づくりの時間
   private liveOpts: Partial<LiveStateOptions> | null = null;
   private liveView: TrackUpdate["view"] = null;
   private liveStart: CubeState | null = null; // 推定の手順の始まり（base がないとき）の状態
@@ -274,6 +281,7 @@ export class TrackerEngine {
     }
     if (options.personal && this.decoder.options.priorWeight > 0) this.decoder.prior = movePrior(options.personal);
     if (options.pieces !== undefined) {
+      if (!this.watchCenters) warmLiveTables();
       this.watchCenters = true;
       this.setPieces(options.pieces);
     }
@@ -308,8 +316,22 @@ export class TrackerEngine {
       // ソルブ中のライブの状態の推定: 読み（面の置き方はセンターの ID と面の接し方から。スロットには頼らない）をそのまま渡す
       if (!sight?.faces.length) return null;
       this.lastReading = frame;
+      const a = performance.now();
       if (!this.live.pushSight(sight)) return null;
-      return this.liveSnapshot(frame);
+      const b = performance.now();
+      // 手順・状態が変わらなければ、100ms ごとにだけ出す（TrackUpdate づくり（手の時刻）がフレームの時間の大半だった）
+      const lb = this.live.best();
+      const key = `${lb.tail?.len ?? 0}:${lb.tail?.move ?? -1}:${lb.tail?.t ?? 0}:${lb.base?.n ?? 0}:${this.live.known(lb) ? 1 : 0}:${this.live.agreed()}`;
+      if (key === this.liveKey && frame.t - this.liveEmitT < LIVE_EMIT_MS) return null;
+      this.liveKey = key;
+      this.liveEmitT = frame.t;
+      const u = this.liveSnapshot(frame);
+      const c = performance.now();
+      this.liveMs.push += b - a;
+      this.liveMs.snap += c - b;
+      if (b - a > 3) this.liveMs.pushOver++;
+      if (c - b > 3) this.liveMs.snapOver++;
+      return u;
     }
     this.collectTurn(frame);
     const repeat = this.repeatMs > 0 && this.repeats < MAX_REPEATS && this.decoder.lastObservationCost >= REPEAT_COST && frame.t - this.lastObsT >= this.repeatMs;
@@ -596,15 +618,11 @@ export class TrackerEngine {
       }
       this.liveView = null;
     } else if (!this.liveView || !this.liveView.state.every((c, i) => c === shown[i])) this.liveView = { n: (this.liveView?.n ?? 0) + 1, state: Array.from(shown), orient: live.orient, t: frame?.t ?? this.lastFrameT };
-    const near = live.hyps.filter((h) => h.cost <= b.cost + BELIEF_MARGIN * 2);
+    // マスごとの確からしさ: 決まらないピースのマスは 0（ライブは読み直しをしないので、ほかは使わない）
     const certainty = new Array<number>(54).fill(1);
-    if (near.length > 1) {
-      const ids = near.map((h) => live.stateOf(h));
-      for (let f = 0; f < 54; f++) {
-        let same = 0;
-        for (const st of ids) if (stickerIdAt(st, f) === stickerIdAt(ids[0], f)) same++;
-        certainty[f] = same / ids.length;
-      }
+    if (!known) {
+      const sure = live.stateOf(b);
+      for (let f = 0; f < 54; f++) if (sure[f] !== shown[f]) certainty[f] = 0;
     }
     const fr = frame ?? this.lastReading;
     return {
