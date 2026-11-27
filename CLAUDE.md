@@ -93,7 +93,8 @@ src/vision Vision             ← 映像 → マーカー → 見えている面
 - `src/synthetic/`（three.js の合成カメラ）でアプリ全体をヘッドレス Chromium で動かす（`npm run e2e`）
 - 重い計測は `tests/debug/*.debug.test.ts`（`npx vitest run -c vitest.debug.config.ts …`）。使い方は各ファイルの先頭
 - 実機のライブの記録: 設定画面の「ライブの記録を書き出す」（`src/track/liveLog.ts`）→ 手元で `LIVE_LOG=ファイル` で
-  `tests/debug/liveLog.debug.test.ts` に通し直す（追跡は読みだけで決まる）
+  `tests/debug/liveLog.debug.test.ts` に通し直す（追跡は読みだけで決まる）。`LIVE_LOG_PIECES`（`off`・`'{}'`）で推定のあり・なしを比べる。
+  記録に直前のソルブの解析がなければ `liveLogTruth.debug.test.ts` で読みから正解の代わりを作り `LIVE_LOG_TRUTH` に渡す。E2E は `E2E_LIVELOG=フォルダ`
 - 実機の録画: 設定画面の「録画を書き出す」→ 手元で `REAL_VIDEO=ファイル` で精密解析し直す（下の「検証」の「実機の録画で確かめる」）
 
 ---

@@ -17,7 +17,7 @@
 import { readFileSync } from "node:fs";
 import { it } from "vitest";
 import { ARUCO_REFS } from "../../src/aruco/palette";
-import { MOVE_NAMES, VIEW, applyMove, inverseMove, moveFace, statesEqual } from "../../src/cube/model";
+import { MOVE_NAMES, VIEW, applyMove, inverseMove, statesEqual } from "../../src/cube/model";
 import { type EngineOptions, TrackerEngine } from "../../src/track/engine";
 import { simplifyMoves } from "../../src/track/merge";
 import { ARUCO_OBSERVER, type FrameReading, LIVE_OBSERVER } from "../../src/track/observer";
@@ -28,6 +28,7 @@ import { LIVE_TRACKED_ORIENT, OrientTracker } from "../../src/track/orient";
 import { LiveShow, seenMoves } from "../../src/ui/liveShow";
 import { StartDetector } from "../../src/app/startDetect";
 import { SimScene, type SimTurn } from "../liveShowSim";
+import { matchTurns } from "./lib/turnMatch";
 
 const LAGS = [150, 300, 600];
 
@@ -67,20 +68,6 @@ function matches(start: Uint8Array, res: RefineResult, t: number, lag: number, s
     if (j < res.moves.length) st = applyMove(st, res.moves[j].move);
   }
   return false;
-}
-
-// 回して見せた手を本当の手（精密解析の手）に結びつける: 同じ面で、本当の手の回し始め 300ms 前〜回し終わり 1 秒後に回し始めたもの。
-// 本当の手 1 つに結びつけるのは 1 つだけ。返すのは結びつかなかった手と、回して見せた本当の手の数
-export function matchTurns(turns: SimTurn[], res: RefineResult, s0: number, s1: number, exact = false): { fake: SimTurn[]; real: number; truth: number } {
-  const truth = res.moves.filter((m) => m.end >= s0 && m.start <= s1);
-  const used = new Set<number>();
-  const fake: SimTurn[] = [];
-  for (const a of turns) {
-    const j = truth.findIndex((m, k) => !used.has(k) && (exact ? m.move === a.move : moveFace(m.move) === moveFace(a.move)) && a.t >= m.start - 300 && a.t <= m.end + 1000);
-    if (j >= 0) used.add(j);
-    else fake.push(a);
-  }
-  return { fake, real: used.size, truth: truth.length };
 }
 
 it("書き出したライブの読みの追跡", () => {
