@@ -713,50 +713,48 @@ export class LiveState {
   // 読みの式を全部満たす k0〜k1 手の手順（表の AND・5 手からは前後の突き合わせ）。いちばん短いものだけ。センター 1 つの面は、
   // 置き方 r ごとに「その面を回した量 ≡ 読んだ向き − r − φ」を足した式の組。センターのない面（続きの置き方）は使わない
   private exact(h: LiveHyp, hp: Int8Array, fr: LiveFrame, k0: number, k1: number): { seqs: number[][] } | null {
-    const base: (Eq & { p: number })[] = [];
-    const seen = new Map<number, number>();
-    const bad = new Set<number>();
-    const addEq = (list: (Eq & { p: number })[], p: number, y: number) => {
+    type PEq = Eq & { p: number; y: number };
+    const addEq = (list: PEq[], p: number, y: number) => {
       const m = h.mask[p];
       if (!single(m) || y < 0) return;
-      const prev = seen.get(p);
-      if (prev !== undefined && prev !== y) bad.add(p);
-      seen.set(p, y);
-      list.push({ from: positionOf(clsOf(p), bitIndex(m)), to: positionOf(clsOf(p), y), w: 1, p });
+      list.push({ from: positionOf(clsOf(p), bitIndex(m)), to: positionOf(clsOf(p), y), w: 1, p, y });
     };
+    const base: PEq[] = [];
     const centers: CenterEq[] = [];
     for (const g of fr.groups) if (g.mode === 0) for (let j = g.from; j < g.to; j++) addEq(base, fr.piece[j], fr.ys[j * 4]);
     for (const ce of fr.centers) if (hp[ce.f] >= 0) centers.push({ f: ce.f, d: (ce.phi - hp[ce.f] + 4) & 3, w: 1 });
     const chain = fr.groups.filter((g) => g.mode === 1 && hp[g.face] >= 0).sort((a, b) => b.to - b.from - (a.to - a.from))[0];
-    const variants: { eqs: (Eq & { p: number })[]; centers: CenterEq[] }[] = [];
+    // 同じピースの読みが食い違えば、そのピースは使わない。同じ式は 1 本に
+    const clean = (list: PEq[]): Eq[] => {
+      const out = new Map<number, PEq>();
+      const bad = new Set<number>();
+      for (const e of list) {
+        const prev = out.get(e.p);
+        if (prev && prev.y !== e.y) bad.add(e.p);
+        out.set(e.p, e);
+      }
+      return [...out.values()].filter((e) => !bad.has(e.p));
+    };
+    const variants: { eqs: Eq[]; centers: CenterEq[] }[] = [];
     if (chain)
       for (let r = 0; r < 4; r++) {
-        const eqs: (Eq & { p: number })[] = [];
+        const eqs: PEq[] = [...base];
         for (let j = chain.from; j < chain.to; j++) addEq(eqs, fr.piece[j], fr.ys[j * 4 + r]);
-        variants.push({ eqs, centers: [...centers, { f: chain.face, d: (chain.cr - r - hp[chain.face] + 8) & 3, w: 1 }] });
+        variants.push({ eqs: clean(eqs), centers: [...centers, { f: chain.face, d: (chain.cr - r - hp[chain.face] + 8) & 3, w: 1 }] });
       }
-    else variants.push({ eqs: [], centers });
-    // 同じピースの読みが食い違えば、そのピースは使わない。同じ式は 1 本に
-    const clean = (list: (Eq & { p: number })[]): Eq[] => {
-      const out = new Map<number, Eq>();
-      for (const e of list) if (!bad.has(e.p)) out.set(e.p, e);
-      return [...out.values()];
-    };
-    const pieces = new Set([...seen.keys()].filter((p) => !bad.has(p))).size;
+    else variants.push({ eqs: clean(base), centers });
+    const pieces = Math.max(...variants.map((v) => v.eqs.length));
     if (pieces < this.options.recoverMin) return null;
     for (let k = k0; k <= k1; k++) {
       const out: number[][] = [];
-      for (const v of variants) out.push(...solveExact(k, clean([...base, ...v.eqs]), v.centers, this.options.deepMax + 1));
+      for (const v of variants) out.push(...solveExact(k, v.eqs, v.centers, this.options.deepMax + 1));
       if (out.length) return { seqs: out };
     }
     // どの手数でも全部は満たせない（読み違いがある）: 式を 1 本外して、表の範囲（4 手まで）で
     if (pieces < this.options.recoverMin + 2) return null;
     for (let k = k0; k <= Math.min(4, k1); k++) {
       const out: number[][] = [];
-      for (const v of variants) {
-        const eqs = clean([...base, ...v.eqs]);
-        for (let e = 0; e < eqs.length && out.length <= this.options.deepMax; e++) out.push(...solveExact(k, eqs.filter((_, q) => q !== e), v.centers, this.options.deepMax + 1));
-      }
+      for (const v of variants) for (let e = 0; e < v.eqs.length && out.length <= this.options.deepMax; e++) out.push(...solveExact(k, v.eqs.filter((_, q) => q !== e), v.centers, this.options.deepMax + 1));
       if (out.length) {
         const seen = new Set<string>();
         return { seqs: out.filter((x) => !seen.has(x.join()) && !!seen.add(x.join())) };
