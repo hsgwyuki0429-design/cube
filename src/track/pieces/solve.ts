@@ -897,3 +897,41 @@ function segmentSolutions(sub: Sight[], A: Uint8Array, B: Uint8Array, opt: Solve
 }
 
 export { SIZE, NUM_MOVES };
+
+// 調査用（tests/debug/islandBound.debug.test.ts。既定の経路からは呼ばない）: 見え方の確かな読み（strongOf）
+export function strongReadings(sg: Sight, strong = DEFAULT_SOLVE.strongBits): { to: Int16Array; center: Int8Array; chain: { face: number; byPhi: { P: number[]; A: number[] }[] }[] } {
+  const st = strongOf(sg, strong);
+  return { to: st.to, center: st.center, chain: st.chain };
+}
+
+// 調査用（tests/debug/islandBound.debug.test.ts。既定の経路からは呼ばない）: 始まりの状態から前向きだけで解き、最後の見え方のいちばんよい
+// 仮説の状態を終わりとして答えの確かめ（verifyPath）を通す。島に分けて解く案の上限（島の始まりの状態だけを正解から与える）を測る
+export function solveForwardOnly(table: PieceTable, start: CubeState, options: Partial<SolveOptions & Omit<DecodeOptions, "onStep">> = {}): { moves: { move: number; inferred?: boolean }[]; sights: number; reached: number } {
+  const began = performance.now();
+  const opt = { ...DEFAULT_DECODE, ...DEFAULT_SOLVE, ...options, deadline: began + (options.budgetMs ?? DEFAULT_SOLVE.budgetMs) } as SolveOptions & DecodeOptions;
+  const sights = buildSights(table, opt);
+  const n = sights.length;
+  if (!n) return { moves: [], sights: 0, reached: 0 };
+  const strong = sights.map((sg) => strongOf(sg, opt.strongBits));
+  const a = withCenters(piecesOf(start));
+  const stats: SolveStats = { intervals: 0, byK: new Array(opt.maxK + 1).fill(0), dropped: 0, stuck: 0, multi: 0, capped: 0, ms: 0 };
+  const fw = newRun();
+  for (const _ of runSteps(sights, strong, a, null, opt, false, fw, stats)) if (performance.now() - began > opt.budgetMs) break;
+  const last = fw.sets.length - 1;
+  if (last < 0) return { moves: [], sights: n, reached: 0 };
+  let best: Hyp | null = null;
+  for (const h of fw.sets[last]!.values()) if (!best || h.cost < best.cost) best = h;
+  const chosen: M[] = [];
+  for (let p = best!.path; p >= 0; p = fw.paths.parent[p]) chosen.push({ move: fw.paths.info[p] & 31, sight: fw.paths.info[p] >> 6, guess: (fw.paths.info[p] & 32) !== 0, amb: false, why: fw.why.get(p) });
+  chosen.reverse();
+  const sub = sights.slice(0, last + 1);
+  const decodeMs = performance.now() - began;
+  const verifyMs = Math.max(0, Math.min(opt.verifyMs, opt.totalMs - decodeMs));
+  const v = verifyPath(sub, a, best!.s, chosen, { ...opt, verifyMs } as DecodeOptions, {
+    between: (A, B, maxLen) => sequencesBetweenStates(A, B, maxLen),
+    segment: (s, A, B, o) => segmentSolutions(s, A, B, { ...opt, deadline: o.deadline } as SolveOptions & DecodeOptions & { deadline?: number }),
+    trusted: (m) => !m.guess && !m.why,
+    blockPin: true,
+  });
+  return { moves: v.moves.map((m) => ({ move: m.move, ...(m.sight === 0 || m.amb ? { inferred: true } : {}) })), sights: n, reached: last + 1 };
+}

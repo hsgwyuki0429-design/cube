@@ -23,8 +23,8 @@ import { judgeBackwardStart, stableFrames } from "../../src/track/startCheck";
 import type { SightFrame } from "../../src/track/sight";
 import type { Observation } from "../../src/track/types";
 
-type RawObs = Omit<Observation, "faces"> & { faces: { slot: number; cost: number[]; labels: number[]; ids?: number[]; idCost?: number[] }[] };
-type Reading = { t: number; faces: { slot: number; ids: number[]; w?: number[]; rot?: number[]; quad?: number[]; held?: boolean; c?: number[] }[] };
+export type RawObs = Omit<Observation, "faces"> & { faces: { slot: number; cost: number[]; labels: number[]; ids?: number[]; idCost?: number[] }[] };
+export type Reading = { t: number; faces: { slot: number; ids: number[]; w?: number[]; rot?: number[]; quad?: number[]; held?: boolean; c?: number[] }[] };
 const KNOWN: Record<string, string> = { IMG_4970: "R U R' U' R' F R2 U' R' U' R U R' F' R U R' U' R' F R2 U' R' U' R U R' F'", IMG_4971: "R U R' U' R' F R2 U' R' U' R U R' F' R U R' U' R' F R2 U' R' U' R U R' F'" };
 
 export function editDistance(a: number[], b: number[]): number {
@@ -72,7 +72,7 @@ export function truthOf(name: string, rdStart: number[]): { start: CubeState; mo
 // 今の解き直し: 本体の精密解析と同じ（src/vision/refine.ts の result: 1 回目、前後がつながらなければ深い 2 回目）
 // 後ろ向きだけでたどり着いた始まりの状態は、回し始める前の確かな読みと照らす（Refiner.checkBackwardStart と同じ。インスペクションの
 // 終わりは書き出しにないので、答えの最初の手まで）
-function oldDecode(obs: Observation[], start: CubeState, end: CubeState, lastT: number, readings?: Reading[]): OfflineResult {
+export function oldDecode(obs: Observation[], start: CubeState, end: CubeState, lastT: number, readings?: Reading[]): OfflineResult {
   let rejected = false;
   const startCheck: OfflineOptions["startCheck"] = readings
     ? (s, until) => {
@@ -390,7 +390,7 @@ it("ステッカーの動きの方程式で解き直す", async () => {
       const cancelledSure = solved ? cancelled(moves).filter(({ m }) => !m.inferred).map(({ m }) => `${MOVE_NAMES[m.move]}@${((m as { t?: number }).t ?? 0) / 1000}`) : [];
       const cancelledTruth = cancelled(truth.moves).length;
       const byState = solved ? wrongByState(moves, truth.moves, start) : { wrong: 0, at: [] };
-      const row = { name, method, solved, same: solved && dist === 0, dist, n: want.length, wrongSure: ws.wrong, inferred, ms: Math.round(ms), memMB: Math.round(mem), note: truth.note, reasons, cancelledSure, cancelledTruth, wrongByState: byState.wrong, wrongByStateAt: byState.at, ...(stats ? { stats } : {}) };
+      const row = { name, method, solved, same: solved && dist === 0, dist, n: want.length, wrongSure: ws.wrong, okSure: ws.ok, inferred, ms: Math.round(ms), memMB: Math.round(mem), note: truth.note, reasons, cancelledSure, cancelledTruth, wrongByState: byState.wrong, wrongByStateAt: byState.at, ...(stats ? { stats } : {}) };
       const line = `${name.padEnd(16)} ${method.padEnd(3)} ${solved ? "完成" : "未完"} ${row.same ? "正解と同じ" : `距離 ${String(dist).padStart(3)}`}/${want.length} 確定で間違い ${ws.wrong} 推定 ${String(inferred).padStart(2)} ${(ms / 1000).toFixed(1).padStart(5)}秒 メモリ +${row.memMB}MB ${info}${truth.note}`;
       out.push(line);
       process.stdout.write(`${line}\n`);
