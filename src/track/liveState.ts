@@ -929,11 +929,12 @@ export class LiveState {
     this.preferSolved(fr);
   }
 
-  // 揃った: 一番よい仮説が揃っていない（見失った後で、見えていないピースが分からない・推測のまま）のに、置き方の決まった読みが solvedMin 個
+  // 揃った: 一番よい仮説が揃っていない（見失った後で、見えていないピースが分からない・推測のまま・読みと食い違う）のに、置き方の決まった読みが solvedMin 個
   // 以上あってどれも揃った位置なら、揃った状態の仮説を一番にする（手順はここでつながらない。止める判定にも使う）
   private preferSolved(fr: LiveFrame): void {
     const b = this.hyps[0];
-    if (this.solved()) return;
+    // 決まった仮説が読みと合っているなら使わない（隠れた面の最後の手の前に揃いにしない: 合成のタイマーで 0.9 秒早く止まった）
+    if (this.solved() || (this.known(b) && b.last < this.options.deepAbove)) return;
     const read = this.sureReads(fr, b, [0, 1]);
     if (read.size < this.options.solvedMin) return;
     for (const [p, y] of read) if (y !== IDX[PIECE_REF[p]]) return;
