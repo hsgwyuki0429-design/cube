@@ -102,7 +102,8 @@ export class FrameRecorder {
   recording = false;
   dropped = 0;
   onQueue: ((n: number) => void) | null = null;
-  videoFrames = false; // カメラのフレームをそのまま圧縮に渡す（既定。?solveload=default で使わない。作れなければ自動で戻す） // 調査用（src/app/perfLog.ts）: 足すときの圧縮の待ち
+  videoFrames = false; // カメラのフレームをそのまま圧縮に渡す（既定。?solveload=default で使わない。作れなければ自動で戻す）
+  videoFrameNote: string | null = null; // VideoFrame をやめた理由（調査用） // 調査用（src/app/perfLog.ts）: 足すときの圧縮の待ち
   frames = 0;
   bitrate = 0; // いまの録画の圧縮の強さ（調査用）
   private lastDrop = -Infinity;
@@ -224,6 +225,7 @@ export class FrameRecorder {
       } catch (e) {
         // 作れない端末: 今までのやり方（canvas に描く）に戻す
         this.videoFrames = false;
+        this.videoFrameNote = `作れない: ${String(e)}`;
         console.warn("録画: VideoFrame を使わずに描きます:", e);
       }
     }

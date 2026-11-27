@@ -25,6 +25,7 @@ import { createStore } from "./store";
 import { markPhase } from "./crashGuard";
 import { PerfLog, summarizePerf } from "./perfLog";
 import { parseSolveLoad } from "./solveLoad";
+import { LiveRest } from "./liveRest";
 
 // 画面: プレイ・データ（グラフと履歴）・1 回の記録の詳しい画面・解析（スロー動画・ArUco の画面）・設定（使い方も）
 export type Screen = "play" | "data" | "solve" | "analyze" | "settings";
@@ -91,12 +92,11 @@ export const VIDEO_MAX_FPS = 120;
 const STALL_MS = 30000;
 // 回し始めの時刻（リアルタイムの判定）のこれだけ前から、解析は全部のフレームを処理する（最初の手の回し始めは 350ms 前まで遡って探す）
 const SOLVE_LEAD_MS = 500;
-// 止めた後の残りの解析の間は、ライブの認識を止めて精密解析を先に終わらせる（休んでいる間に回した手は、再開したときに見えている色への
-// 作り変えで追いつく）。休むのは解析が終わるまで（時間では切らない。以前は 20 秒で切っていて、実機で vframe のとき、ライブが戻った後の
-// 精密解析が 1 秒 49 枚 → 4.5 枚に落ち、止めた後の待ちが 38.7 秒になった）。0.5 秒に 1 枚だけ認識するのも試したが、CPU 2 つに絞った E2E で
-// 止めた後の精密解析が 1 秒 19 → 14 枚に落ち、待ちが 21.0 → 27.9 秒に延びた（docs/history.md の「ライブ 2.5」）。LIVE_REST_GUARD_MS は
-// 解析が返ってこないときの保険
-const LIVE_REST_GUARD_MS = 180000;
+// 止めた後の残りの解析の間は、ライブの認識を止めて精密解析を先に終わらせる（src/app/liveRest.ts。休んでいる間に回した手は、再開したときに
+// 見えている色への作り変えで追いつく）。休むのは解析が終わるまで（時間では切らない。以前は 20 秒で切っていて、実機で vframe のとき、ライブが
+// 戻った後の精密解析が 1 秒 49 枚 → 4.5 枚に落ち、止めた後の待ちが 38.7 秒になった）か、「次のソルブ」で done から離れるまで。0.5 秒に 1 枚
+// だけ認識するのも試したが、CPU 2 つに絞った E2E で止めた後の精密解析が 1 秒 19 → 14 枚に落ち、待ちが 21.0 → 27.9 秒に延びた
+// （docs/history.md の「ライブ 2.5」）
 
 // 追跡の探索と観測器の設定（ライブと精密解析で共通の部分）
 const searchOptions = (s: Settings) => ({ beamWidth: s.beamWidth, maxMovesPerStep: s.maxMovesPerStep, rotationCost: s.rotationCost });
@@ -159,7 +159,7 @@ class Controller {
   private stalled = 0;
   private lastRetry = -Infinity;
   private session: AnalysisSession | null = null;
-  private liveResting = false; // 止めた後の残りの解析の間（ライブの認識を休む）
+  readonly liveRest = new LiveRest(); // 止めた後の残りの解析の間（ライブの認識を休む）
   private snapLive = true; // ライブの作り変えを使うか（タイマーのスクランブル中は使わない）
   private piecesLive = false; // ソルブ中のライブの状態の推定を使うか（タイマーの計測中だけ）
   private solvingNow = false; // タイマーの計測中
@@ -214,6 +214,7 @@ class Controller {
     this.vision.onStat = (k) => perf.count(k);
     this.vision.videoFrames = SOLVE_LOAD.vframe;
     this.recorder.videoFrames = SOLVE_LOAD.vframe;
+    perf.rests = this.liveRest.spans;
     this.recorder.onQueue = (n) => perf.queue(n);
     perf.workers = async () => {
       const [lv, refine] = await Promise.all([this.vision?.perf() ?? Promise.resolve({ live: null, helper: null }), this.refiner.perf()]);
@@ -226,9 +227,10 @@ class Controller {
       // 止めた後の残りの解析の間は、ライブの認識を休む（1 秒に何枚も作る画像でメモリの山が高くなり、iPhone で落ちる元になる。
       // 休んでいる間に回した手は、再開したときに見えている色への作り変えで追いつく）
       // 録画の圧縮が詰まっている間は、認識の補助の Worker を休ませる（CPU を圧縮に回す。録画を間引くと精密解析が悪くなる）
-      if (this.vision) this.vision.useHelper = !this.recorder.congested(t) && !this.helperRest() && !this.liveResting;
-      if (!this.liveResting) this.vision?.submit(this.camera.video, t);
-      else perf.count("full");
+      const resting = this.liveRest.resting;
+      if (this.vision) this.vision.useHelper = !this.recorder.congested(t) && !this.helperRest() && !resting;
+      if (!resting) this.vision?.submit(this.camera.video, t);
+      else perf.count("rest");
       if (this.recorder.recording) {
         const b = performance.now();
         const before = this.recorder.dropped;
@@ -603,8 +605,8 @@ class Controller {
     clearInterval(session.timer);
     this.session = null;
     this.store.set({ analysis: null });
-    // ライブは録画の残りを圧縮し終えるのを待つ間から休む（精密解析を先に終わらせる）
-    this.liveResting = true;
+    // ライブは録画の残りを圧縮し終えるのを待つ間から休む（精密解析を先に終わらせる。「次のソルブ」を押していたら休まない）
+    const restSpan = this.liveRest.start(performance.now());
     await this.recorder.finish(to);
     if (session.id >= 0) this.feedAnalysis(session, to, true);
     // 解析が途中で失敗した（Worker が落ちた・例外・止まった）ときのために、録画全体を取っておく（圧縮した映像のかたまりを指すだけ）
@@ -648,13 +650,15 @@ class Controller {
         (e) => (cap.error = errorText(e)),
       );
     }
-    const rest = window.setTimeout(() => (this.liveResting = false), LIVE_REST_GUARD_MS);
-    // 終わったら解析の Worker を閉じてメモリを返す（次のインスペクションで作り直す）
+    const guard = window.setInterval(() => this.liveRest.check(performance.now()), 1000);
+    // 終わったら休みを解き、解析の Worker を閉じてメモリを返す（次のインスペクションで作り直す）
     void result
-      .catch(() => undefined)
+      .then(
+        () => this.liveRest.end(performance.now(), "result", restSpan),
+        () => this.liveRest.end(performance.now(), "error", restSpan),
+      )
       .finally(() => {
-        clearTimeout(rest);
-        this.liveResting = false;
+        clearInterval(guard);
         this.refiner.closeIfIdle();
       });
     return result;
@@ -790,6 +794,17 @@ class Controller {
     } catch {
       // 音が出せない環境
     }
+  }
+
+  // 実際に使ったカメラのフレームの渡し方（書き出しに残す: vframe = VideoFrame のまま・bitmap = 今までのやり方）と、戻した理由
+  framePath(): { live: "vframe" | "bitmap"; liveNote: string | null; recorder: "vframe" | "bitmap"; recorderNote: string | null; requested: boolean } {
+    return {
+      requested: SOLVE_LOAD.vframe,
+      live: this.vision?.videoFrames ? "vframe" : "bitmap",
+      liveNote: this.vision?.videoFrameNote ?? null,
+      recorder: this.recorder.videoFrames ? "vframe" : "bitmap",
+      recorderNote: this.recorder.videoFrameNote,
+    };
   }
 
   // 調査用（E2E が読む）: from〜to（ms）の 1 秒ごとの処理の様子のまとめ

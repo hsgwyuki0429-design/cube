@@ -39,6 +39,8 @@ export async function exportRecording(): Promise<void> {
     solve,
     // 1 秒ごとの処理の様子（src/app/perfLog.ts）: 録画の始まりから
     perf: controller.perf.between(cap.input.from - 30000),
+    rests: controller.perf.rests.filter((r) => (r.t1 ?? Infinity) >= cap.input.from),
+    framePath: controller.framePath(),
   };
   let muxed: ReturnType<typeof muxRecording>;
   try {

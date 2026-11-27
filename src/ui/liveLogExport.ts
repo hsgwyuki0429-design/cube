@@ -59,6 +59,9 @@ export async function exportLiveLog(): Promise<void> {
     analysis: analysisOf(),
     // 1 秒ごとの処理の様子（src/app/perfLog.ts。ソルブ中に fps が落ちる原因を調べる）と、ソルブ中の重さの配り方（URL の ?solveload=）
     perf: controller.perf.rows,
+    // 止めた後にライブが休んだ区間（t0・t1・終わった理由 why）と、実際に使ったカメラのフレームの渡し方（vframe か bitmap か・戻した理由）
+    rests: controller.perf.rests,
+    framePath: controller.framePath(),
     url: location.search,
     log,
   };
