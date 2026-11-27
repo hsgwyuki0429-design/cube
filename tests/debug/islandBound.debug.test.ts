@@ -2,7 +2,7 @@
 // あるかを、作る前に上限で測る。アプリの動きは変えない（src/track/pieces/solve.ts の solveForwardOnly・strongReadings は調査用）。
 //   IB_DIR=材料（piecesBench と同じ .read.json・.obs.json）IB_TRUTH=buildTruth の BT_OUT IB_BM=原画質の動画全体の精密解析（REAL_REF）
 //   IB_ORIG=原画質の材料のフォルダ（隙間の原因の見立て。<動画>_orig.read.json）IB_ONLY=正規表現 IB_OUT=ファイル（1 行 1 つの JSON を足す）
-//   IB_NOFLOW=1（今の流れを解かない）IB_SHOW=1（島・隙間を並べる）
+//   IB_NOFLOW=1（今の流れを解かない）IB_SHOW=1（島・隙間を並べる）IB_SUREONLY=1（センター 1 つの面の確かな読みを確かな見え方に数えない）
 //   npx vitest run -c vitest.debug.config.ts tests/debug/islandBound.debug.test.ts --silent=false
 // 1 本ずつ別のプロセスで回すこと（解き直しには時間の上限があり、重さで答えが変わりうる）。
 //
@@ -121,7 +121,7 @@ function strongSights(sights: Sight[], tl: ReturnType<typeof timeline>): StrongS
     }
     // センター 1 つの面の確かな読み: どれかの向きで全部合えば 1 本と数える
     for (const ch of st.chain) {
-      if (!ch.byPhi.some((b) => b.P.length)) continue;
+      if (process.env.IB_SUREONLY || !ch.byPhi.some((b) => b.P.length)) continue; // IB_SUREONLY: 置き方の決まった面の読みだけ（隙間の比べ）
       n++;
       let hit = false;
       for (const b of ch.byPhi) {
