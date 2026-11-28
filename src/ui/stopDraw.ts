@@ -1,0 +1,314 @@
+// 止めた後の画面（src/ui/StoppedScreen.tsx）の canvas の絵: 2D の等角のキューブ（録画を読む段の読めたマス・止めたときのキューブ・結果カード）と、
+// 解き直しの「探索の枝」。描くだけで、状態は持たない。1 回の描画の時間を数える（drawStats。E2E が読む）
+import { COLDIR, NORMAL, ROWDIR } from "../cube/model";
+
+// 描いた回数・時間（ms）の合計・最大・2ms を超えた回数。sized: canvas の大きさを決め直した描画（初めの 1 回・画面の大きさが変わった）の
+// 回数とその中の最大（画素の入れ物を作り直すので重い）。steadyMax: それ以外の描画の最大
+export const drawStats = { n: 0, total: 0, max: 0, over2: 0, sized: 0, sizedMax: 0, steadyMax: 0, list: [] as number[] };
+let sizedNow = false;
+function timed(f: () => void): void {
+  sizedNow = false;
+  const t0 = performance.now();
+  f();
+  const ms = performance.now() - t0;
+  drawStats.n++;
+  drawStats.total += ms;
+  if (ms > drawStats.max) drawStats.max = ms;
+  if (ms > 2) drawStats.over2++;
+  if (sizedNow) drawStats.sizedMax = Math.max(drawStats.sizedMax, ms);
+  else drawStats.steadyMax = Math.max(drawStats.steadyMax, ms);
+  if (drawStats.list.length < 400) drawStats.list.push(Math.round(ms * 100) / 100);
+}
+
+// 表示の大きさ（CSS の px）。描くたびに測るとレイアウトを強いるので、ResizeObserver で測った値を渡す（watchSize）
+export interface Size {
+  w: number;
+  h: number;
+}
+
+// canvas の大きさを見張り、変わったら（と最初に）draw を呼ぶ。戻り値で見張りをやめる
+export function watchSize(canvas: HTMLCanvasElement, size: Size, draw: () => void): () => void {
+  const ro = new ResizeObserver((es) => {
+    const r = es[es.length - 1].contentRect;
+    if (Math.round(r.width) === size.w && Math.round(r.height) === size.h) return;
+    size.w = Math.round(r.width);
+    size.h = Math.round(r.height);
+    draw();
+  });
+  ro.observe(canvas);
+  return () => ro.disconnect();
+}
+
+// canvas の大きさを表示の大きさ × 画素の比に合わせ、表示の座標で描けるようにする
+function fit(canvas: HTMLCanvasElement, size: Size): { ctx: CanvasRenderingContext2D; w: number; h: number } | null {
+  if (!size.w || !size.h) return null;
+  const dpr = Math.min(3, window.devicePixelRatio || 1);
+  const w = size.w;
+  const h = size.h;
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+    drawStats.sized++;
+    sizedNow = true;
+    canvas.width = Math.round(w * dpr);
+    canvas.height = Math.round(h * dpr);
+  }
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, w, h);
+  return { ctx, w, h };
+}
+
+// ---- 2D の等角のキューブ ----
+
+const C30 = Math.cos(Math.PI / 6);
+// カメラの座標（+x 右・+y 上・+z カメラ側）→ 画面（単位はマス 1 つ）
+const iso = (p: readonly number[]): [number, number] => [(p[0] - p[2]) * C30, -p[1] + (p[0] + p[2]) * 0.5];
+
+// 左と下の面は鏡に映して見せる: 左の面は右の面の形で左へ、下の面は上の面の形で下へずらす（マスの位置は、鏡に映したときの位置）
+const MIRROR_L = -6.2; // 左の面の画面の横のずらし
+const MIRROR_D = 6.9; // 下の面の画面の縦のずらし
+const BOX = { x0: -6.4, x1: 4.6, y0: -3.2, y1: 7.1 }; // 鏡も入れた絵の範囲（マスの単位）
+const BOX_CUBE = { x0: -2.8, x1: 2.8, y0: -3.2, y1: 3.2 }; // キューブだけ
+
+// カメラの面 slot（0 上 / 1 右 / 2 正面 / 3 下 / 4 左）のマス cell の 4 隅（画面の単位）
+function cellQuad(slot: number, cell: number): [number, number][] {
+  const row = Math.floor(cell / 3);
+  const col = cell % 3;
+  const n = NORMAL[slot];
+  const rd = ROWDIR[slot];
+  const cd = COLDIR[slot];
+  const g = 0.44;
+  const corners: [number, number][] = [];
+  for (const [a, b] of [
+    [-g, -g],
+    [-g, g],
+    [g, g],
+    [g, -g],
+  ]) {
+    const p = [0, 1, 2].map((k) => n[k] * 1.5 + rd[k] * (row - 1 + a) + cd[k] * (col - 1 + b));
+    if (slot === 4) {
+      // 左の面を鏡に映す: x = -1.5 の面を x = +1.5 に（y・z はそのまま）、絵は左へ
+      const [x, y] = iso([1.5, p[1], p[2]]);
+      corners.push([x + MIRROR_L, y]);
+    } else if (slot === 3) {
+      // 下の面を鏡に映す: y = -1.5 の面を y = +1.5 に（x・z はそのまま）、絵は下へ
+      const [x, y] = iso([p[0], 1.5, p[2]]);
+      corners.push([x, y + MIRROR_D]);
+    } else corners.push(iso(p));
+  }
+  return corners;
+}
+
+// 面の外枠（マスの下地）
+function faceQuad(slot: number): [number, number][] {
+  const q0 = cellQuad(slot, 0);
+  const q2 = cellQuad(slot, 2);
+  const q6 = cellQuad(slot, 6);
+  const q8 = cellQuad(slot, 8);
+  return [q0[0], q2[1], q8[2], q6[3]];
+}
+
+export interface IsoOptions {
+  colors: (string | null)[]; // 45 = 面 5 × 9 マス。null = 読めていない（黒）
+  mirrors: boolean; // 左と下の面を鏡に映して見せる
+  dim?: number; // 薄く（0..1、1 = そのまま）
+}
+
+// 札の位置（表示の px）。文字は canvas に描かずに DOM の札にする（日本語の文字を初めて描くと 1 回 10ms を超えた）
+export type LabelAt = { x: number; y: number } | null;
+
+// 戻り値: 鏡の札（左の面の下・下の面の右）の位置
+export function drawIsoCube(canvas: HTMLCanvasElement, size: Size, o: IsoOptions): { left: LabelAt; down: LabelAt } {
+  const out: { left: LabelAt; down: LabelAt } = { left: null, down: null };
+  if (!size.w) return out;
+  timed(() => {
+    const f = fit(canvas, size);
+    if (!f) return;
+    const { ctx, w, h } = f;
+    const box = o.mirrors ? BOX : BOX_CUBE;
+    const s = Math.min(w / (box.x1 - box.x0), h / (box.y1 - box.y0));
+    const ox = (w - (box.x1 - box.x0) * s) / 2 - box.x0 * s;
+    const oy = (h - (box.y1 - box.y0) * s) / 2 - box.y0 * s;
+    const P = ([x, y]: [number, number]): [number, number] => [ox + x * s, oy + y * s];
+    // 同じ色のマスは 1 つの道にまとめて塗る（マスごとに塗ると 1 回 2ms を超えることがあった）
+    const add = (path: Path2D, q: [number, number][]) => {
+      q.forEach((p, i) => {
+        const [x, y] = P(p);
+        if (i) path.lineTo(x, y);
+        else path.moveTo(x, y);
+      });
+      path.closePath();
+    };
+    ctx.globalAlpha = o.dim ?? 1;
+    const slots = o.mirrors ? [0, 1, 2, 3, 4] : [0, 1, 2];
+    ctx.lineJoin = "round";
+    const back = new Path2D();
+    const unread = new Path2D();
+    const byColor = new Map<string, Path2D>();
+    for (const slot of slots) {
+      add(back, faceQuad(slot));
+      for (let c = 0; c < 9; c++) {
+        const col = o.colors[slot * 9 + c];
+        let path = unread;
+        if (col) {
+          path = byColor.get(col) ?? new Path2D();
+          byColor.set(col, path);
+        }
+        add(path, cellQuad(slot, c));
+      }
+    }
+    ctx.fillStyle = "#050506";
+    ctx.fill(back);
+    ctx.lineWidth = 1;
+    ctx.fillStyle = "#121215";
+    ctx.fill(unread);
+    ctx.strokeStyle = "rgba(255,255,255,0.13)";
+    ctx.stroke(unread);
+    ctx.strokeStyle = "rgba(0,0,0,0.35)";
+    for (const [col, path] of byColor) {
+      ctx.fillStyle = col;
+      ctx.fill(path);
+      ctx.stroke(path);
+    }
+    if (o.mirrors) {
+      // 鏡の線（点線）と札
+      ctx.setLineDash([3, 4]);
+      ctx.strokeStyle = "rgba(255,255,255,0.28)";
+      ctx.lineWidth = 1;
+      const [lx] = P([(MIRROR_L + 2.6 - 2.6) / 2, 0]); // 左の面の右端（-3.6）とキューブの左端（-2.6）の間
+      ctx.beginPath();
+      ctx.moveTo(lx, P([0, -3])[1]);
+      ctx.lineTo(lx, P([0, 3.2])[1]);
+      ctx.stroke();
+      const [, dy] = P([0, 3.45]);
+      ctx.beginPath();
+      ctx.moveTo(P([-2.6, 0])[0], dy);
+      ctx.lineTo(P([2.6, 0])[0], dy);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      const [x, y] = P([MIRROR_L + 1.3, 3.3]);
+      out.left = { x, y };
+      const [x2, y2] = P([2.9, MIRROR_D - 0.2]);
+      out.down = { x: x2, y: y2 };
+    }
+    ctx.globalAlpha = 1;
+  });
+  return out;
+}
+
+// ---- 探索の枝 ----
+
+export interface BranchSide {
+  x: number | null; // 読みと合っている所まで進んだ位置（0..1。null = まだ）
+  alive: number; // 伸びている枝の数（有力な仮説の数の対数くらい）
+  dead: number; // 消えた枝の数（落とした仮説の数の対数くらい）
+}
+
+export interface BranchOptions {
+  fwd: BranchSide;
+  bwd: BranchSide;
+  meet: number | null; // つないだ位置（0..1）
+  color: string;
+}
+
+// 決まった乱数（同じ枝が毎回同じ形に描かれる）
+function rand(seed: number): number {
+  const x = Math.sin(seed * 12.9898 + 78.233) * 43758.5453;
+  return x - Math.floor(x);
+}
+
+// 戻り値: 真ん中の札（ここをつなぐ・つながった）の位置（上の真ん中）
+export function drawBranches(canvas: HTMLCanvasElement, size: Size, o: BranchOptions): LabelAt {
+  let label: LabelAt = null;
+  if (!size.w) return label;
+  timed(() => {
+    const f = fit(canvas, size);
+    if (!f) return;
+    const { ctx, w, h } = f;
+    const pad = 10;
+    const mid = h * 0.45;
+    const X = (u: number) => pad + u * (w - pad * 2);
+    const spread = h * 0.32;
+    ctx.lineCap = "round";
+    // 時間の軸
+    ctx.strokeStyle = "rgba(255,255,255,0.12)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(X(0), h - 6);
+    ctx.lineTo(X(1), h - 6);
+    ctx.stroke();
+    const side = (s: BranchSide, dir: 1 | -1, seed: number) => {
+      const x0 = dir === 1 ? X(0) : X(1);
+      if (s.x === null) return;
+      const reach = X(s.x);
+      const len = reach - x0;
+      // 消えた枝: 根元からの途中で分かれて、少し伸びて止まる
+      for (let i = 0; i < s.dead; i++) {
+        const u = 0.08 + 0.84 * rand(seed + i * 7.1);
+        const bx = x0 + len * u;
+        const ex = bx + dir * Math.max(10, Math.abs(len) * (0.08 + 0.12 * rand(seed + i * 3.3)));
+        const ey = mid + (rand(seed + i * 5.7) < 0.5 ? -1 : 1) * spread * (0.35 + 0.65 * rand(seed + i * 9.1));
+        ctx.strokeStyle = "rgba(235,235,245,0.22)";
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.moveTo(bx, mid);
+        ctx.bezierCurveTo(bx + dir * 6, mid, ex - dir * 8, ey, ex, ey);
+        ctx.stroke();
+        ctx.fillStyle = "rgba(235,235,245,0.3)";
+        ctx.beginPath();
+        ctx.arc(ex, ey, 1.8, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      // 伸びている枝: 根元から今の所まで
+      const n = Math.max(1, s.alive);
+      for (let i = 0; i < n; i++) {
+        const off = n === 1 ? 0 : (i / (n - 1) - 0.5) * spread * 0.9;
+        const split = x0 + len * (0.25 + 0.4 * rand(seed + 100 + i));
+        ctx.strokeStyle = o.color;
+        ctx.globalAlpha = i === Math.floor((n - 1) / 2) ? 1 : 0.6;
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(x0, mid);
+        ctx.lineTo(split, mid);
+        ctx.bezierCurveTo(split + len * 0.15, mid, reach - len * 0.2, mid + off, reach, mid + off);
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = "#fff";
+        ctx.beginPath();
+        ctx.arc(reach, mid + off, 2.6, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.fillStyle = "#fff";
+      ctx.beginPath();
+      ctx.arc(x0, mid, 4.5, 0, Math.PI * 2);
+      ctx.fill();
+    };
+    side(o.fwd, 1, 1);
+    side(o.bwd, -1, 50);
+    // つなぐ所: 前向きの先と後ろ向きの先の間（重なっていれば重なり）。つないだら縦の線
+    const a = o.fwd.x;
+    const b = o.bwd.x;
+    if (o.meet !== null) {
+      const mx = X(o.meet);
+      ctx.strokeStyle = "#34c759";
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.moveTo(mx, mid - spread);
+      ctx.lineTo(mx, mid + spread);
+      ctx.stroke();
+      label = { x: Math.min(w - 40, Math.max(40, mx)), y: mid + spread + 4 };
+    } else if (a !== null && b !== null) {
+      const lo = X(Math.min(a, b));
+      const hi = X(Math.max(a, b));
+      const bw = Math.max(26, hi - lo);
+      const bx = (lo + hi) / 2 - bw / 2;
+      ctx.setLineDash([3, 3]);
+      ctx.strokeStyle = "rgba(255,255,255,0.4)";
+      ctx.lineWidth = 1;
+      ctx.strokeRect(bx, mid - spread * 0.75, bw, spread * 1.5);
+      ctx.setLineDash([]);
+      label = { x: Math.min(w - 40, Math.max(40, bx + bw / 2)), y: mid + spread * 0.75 + 4 };
+    }
+  });
+  return label;
+}

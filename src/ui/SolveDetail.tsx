@@ -31,7 +31,7 @@ const safeMoves = (names: string[]): number[] | null => {
 
 // 手ごとの、カメラから見えていたキューブの向き。以前の記録（o がない）は、持ち方基準の表記 r とキューブ固定の表記 m から、
 // 合う向きのうち前の手の向きにいちばん近いもの（同じなら同じ）を選ぶ（表記は自分から見た向きか、カメラから見た向き）
-function replayMoves(moves: SolveMove[], ms: number[]): ReplayMove[] {
+export function replayMoves(moves: SolveMove[], ms: number[]): ReplayMove[] {
   // 回し始めがない以前の記録は、回し終わりの 150ms 前から
   let prev: number | null = null;
   return moves.map((m, i) => {

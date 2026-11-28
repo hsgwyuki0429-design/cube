@@ -4,7 +4,8 @@
 import { type CubeState, OPPOSITE, applyMove, isSolved, moveFace, solvedState, statesEqual } from "../cube/model";
 import { type EngineOptions, TrackerEngine } from "../track/engine";
 import { mergeQuickRepeats, separateMotions, simplifyMoves } from "../track/merge";
-import { DEFAULT_OFFLINE, OfflineForward, type OfflineOptions, type OfflineResult, decodeOffline, finishDeep } from "../track/offline";
+import { DEFAULT_OFFLINE, OfflineForward, type OfflineOptions, type OfflineResult, type SearchStep, decodeOffline, finishDeep } from "../track/offline";
+import type { SearchStage, ShowRef } from "./showProtocol";
 import { type DecodeOptions as PiecesDecodeOptions, decodePieces } from "../track/pieces/decode";
 import { type SolveOptions as PiecesSolveOptions, solvePieces } from "../track/pieces/solve";
 import { PERM, TOUCH, piecesOf } from "../track/pieces/model";
@@ -53,6 +54,8 @@ export interface RefineInput {
   // 決めたフレーム）。完成までつながったら、手順をこの時刻より前の最後の揃いで打ち切る（src/track/stopCut.ts。止めた後の手は数えない）。
   // 手動・GAN タイマーで止めたときは渡さない
   stop?: LiveStop;
+  // 止めた後の画面に見せる知らせの送り先（src/vision/showFeed.ts。タイマーの解析だけ。解き方は変えない）
+  show?: ShowRef;
 }
 
 // 軽い検査: 全フレームを精密に処理する代わりに、前に精密に処理したフレーム（基準）の面の格子で、各マスの真ん中あたりの色を数点だけ測り
@@ -371,8 +374,14 @@ export class Refiner {
     return this.config;
   }
 
-  // 精密に処理したフレームの結果（調査用: tests/debug/realVideo.debug.test.ts）
+  // 精密に処理したフレームの結果（調査用: tests/debug/realVideo.debug.test.ts。止めた後の画面の知らせ: src/vision/showFeed.ts）
   onFrame?: (t: number, r: FrameResult) => void;
+  // 解き直しの観測ごとの 1 歩（止めた後の画面の知らせ: src/vision/showFeed.ts）。read = 録画を読みながら進めた前向き
+  onSearch?: (stage: SearchStage | "read", e: SearchStep) => void;
+  private searchHook(stage: SearchStage): Pick<OfflineOptions, "onSearch"> {
+    const f = this.onSearch;
+    return f ? { onSearch: (e) => f(stage, e) } : {};
+  }
 
   // 次に検出するフレームの切り出し（別の Worker で検出するとき。最後に処理し終えたフレームのマーカーの範囲から）
   detectHint(img: PixelSource, t: number): DetectHint | null {
@@ -396,7 +405,12 @@ export class Refiner {
     this.engine.push(reading);
     if (this.forward) {
       const log = this.engine.observationLog;
-      for (; this.fedObs < log.length; this.fedObs++) this.forward.feed(log[this.fedObs]);
+      for (; this.fedObs < log.length; this.fedObs++) {
+        const n = this.forward.F.length;
+        this.forward.feed(log[this.fedObs]);
+        // 止めた後の画面: 録画を読みながら進めた前向きの様子（送らずに数えるだけ）
+        if (this.onSearch && this.forward.F.length > n) this.onSearch("read", { dir: "f", t: log[this.fedObs].t, hyps: this.forward.F[n].hyps });
+      }
     }
     this.looks.push({ t, solved: reading.faces.length > 0 && this.engine.looksSolved(reading) });
     this.patches.push({ t, faces: r.faces.map((f) => facePatch(img, { ...f, labs: f.labs })) });
@@ -504,12 +518,12 @@ export class Refiner {
     // 前向き（スクランブル後から）と後ろ向き（完成から）の両方で解き直し、辻褄の合う所でつなぐ
     // ステッカーの動きの方程式（RefineInput.pieces）: 完成までつながらなければ、これまでの解き直しに戻す
     const pieces = target && this.input.pieces ? this.decodeByPieces(target, tick) : null;
-    let off: OfflineResult = pieces ?? decodeOffline(this.engine.observationLog, Uint8Array.from(this.input.state), target, this.lastT, { ...this.offlineOptions(), tick }, this.forward ?? undefined);
+    let off: OfflineResult = pieces ?? decodeOffline(this.engine.observationLog, Uint8Array.from(this.input.state), target, this.lastT, { ...this.offlineOptions(), tick, ...this.searchHook("first") }, this.forward ?? undefined);
     if (!pieces && target && off.method !== "meet" && off.method !== "backward") {
       const base = this.offlineOptions();
       const verdict = this.startVerdict as StartVerdict | null; // 1 回目の解き直しの中で書き換わる
       const rejected = verdict !== null && !verdict.ok;
-      const deep = decodeOffline(this.engine.observationLog, Uint8Array.from(this.input.state), target, this.lastT, { ...base, decoder: { ...base.decoder, ...DEEP_DECODER }, backwardMs: DEEP_BACKWARD_MS, tick, ...(rejected ? { deadline: performance.now() + DEEP_AFTER_REJECT_MS } : {}) });
+      const deep = decodeOffline(this.engine.observationLog, Uint8Array.from(this.input.state), target, this.lastT, { ...base, decoder: { ...base.decoder, ...DEEP_DECODER }, backwardMs: DEEP_BACKWARD_MS, tick, ...this.searchHook("deep"), ...(rejected ? { deadline: performance.now() + DEEP_AFTER_REJECT_MS } : {}) });
       this.deepTimedOut = !!deep.timedOut;
       const guessed = (r: typeof off) => r.moves.filter((m) => m.inferred).length;
       if (deep.reachedEnd && (!off.reachedEnd || guessed(deep) < guessed(off) || (guessed(deep) === guessed(off) && deep.method === "meet"))) off = deep;
@@ -574,7 +588,7 @@ export class Refiner {
           let s0: CubeState = startState;
           for (const m of head) s0 = applyMove(s0, m.move);
           const obs = this.engine.observationLog.filter((o) => o.t > from && o.t <= until);
-          const again = decodeOffline(obs, s0, target, until, { ...this.offlineOptions(), startCheck: undefined, tick });
+          const again = decodeOffline(obs, s0, target, until, { ...this.offlineOptions(), startCheck: undefined, tick, ...this.searchHook("stop") });
           const guessed = (ms: DecodedMove[]) => ms.filter((m) => m.inferred).length;
           this.stopTried = `decode-rejected: ${again.method}${again.reachedEnd ? "" : "・届かない"}${again.startState ? "・始まりが違う" : ""}・推定 ${guessed(again.moves)}/${guessed(moves.slice(k))}`;
           if (again.reachedEnd && again.method === "meet" && !again.startState && again.moves.length && guessed(again.moves) <= guessed(moves.slice(k))) {

@@ -20,6 +20,7 @@ import type { FrameMessage, FromWorker, StreamPartial, ToWorker } from "./protoc
 import type { CV, PixelSource } from "./image";
 import { loadOpenCv } from "./opencv";
 import { errorMessage } from "../lib/util";
+import { ShowFeed } from "./showFeed";
 
 let cv: CV | null = null;
 let config: PipelineConfig = { ...DEFAULT_PIPELINE };
@@ -63,6 +64,48 @@ interface Stream {
   endAt: number | null;
   duty: number; // 処理していた時間の割合の上限（stream-duty）
   lazy: boolean; // 間引くフレームを画素にしない（stream-lazy）
+  show: Show | null; // 止めた後の画面に見せる知らせ（RefineInput.show）
+  fed: number[]; // 受け取った録画のフレームの時刻（ms。知らせの「読み終えたフレーム」を数える。show のときだけ）
+}
+
+// 止めた後の画面に見せる知らせ（src/vision/showFeed.ts）。送り先は BroadcastChannel（本体のメッセージの受け口を増やさない）
+interface Show {
+  feed: ShowFeed;
+  close: () => void;
+}
+function showFor(refiner: Refiner, input: RefineInput, frames: () => { done: number; total: number }): Show | null {
+  if (!input.show || typeof BroadcastChannel === "undefined") return null;
+  try {
+    const bc = new BroadcastChannel(input.show.channel);
+    const feed = new ShowFeed((m) => bc.postMessage(m), input.show.token, frames);
+    refiner.onFrame = (t, r) => feed.frame(t, r);
+    refiner.onSearch = (stage, e) => feed.search(stage, e);
+    return { feed, close: () => bc.close() };
+  } catch {
+    return null;
+  }
+}
+
+// 昇順の times のうち lo 以上 hi 以下の数
+function countIn(times: number[], lo: number, hi: number): number {
+  const at = (x: number, upper: boolean) => {
+    let a = 0;
+    let b = times.length;
+    while (a < b) {
+      const m = (a + b) >> 1;
+      if (upper ? times[m] <= x : times[m] < x) a = m + 1;
+      else b = m;
+    }
+    return a;
+  };
+  return Math.max(0, at(hi, true) - at(lo, false));
+}
+
+// 読み終えたフレーム: 解析の範囲（回し始めの少し前〜止めた時刻）の録画のうち、処理か飛ばすかを決め終えたもの
+function streamFrames(s: Stream): { done: number; total: number } {
+  const from = s.fullFrom === Infinity ? -Infinity : s.fullFrom;
+  const to = s.end?.to ?? Infinity;
+  return { done: countIn(s.fed, from, Math.min(to, s.lastSeen)), total: countIn(s.fed, from, to) };
 }
 const streams = new Map<number, Stream>();
 const pendingLazy = new Set<number>(); // 解析が始まる前に届いた stream-lazy
@@ -86,6 +129,7 @@ function releaseChunks(id: number, s: Stream): void {
   if (!n) return;
   s.decoder.push(s.held.splice(0, n)).catch((e) => {
     streams.delete(id);
+    s.show?.close();
     post({ type: "refine-error", id, message: errorMessage(e) });
   });
 }
@@ -472,6 +516,8 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
         try {
           const refiner = newRefiner(input);
           const total = recording.chunks.filter((c) => c.timestamp / 1000 >= input.from && c.timestamp / 1000 <= input.to).length;
+          let seen = 0;
+          const show = showFor(refiner, input, () => ({ done: seen, total }));
           const progress = progressPoster(id, () => total);
           // 止まっているフレームは飛ばす（ソルブ中から進める解析と同じ。やり直しの解析を待つ時間を短く）
           const still = new StillSkipper();
@@ -484,6 +530,7 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
             recording,
             (img, t) => {
               if (t < input.from || t > input.to) return;
+              seen++;
               progress();
               if (t < inspectUntil) {
                 if (t - lastInspect < INSPECT_EVERY_MS) return;
@@ -495,6 +542,8 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
           );
           post({ type: "refine-phase", id, phase: "decode" });
           const result = refiner.result(undefined, phasePoster(id));
+          show?.feed.end();
+          show?.close();
           if (info) result.decodeInfo = { ...(info as DecodeInfo), refined: refiner.frames, gated: refiner.gated };
           post({ type: "refine-result", id, result });
         } catch (e) {
@@ -508,7 +557,9 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
           if (!msg.input) return;
           const refiner = newRefiner(msg.input);
           const par = parallelFeeder(refiner, msg.input.parallel === undefined ? 0 : poolFor(msg.input));
-          s = { refiner, decoder: null, fedUntil: 0, lastPartial: -Infinity, still: new StillSkipper(), fullFrom: msg.inspection ? Infinity : -Infinity, held: [], lastInspect: -Infinity, par, lastSeen: -Infinity, solvingAt: null, endAt: null, duty: 1, lazy: false };
+          s = { refiner, decoder: null, fedUntil: 0, lastPartial: -Infinity, still: new StillSkipper(), fullFrom: msg.inspection ? Infinity : -Infinity, held: [], lastInspect: -Infinity, par, lastSeen: -Infinity, solvingAt: null, endAt: null, duty: 1, lazy: false, show: null, fed: [] };
+          const made = s;
+          s.show = showFor(refiner, msg.input, () => streamFrames(made));
           if (pendingLazy.delete(msg.id)) s.lazy = true;
           streams.set(msg.id, s);
         }
@@ -521,6 +572,7 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
           st.decoder.onSkip = (t) => (st.lastSeen = t);
         }
         st.fedUntil = Math.max(st.fedUntil, rec.chunks[rec.chunks.length - 1].timestamp / 1000);
+        if (st.show) for (const c of rec.chunks) st.fed.push(c.timestamp / 1000);
         st.held.push(...rec.chunks);
         releaseChunks(msg.id, st);
         return;
@@ -572,6 +624,7 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
           const tr = performance.now();
           const result = s.refiner.result(msg.target ? Uint8Array.from(msg.target) : null, phasePoster(msg.id));
           perf.busyMs += performance.now() - tr;
+          s.show?.feed.end();
           if (s.decoder) result.decodeInfo = { ...s.decoder.info(), refined: s.refiner.frames, gated: s.refiner.gated, stream: { solvingAt: s.solvingAt, endAt: s.endAt, fullFrom: s.fullFrom } };
           // 調査用: 止めた時点の遅れ・残りの処理・解き直しの時間
           console.info(`[analysis] behind ${behind.toFixed(0)}ms rest ${(t1 - t0).toFixed(0)}ms result ${(performance.now() - t1).toFixed(0)}ms frames ${s.refiner.frames} gated ${s.refiner.gated} copied ${s.decoder?.copied ?? 0} pool ${pool}`);
@@ -580,6 +633,7 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
           post({ type: "refine-error", id: msg.id, message: errorMessage(e) });
         } finally {
           s.decoder?.close();
+          s.show?.close();
           doneReadMs += s.decoder?.readMs ?? 0;
           void s.par.then((p) => p?.pool.close());
           streams.delete(msg.id);
@@ -640,6 +694,7 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
       }
       case "stream-cancel": {
         streams.get(msg.id)?.decoder?.close();
+        streams.get(msg.id)?.show?.close();
         void streams.get(msg.id)?.par.then((p) => p?.pool.close());
         streams.delete(msg.id);
         return;

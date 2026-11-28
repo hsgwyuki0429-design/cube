@@ -16,13 +16,15 @@ import { seenMoves } from "./liveShow";
 import { StartCard } from "./playParts";
 import { moveLabel } from "./notation";
 import { ScanPanel } from "./ScanPanel";
-import { shareSolve } from "./shareCard";
-import { AnalysisBadge, PenaltyRow, bestGain, openSolve, useTicker } from "./solveUi";
+import { AnalysisBadge, bestGain, openSolve, useTicker } from "./solveUi";
 import { ADVICE_TEXT } from "../app/captureAdvice";
+import { StoppedScreen } from "./StoppedScreen";
 import { adviceStore } from "../app/captureGuide";
 
 // タイマーで計測している間（下のバー・切り替え・記録を隠す）
 export const useFocus = () => useStore(timerStore, (t) => t.phase === "solving");
+// 止めた後（done の間）: カメラの映像を隠し、真ん中にキューブを出す画面（src/ui/StoppedScreen.tsx）。カメラは止めない
+const useStopped = () => useStore(timerStore, (t) => t.phase === "done" && !!t.result);
 
 // ---- 上: タイム ----
 
@@ -142,17 +144,20 @@ function CaptureAdvice() {
   );
 }
 
-function TopBar() {
+function TopBar({ stopped }: { stopped: boolean }) {
   return (
     <header class="stage-top">
       <div class="stage-bar chrome">
         <StatusDot />
       </div>
-      <CaptureAdvice />
-      <div class="stage-time">
-        <TimerTop />
-        <Records />
-      </div>
+      {/* 止めた後はタイムの下に（StoppedScreen が並べる） */}
+      {!stopped && <CaptureAdvice />}
+      {!stopped && (
+        <div class="stage-time">
+          <TimerTop />
+          <Records />
+        </div>
+      )}
     </header>
   );
 }
@@ -264,47 +269,6 @@ function ScrambleGuide() {
   );
 }
 
-function DoneStrip() {
-  const t = useStore(timerStore, (s) => s);
-  const settings = useStore(settingsStore, (s) => ({ notation: s.notation }));
-  const r = t.phase === "done" ? t.result : null;
-  return (
-    <div class="strip-block">
-      {r && (
-        <>
-          {r.analysis === "pending" ? (
-            <div class="progress glass-progress" aria-label="解析の進み具合">
-              <div style={{ width: `${Math.round(t.analysisProgress * 100)}%` }} />
-            </div>
-          ) : (
-            <MoveStrip labels={r.moves.map((m) => ({ text: settings.notation === "relative" ? m.r : m.m, cls: m.inferred ? "inferred" : "" }))} empty="手順を読めませんでした" />
-          )}
-          <div class="done-actions">
-            <PenaltyRow solve={r} />
-            <button class="seg share" onClick={() => shareSolve(r, t.solves)}>
-              <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-                <path d="M12 15V3M7 8l5-5 5 5M5 13v6a2 2 0 002 2h10a2 2 0 002-2v-6" />
-              </svg>
-              共有
-            </button>
-          </div>
-        </>
-      )}
-      {r && (
-        <div class="next-row">
-          <button class="btn primary" onClick={() => newScramble()}>
-            次のソルブ
-          </button>
-          <button class="pill" onClick={() => openSolve(r.id)}>
-            詳しく
-          </button>
-        </div>
-      )}
-      {t.message && <p class="strip-note">{t.message}</p>}
-    </div>
-  );
-}
-
 function TimerStrip() {
   const phase = useStore(timerStore, (s) => s.phase);
   const startIndex = useStore(timerStore, (s) => s.startIndex);
@@ -332,7 +296,8 @@ function TimerStrip() {
         </div>
       </div>
     );
-  return <DoneStrip />;
+  // 止めた後は StoppedScreen（結果カードに「次のソルブ」・+2・DNF・削除・共有）
+  return null;
 }
 
 function BottomStrip() {
@@ -355,6 +320,7 @@ function BottomStrip() {
 
 export function PlayScreen() {
   const focus = useFocus();
+  const stopped = useStopped();
   const scanning = useStore(controller.store, (s) => !!s.scan);
   // Space で手動停止（タイマーの計測中）
   useEffect(() => {
@@ -368,17 +334,19 @@ export function PlayScreen() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
   return (
-    <div class={`play stage${focus ? " focus" : ""}${scanning ? " scanning" : ""}`}>
+    <div class={`play stage${focus ? " focus" : ""}${scanning ? " scanning" : ""}${stopped ? " stopped" : ""}`}>
       <div class="stage-cam">
         <CameraView />
       </div>
       <div class="stage-scrim top" aria-hidden="true" />
       <div class="stage-scrim bottom" aria-hidden="true" />
-      <TopBar />
-      <div class="stage-bottom">
+      <TopBar stopped={stopped} />
+      {/* 止めた後はライブの 3D を隠す（外さない: 次のソルブでそのまま続ける） */}
+      <div class="stage-bottom" aria-hidden={stopped ? "true" : undefined}>
         <BottomStrip />
         <CubeInset />
       </div>
+      {stopped && <StoppedScreen advice={<CaptureAdvice />} />}
     </div>
   );
 }

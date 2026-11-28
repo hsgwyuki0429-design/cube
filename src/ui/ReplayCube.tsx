@@ -123,6 +123,13 @@ export interface ReplayCubeProps {
   plan: (F2LStep | null)[]; // k 手回した後の次に入るスロット（f2lPlan）
   labels: string[]; // 手ごとの表記（いま回した手を 3D の上に大きく出す）
   simple?: boolean; // 見え方・スイッチを出さず、クロスの面を下にした定点で再生する
+  // 止めた後の画面の再現（src/ui/StoppedScreen.tsx）: 下の操作の列・見え方の切り替えを出さず、外から速さ・やり直しを決める
+  bare?: boolean;
+  slow?: number; // 速さ（1 = 実際の速さ・2 = 1/2）。変えたら今の手から
+  playKey?: number; // 変えたら最初から再生し直す
+  onAt?: (at: number) => void; // 回した手の数（手を回し始めたとき）
+  onClock?: (real: number) => void; // 再生中の実際の時刻（ms、計測開始から。描画のたびに）
+  onEnd?: () => void; // 最後まで再生した
 }
 
 interface Playback {
@@ -145,9 +152,9 @@ export function ReplayCube(props: ReplayCubeProps) {
   const [follow, setFollow] = usePref<boolean>("f2lFollow", true);
   const [glow, setGlow] = usePref<boolean>("f2lGlow", false);
   const [shown, setShown] = useState<{ i: number; label: string } | null>(null);
-  const view: ReplayView = props.simple ? "down" : prefView;
+  const view: ReplayView = props.simple || props.bare ? "down" : prefView;
   const mirrored = view === "camera" && !!props.mirror;
-  const slow = SPEEDS[speed].slow;
+  const slow = props.slow ?? SPEEDS[speed].slow;
   // 描画のループからも、いまの見え方・スイッチを読む
   const opts = useRef({ view, follow: follow && !props.simple, glow: glow && !props.simple });
   opts.current = { view, follow: follow && !props.simple, glow: glow && !props.simple };
@@ -275,7 +282,11 @@ export function ReplayCube(props: ReplayCubeProps) {
     let prevEnd = -Infinity;
     for (let i = from; i < ms.length; i++) {
       const m = ms[i];
-      const len = Math.max(MIN_TURN_MS, (m.t > m.s ? m.t - m.s : UNKNOWN_TURN_MS) * slow);
+      // 1 手の長さは次の手の回し始めまで（同じ面の 2 手を 1 手にまとめた手は、回し始めが前の手より前・回し終わりが次の手より後に
+      // なることがあり、そのまま描くと再現が実際より遅れていった）
+      const next = ms[i + 1];
+      const span = m.t > m.s ? m.t - m.s : UNKNOWN_TURN_MS;
+      const len = Math.max(MIN_TURN_MS, (next && next.s > m.s ? Math.min(span, next.s - m.s) : span) * slow);
       const at = Math.max((m.s - real0) * slow, prevEnd + GAP_MS);
       sched.push({ at, len, real: m.s });
       prevEnd = at + len;
@@ -322,12 +333,15 @@ export function ReplayCube(props: ReplayCubeProps) {
           atRef.current = i + 1;
           setAt(i + 1);
           setMask(i + 1);
+          propsRef.current.onAt?.(i + 1);
         }
         k = p.from + p.next;
         real = realAt(p, tp);
+        propsRef.current.onClock?.(real);
         if (tp >= p.end) {
           pb.current = null;
           setPlaying(false);
+          propsRef.current.onEnd?.();
         }
       }
       // 向き: 目標をなめらかに追い、ドラッグした分を足す
@@ -353,7 +367,15 @@ export function ReplayCube(props: ReplayCubeProps) {
   // 手を押したとき・記録・速さが変わったとき: その手の前から再生
   useEffect(() => {
     if (ready) play(props.from);
-  }, [ready, props.from, props.setupAlg, props.moves.length, speed]);
+  }, [ready, props.from, props.setupAlg, props.moves.length, speed, props.playKey]);
+
+  // 外から速さを変えた（止めた後の画面の「スロー」）: 今の手から続ける
+  const slowSeen = useRef(props.slow);
+  useEffect(() => {
+    if (!ready || slowSeen.current === props.slow) return;
+    slowSeen.current = props.slow;
+    if (pb.current) play(atRef.current);
+  }, [props.slow]);
 
   // 見え方・スイッチを変えたら光り方を変える（向きは描画のループがなめらかに追う）
   useEffect(() => {
@@ -398,12 +420,13 @@ export function ReplayCube(props: ReplayCubeProps) {
     <div class="replay-cube">
       <div class="replay-stage">
         <div class={`cube3d live-cube${mirrored ? " mirrored" : ""}`} ref={host} onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp} />
-        {shown && playing && (
+        {shown && playing && !props.bare && (
           <span class="replay-move" key={shown.i} aria-live="off">
             {shown.label}
           </span>
         )}
       </div>
+      {!props.bare && (
       <div class="replay-bar">
         <button class="btn ghost small" onClick={() => jump(0)}>
           最初へ
@@ -422,7 +445,8 @@ export function ReplayCube(props: ReplayCubeProps) {
           {Math.min(at, n)} / {n} 手
         </span>
       </div>
-      {!props.simple && (
+      )}
+      {!props.simple && !props.bare && (
         <>
           <div class="replay-views" role="radiogroup" aria-label="見え方">
             {views.map((v) => (

@@ -27,6 +27,7 @@ import { markPhase } from "./crashGuard";
 import { PerfLog, summarizePerf } from "./perfLog";
 import { parseSolveLoad } from "./solveLoad";
 import { LiveRest } from "./liveRest";
+import { beginShow } from "./stopShow";
 
 // 画面: プレイ・データ（グラフと履歴）・1 回の記録の詳しい画面・解析（スロー動画・ArUco の画面）・設定（使い方も）
 export type Screen = "play" | "data" | "solve" | "analyze" | "settings";
@@ -567,6 +568,9 @@ class Controller {
       ...(opts.timed ? {} : { keepPatchesMs: 3000 }),
       ...refinePool(),
     };
+    // 止めた後の画面に見せる知らせ（src/app/stopShow.ts。タイマーの解析だけ）
+    const show = opts.timed ? beginShow() : undefined;
+    if (show) session.input.show = show;
     const id = await this.refiner.startStream((p) => this.onAnalysisPartial(session, p));
     if (id === null || this.session !== session) return abandon();
     session.id = id;

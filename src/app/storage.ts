@@ -38,6 +38,10 @@ export interface Solve {
   stickers?: "quad-half" | "standard";
   // リアルタイムのタイマーが始めた・止めた理由（src/app/startDetect.ts・stopDetect.ts）。調べるとき用で、画面には出さない
   edges?: { start?: StartWhy; stop?: StopWhy };
+  // ライブが読んだマス: タイマーの開始〜停止の間に、ライブのフレームの見え方でマーカーを直接読めたマスの合計と、処理したフレームの数
+  // （src/app/liveReads.ts。止めた後の結果カード。2026-11-28 より前の記録にはない）
+  liveReads?: { cells: number; frames: number };
+  settleMs?: number; // 止めてから精密解析で確定（一部推定・速報値も）するまで（ms。止めた後の結果カード）
 }
 
 // 開始: ids = 見え方が ID でスクランブルの状態から変わり、層が動いたのを見た / pad = GAN タイマー。
