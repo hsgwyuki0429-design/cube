@@ -19,6 +19,7 @@ export interface Settings {
   stableMs: number;
   cameraFps: number;
   rotationCost: number;
+  showReadings: boolean; // 読み取りを表示（カメラの映像の上に面の格子・マス・面の札。既定はオフ: src/ui/CameraView.tsx）
   captureAdvice: boolean; // 撮り方の案内（近づける・明るく・真ん中に…）を出す（src/app/captureAdvice.ts）
 }
 
@@ -40,6 +41,7 @@ export const DEFAULT_SETTINGS: Settings = {
   stableMs: 33,
   cameraFps: 60,
   rotationCost: 1.5,
+  showReadings: false,
   captureAdvice: true,
 };
 

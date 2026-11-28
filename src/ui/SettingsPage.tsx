@@ -138,7 +138,10 @@ export function SettingsPage() {
           <Field label="3D キューブの向き">
             <Select k="cube3dView" options={[["camera", "カメラの映像と同じ向き"], ["fixed", "固定（白上・緑前）"]]} />
           </Field>
-          <Field label="撮り方の案内" desc="キューブが小さい・暗い・端に寄っているときなどに、直してほしいことを画面の上に 1 行で出します（ソルブ中・インスペクション中は出しません）">
+          <Field label="読み取りを表示" desc="カメラの映像の上に、読み取った面の格子とマスを重ねます。直接読めたマスはそのステッカーの色、前のフレームから引き継いだマスは薄い印、読めないマスは赤い ×。面の札は直接読めたマスの数です">
+            <Toggle k="showReadings" />
+          </Field>
+                    <Field label="撮り方の案内" desc="キューブが小さい・暗い・端に寄っているときなどに、直してほしいことを画面の上に 1 行で出します（ソルブ中・インスペクション中は出しません）">
             <Toggle k="captureAdvice" />
           </Field>
         </div>

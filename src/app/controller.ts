@@ -159,7 +159,8 @@ class Controller {
   private stalled = 0;
   private lastRetry = -Infinity;
   private session: AnalysisSession | null = null;
-  readonly liveRest = new LiveRest(); // 止めた後の残りの解析の間（ライブの認識を休む）
+  readonly liveRest = new LiveRest();
+  lastCamT = 0; // 最後に届いたカメラのフレームの撮影時刻（画面の図の遅れを測る: perfLog の drawLag） // 止めた後の残りの解析の間（ライブの認識を休む）
   private snapLive = true; // ライブの作り変えを使うか（タイマーのスクランブル中は使わない）
   private piecesLive = false; // ソルブ中のライブの状態の推定を使うか（タイマーの計測中だけ）
   private solvingNow = false; // タイマーの計測中
@@ -206,6 +207,7 @@ class Controller {
       .then(({ opencv, ms }) => this.store.set({ vision: opencv ? "ready" : "error", visionLoadMs: ms }))
       .catch(() => this.store.set({ vision: "error" }));
     this.vision.onResult((m) => {
+      this.perf.drawLag(this.lastCamT - m.t);
       const a = performance.now();
       this.onFrame(m);
       this.perf.addMs("msgMs", performance.now() - a);
@@ -223,6 +225,7 @@ class Controller {
     perf.start();
     this.camera.onFrame((t) => {
       const a = performance.now();
+      this.lastCamT = t;
       perf.count("cam");
       // 止めた後の残りの解析の間は、ライブの認識を休む（1 秒に何枚も作る画像でメモリの山が高くなり、iPhone で落ちる元になる。
       // 休んでいる間に回した手は、再開したときに見えている色への作り変えで追いつく）

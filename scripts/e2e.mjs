@@ -132,6 +132,16 @@ try {
     const t0 = Date.now();
     // E2E_NOHELPER=1: 認識の補助の Worker を使わない（コアが少ない端末のように）
     if (process.env.E2E_NOHELPER) await page.addInitScript(() => Object.defineProperty(navigator, "hardwareConcurrency", { get: () => 2 }));
+    // E2E_READINGS=1: 設定の「読み取りを表示」をオンにして始める（src/ui/CameraView.tsx）
+    if (process.env.E2E_READINGS)
+      await page.addInitScript(() => {
+        const k = "cubevision.settings.v1";
+        let cur = {};
+        try {
+          cur = JSON.parse(localStorage.getItem(k) ?? "{}");
+        } catch {}
+        localStorage.setItem(k, JSON.stringify({ ...cur, showReadings: true }));
+      });
     if (FAKECAM) {
       // 偽のカメラ: カメラを開始し（動画は開いたときから流れる。最初の 6 秒は揃った状態）、揃った状態から始めて、動画と同じスクランブルを出す
       await page.context().grantPermissions(["camera"]);
@@ -154,6 +164,25 @@ try {
         }, 100);
       });
       try {
+        // E2E_SHOTS=フォルダ: スクランブル中（3 手目から）・インスペクション（1 秒後）・ソルブ中（2 秒後）の画面を撮る
+        if (process.env.E2E_SHOTS) {
+          mkdirSync(process.env.E2E_SHOTS, { recursive: true });
+          const shot = { scrambling: false, inspection: false, solving: false };
+          const since = {};
+          const t0s = Date.now();
+          while (Date.now() - t0s < 240000) {
+            const ph = await page.evaluate(() => ({ phase: window.__cubevisionTimer.get().phase, done: window.__cubevisionTimer.get().guideDone }));
+            if (ph.phase === "done") break;
+            since[ph.phase] ??= Date.now();
+            const wait = { scrambling: 0, inspection: 1000, solving: 2000 }[ph.phase];
+            if (wait !== undefined && !shot[ph.phase] && Date.now() - since[ph.phase] >= wait && (ph.phase !== "scrambling" || ph.done >= 3)) {
+              shot[ph.phase] = true;
+              await page.screenshot({ path: `${process.env.E2E_SHOTS}/seed${seed}-${ph.phase}.png` });
+              console.log(`  画面: ${process.env.E2E_SHOTS}/seed${seed}-${ph.phase}.png`);
+            }
+            await page.waitForTimeout(100);
+          }
+        }
         await page.waitForFunction(() => window.__cubevisionTimer?.get().phase === "done", null, { timeout: 240000, polling: 500 });
       } catch (e) {
         const st = await page.evaluate(() => {

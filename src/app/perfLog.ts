@@ -27,6 +27,8 @@ export interface PerfRow {
   refine: number; // 精密解析が処理した
   decoded: number; // 精密解析が復号した
   refineBusy: number; // 精密解析の Worker の忙しさ（画素にする + 処理）
+  drawLag50: number; // 認識の結果を受けて描いた時点の映像（requestVideoFrameCallback の最新の撮影時刻）− その結果のフレームの撮影時刻（ms。中央）
+  drawLag90: number; // 同じく 90%
   behind: number; // 精密解析の遅れ（受け取った録画の最後 − 処理したフレーム, ms。インスペクションのわざと遅らせる分を含む）
 }
 
@@ -39,7 +41,7 @@ export interface WorkerPerf {
 
 const KEEP_ROWS = 360;
 
-type Counters = Omit<PerfRow, "t" | "phase" | "liveBusy" | "helperBusy" | "refineBusy" | "behind" | "refine" | "decoded" | "live" | "helper">;
+type Counters = Omit<PerfRow, "t" | "phase" | "liveBusy" | "helperBusy" | "refineBusy" | "behind" | "refine" | "decoded" | "live" | "helper" | "drawLag50" | "drawLag90">;
 const zero = (): Counters => ({ cam: 0, raf: 0, lag: 0, mainMs: 0, msgMs: 0, sent: 0, sentHelper: 0, full: 0, rest: 0, skipped: 0, rec: 0, recDropped: 0, recMs: 0, recQueue: 0 });
 
 export class PerfLog {
@@ -87,6 +89,11 @@ export class PerfLog {
   addMs(key: "mainMs" | "msgMs" | "recMs", ms: number): void {
     this.c[key] += ms;
   }
+  private lags: number[] = [];
+  // 認識の結果を受けたとき: 今の映像の撮影時刻 − 結果のフレームの撮影時刻（画面の図が映像より遅れる分）
+  drawLag(ms: number): void {
+    if (ms >= 0 && ms < 5000) this.lags.push(ms);
+  }
   queue(n: number): void {
     this.c.recQueue = Math.max(this.c.recQueue, n);
   }
@@ -96,6 +103,9 @@ export class PerfLog {
     const now = performance.now();
     const c = this.c;
     this.c = zero();
+    const lags = this.lags.sort((a, b) => a - b);
+    this.lags = [];
+    const q = (p: number) => (lags.length ? Math.round(lags[Math.min(lags.length - 1, Math.floor(lags.length * p))]) : 0);
     this.t0 = now;
     const phase = this.phase();
     const ws = await this.workers();
@@ -129,6 +139,8 @@ export class PerfLog {
       decoded: d("refine", (w) => w.decoded ?? 0),
       refineBusy: round2(rate("refine")),
       behind: Math.round(ws.refine?.behindMs ?? 0),
+      drawLag50: q(0.5),
+      drawLag90: q(0.9),
     };
     for (const [k, w] of Object.entries(ws)) if (w) this.prev.set(k, { w, at });
     this.rows.push(row);
@@ -153,6 +165,7 @@ export function summarizePerf(rows: PerfRow[]): string {
   return (
     `${n} 秒: カメラ ${f(avg("cam"))}fps・画面 ${f(avg("raf"))}・メインの遅れ 最大 ${f(max("lag"), 0)}ms・メイン 送る+録画 ${f(avg("mainMs"), 0)}ms/秒（うち録画 ${f(avg("recMs"), 0)}）・結果の処理 ${f(avg("msgMs"), 0)}ms/秒` +
     ` | ライブ 送った ${f(avg("sent"))}+補助 ${f(avg("sentHelper"))}・送れない ${f(avg("full"))}・休み ${f(avg("rest"))}・認識 主 ${f(avg("live"))} 補助 ${f(avg("helper"))}・捨てた ${f(avg("skipped"))}・忙しさ 主 ${f(avg("liveBusy") * 100, 0)}% 補助 ${f(avg("helperBusy") * 100, 0)}%` +
+    ` | 図の遅れ 中央 ${f(avg("drawLag50"), 0)}ms・90% ${f(avg("drawLag90"), 0)}ms` +
     ` | 録画 ${f(avg("rec"))}・間引き ${f(avg("recDropped"))}・待ち 最大 ${f(max("recQueue"), 0)}` +
     ` | 精密解析 処理 ${f(avg("refine"))}・復号 ${f(avg("decoded"))}・忙しさ ${f(avg("refineBusy") * 100, 0)}%・遅れ 最大 ${f(max("behind") / 1000, 1)} 秒`
   );
