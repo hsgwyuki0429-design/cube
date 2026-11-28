@@ -150,7 +150,8 @@ function TopBar({ stopped }: { stopped: boolean }) {
       <div class="stage-bar chrome">
         <StatusDot />
       </div>
-      <CaptureAdvice />
+      {/* 止めた後はタイムの下に（StoppedScreen が並べる） */}
+      {!stopped && <CaptureAdvice />}
       {!stopped && (
         <div class="stage-time">
           <TimerTop />
@@ -345,7 +346,7 @@ export function PlayScreen() {
         <BottomStrip />
         <CubeInset />
       </div>
-      {stopped && <StoppedScreen />}
+      {stopped && <StoppedScreen advice={<CaptureAdvice />} />}
     </div>
   );
 }

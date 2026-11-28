@@ -215,19 +215,20 @@ try {
           const first = seen[st.stage] === undefined;
           seen[st.stage] ??= Date.now();
           const since = Date.now() - seen[st.stage];
-          const want = st.stage === "read" ? readShots === 0 && since >= 1500 && st.cells > 0 : st.stage === "search" ? first : st.stage === "replay" ? !seen.replayShot && since >= 2500 : st.stage === "card" ? since >= 900 : false;
+          const want = st.stage === "read" ? readShots === 0 && since >= 5000 && st.cells > 0 : st.stage === "search" ? first || (!seen.searchLate && since >= 300) : st.stage === "replay" ? !seen.replayShot && since >= 2500 : st.stage === "card" ? since >= 900 : false;
           if (want) {
             const name = st.stage === "replay" ? "3-replay" : st.stage === "card" ? "4-card" : st.stage === "search" ? "2-search" : "1-read";
             await page.screenshot({ path: `${dir}/seed${seed}-${name}.png` });
             console.log(`  止めた後の画面: ${dir}/seed${seed}-${name}.png`);
             if (st.stage === "read") readShots++;
+            if (st.stage === "search" && since >= 300) seen.searchLate = true;
             if (st.stage === "replay") seen.replayShot = true;
             if (st.stage === "card") break;
           }
           await page.waitForTimeout(40);
         }
         const ds = await page.evaluate(() => ({ draw: { ...window.__cubevisionShowDraw }, received: window.__cubevisionShow?.get().received }));
-        console.log(`  止めた後の画面: 段 ${Object.keys(seen).filter((k) => k !== "replayShot").join("→")}・知らせ ${ds.received}・描画 ${ds.draw.n} 回 平均 ${(ds.draw.total / Math.max(1, ds.draw.n)).toFixed(2)}ms 最大 ${ds.draw.max.toFixed(2)}ms`);
+        console.log(`  止めた後の画面: 段 ${Object.keys(seen).filter((k) => k !== "replayShot" && k !== "searchLate").join("→")}・知らせ ${ds.received}・描画 ${ds.draw.n} 回 平均 ${(ds.draw.total / Math.max(1, ds.draw.n)).toFixed(2)}ms 最大 ${ds.draw.max.toFixed(2)}ms・2ms を超えた ${ds.draw.over2} 回（canvas の大きさを決めた描画 ${ds.draw.sized} 回・最大 ${ds.draw.sizedMax.toFixed(2)}ms、それ以外の最大 ${ds.draw.steadyMax.toFixed(2)}ms）・${JSON.stringify(ds.draw.list.slice(0, 60))}`);
       }
       // E2E_NEXT=1: 休み中に「次のソルブ」を押して崩す（解析の結果は待たない）
       if (process.env.E2E_NEXT && !FAKECAM) {

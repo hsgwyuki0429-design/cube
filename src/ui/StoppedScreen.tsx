@@ -26,7 +26,7 @@ import { ReplayCube } from "./ReplayCube";
 import { replayMoves } from "./SolveDetail";
 import { shareSolve } from "./shareCard";
 import { PenaltyRow, bestGain, openSolve } from "./solveUi";
-import { type Size, drawBranches, drawIsoCube, watchSize } from "./stopDraw";
+import { type LabelAt, type Size, drawBranches, drawIsoCube, watchSize } from "./stopDraw";
 
 const STICKER = displayColors(ARUCO_NAMES); // 面ごとの表示色（揃った状態の facelet の面 → 色）
 const BINS = 16;
@@ -65,14 +65,34 @@ function IsoCanvas({ colors, mirrors, dim, cls }: { colors: (string | null)[]; m
   const ref = useRef<HTMLCanvasElement>(null);
   const size = useRef<Size>({ w: 0, h: 0 });
   const key = colors.join();
+  const [labels, setLabels] = useState<{ left: LabelAt; down: LabelAt }>({ left: null, down: null });
   useEffect(() => {
     const c = ref.current;
     if (!c) return;
-    const draw = () => drawIsoCube(c, size.current, { colors, mirrors, dim, labels: mirrors ? { left: "左（鏡）", down: "下（鏡）" } : undefined });
+    const draw = () => {
+      const at = drawIsoCube(c, size.current, { colors, mirrors, dim });
+      // 札の位置は大きさが変わったときだけ変わる
+      setLabels((p) => (p.left?.x === at.left?.x && p.left?.y === at.left?.y && p.down?.x === at.down?.x && p.down?.y === at.down?.y ? p : at));
+    };
     draw();
     return watchSize(c, size.current, draw);
   }, [key, mirrors, dim]);
-  return <canvas ref={ref} class={cls} aria-hidden="true" />;
+  // 鏡の札は DOM で（canvas に日本語の文字を描くと、初めの 1 回が 10ms を超えた）
+  return (
+    <div class={`sp-canvas ${cls}`}>
+      <canvas ref={ref} aria-hidden="true" />
+      {labels.left && (
+        <span class="sp-label" style={{ left: `${labels.left.x}px`, top: `${labels.left.y}px`, transform: "translateX(-50%)" }}>
+          左（鏡）
+        </span>
+      )}
+      {labels.down && (
+        <span class="sp-label" style={{ left: `${labels.down.x}px`, top: `${labels.down.y}px`, transform: "translateY(-50%)" }}>
+          下（鏡）
+        </span>
+      )}
+    </div>
+  );
 }
 
 // 状態の上・右・正面（白上・緑前）の色
@@ -133,20 +153,22 @@ function SearchStage({ startT, endT, stopColors }: { startT: number; endT: numbe
   const s = useStore(showStore, (x) => x.search);
   const ref = useRef<HTMLCanvasElement>(null);
   const size = useRef<Size>({ w: 0, h: 0 });
+  const [labelAt, setLabelAt] = useState<LabelAt>(null);
   const dur = Math.max(1, endT - startT);
   const at = (t: number | null) => (t === null ? null : Math.min(1, Math.max(0, (t - startT) / dur)));
   const label = !s ? "" : s.meetT !== null ? "つながった" : s.step === "bridge" ? "隠れた区間を橋渡し" : s.step === "finish" ? "見えない手を補う" : "ここをつなぐ";
   useEffect(() => {
     const c = ref.current;
     if (!c || !s) return;
-    const draw = () =>
-      drawBranches(c, size.current, {
+    const draw = () => {
+      const p = drawBranches(c, size.current, {
         fwd: { x: at(s.f.t), alive: Math.min(6, Math.round(log2(s.f.near)) + 1), dead: Math.min(14, Math.round(log2(s.f.dropped + 1) * 1.4)) },
         bwd: { x: at(s.b.t), alive: Math.min(6, Math.round(log2(s.b.near)) + 1), dead: Math.min(14, Math.round(log2(s.b.dropped + 1) * 1.4)) },
         meet: at(s.meetT),
         color: "#4f8cff",
-        label,
       });
+      setLabelAt((q) => (q?.x === p?.x && q?.y === p?.y ? q : p));
+    };
     draw();
     return watchSize(c, size.current, draw);
   }, [s, startT, endT]);
@@ -173,7 +195,14 @@ function SearchStage({ startT, endT, stopColors }: { startT: number; endT: numbe
           <b>手順を探しています</b>
           <span>{s ? STAGE_NAME[s.stage] : ""}</span>
         </div>
-        <canvas ref={ref} class="sp-branches" aria-hidden="true" />
+        <div class="sp-canvas sp-branches">
+          <canvas ref={ref} aria-hidden="true" />
+          {labelAt && label && (
+            <span class={`sp-label${s?.meetT !== null ? " ok" : ""}`} style={{ left: `${labelAt.x}px`, top: `${labelAt.y}px`, transform: "translateX(-50%)" }}>
+              {label}
+            </span>
+          )}
+        </div>
         <div class="sp-axis" aria-hidden="true">
           <span>スクランブル・0 秒</span>
           <span>{sec1(dur / 2)} 秒</span>
@@ -432,13 +461,14 @@ function StoppedTop({ r, stage, solves }: { r: Solve; stage: Stage; solves: Solv
 
 // ---- 全体 ----
 
-export function StoppedScreen() {
+// advice: 撮り方の案内（src/app/captureGuide.ts。タイムの下に並べる）
+export function StoppedScreen({ advice }: { advice?: preact.ComponentChildren }) {
   const r = useStore(timerStore, (t) => (t.phase === "done" ? t.result : null));
   if (!r) return null;
-  return <Stopped key={r.id} />;
+  return <Stopped key={r.id} advice={advice} />;
 }
 
-function Stopped() {
+function Stopped({ advice }: { advice?: preact.ComponentChildren }) {
   const r = useStore(timerStore, (t) => t.result)!;
   const startT = useStore(timerStore, (t) => t.startT);
   const solves = useStore(timerStore, (t) => t.solves);
@@ -461,6 +491,7 @@ function Stopped() {
   return (
     <div class={`stop-screen sp-is-${stage}`}>
       <StoppedTop r={r} stage={stage} solves={solves} />
+      {advice}
       {stage === "read" && <ReadStage startT={startT} endT={endT} />}
       {stage === "search" && <SearchStage startT={startT} endT={endT} stopColors={stopColors} />}
       {stage === "replay" && data && <ReplayStage r={r} data={data} playKey={playKey} onEnd={() => setManual("card")} />}

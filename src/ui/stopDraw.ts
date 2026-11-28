@@ -2,15 +2,22 @@
 // 解き直しの「探索の枝」。描くだけで、状態は持たない。1 回の描画の時間を数える（drawStats。E2E が読む）
 import { COLDIR, NORMAL, ROWDIR } from "../cube/model";
 
-// 描いた回数・時間（ms）の合計・最大
-export const drawStats = { n: 0, total: 0, max: 0 };
+// 描いた回数・時間（ms）の合計・最大・2ms を超えた回数。sized: canvas の大きさを決め直した描画（初めの 1 回・画面の大きさが変わった）の
+// 回数とその中の最大（画素の入れ物を作り直すので重い）。steadyMax: それ以外の描画の最大
+export const drawStats = { n: 0, total: 0, max: 0, over2: 0, sized: 0, sizedMax: 0, steadyMax: 0, list: [] as number[] };
+let sizedNow = false;
 function timed(f: () => void): void {
+  sizedNow = false;
   const t0 = performance.now();
   f();
   const ms = performance.now() - t0;
   drawStats.n++;
   drawStats.total += ms;
   if (ms > drawStats.max) drawStats.max = ms;
+  if (ms > 2) drawStats.over2++;
+  if (sizedNow) drawStats.sizedMax = Math.max(drawStats.sizedMax, ms);
+  else drawStats.steadyMax = Math.max(drawStats.steadyMax, ms);
+  if (drawStats.list.length < 400) drawStats.list.push(Math.round(ms * 100) / 100);
 }
 
 // 表示の大きさ（CSS の px）。描くたびに測るとレイアウトを強いるので、ResizeObserver で測った値を渡す（watchSize）
@@ -39,6 +46,8 @@ function fit(canvas: HTMLCanvasElement, size: Size): { ctx: CanvasRenderingConte
   const w = size.w;
   const h = size.h;
   if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+    drawStats.sized++;
+    sizedNow = true;
     canvas.width = Math.round(w * dpr);
     canvas.height = Math.round(h * dpr);
   }
@@ -103,11 +112,15 @@ export interface IsoOptions {
   colors: (string | null)[]; // 45 = 面 5 × 9 マス。null = 読めていない（黒）
   mirrors: boolean; // 左と下の面を鏡に映して見せる
   dim?: number; // 薄く（0..1、1 = そのまま）
-  labels?: { left: string; down: string };
 }
 
-export function drawIsoCube(canvas: HTMLCanvasElement, size: Size, o: IsoOptions): void {
-  if (!size.w) return;
+// 札の位置（表示の px）。文字は canvas に描かずに DOM の札にする（日本語の文字を初めて描くと 1 回 10ms を超えた）
+export type LabelAt = { x: number; y: number } | null;
+
+// 戻り値: 鏡の札（左の面の下・下の面の右）の位置
+export function drawIsoCube(canvas: HTMLCanvasElement, size: Size, o: IsoOptions): { left: LabelAt; down: LabelAt } {
+  const out: { left: LabelAt; down: LabelAt } = { left: null, down: null };
+  if (!size.w) return out;
   timed(() => {
     const f = fit(canvas, size);
     if (!f) return;
@@ -117,31 +130,45 @@ export function drawIsoCube(canvas: HTMLCanvasElement, size: Size, o: IsoOptions
     const ox = (w - (box.x1 - box.x0) * s) / 2 - box.x0 * s;
     const oy = (h - (box.y1 - box.y0) * s) / 2 - box.y0 * s;
     const P = ([x, y]: [number, number]): [number, number] => [ox + x * s, oy + y * s];
-    const poly = (q: [number, number][]) => {
-      ctx.beginPath();
+    // 同じ色のマスは 1 つの道にまとめて塗る（マスごとに塗ると 1 回 2ms を超えることがあった）
+    const add = (path: Path2D, q: [number, number][]) => {
       q.forEach((p, i) => {
         const [x, y] = P(p);
-        if (i) ctx.lineTo(x, y);
-        else ctx.moveTo(x, y);
+        if (i) path.lineTo(x, y);
+        else path.moveTo(x, y);
       });
-      ctx.closePath();
+      path.closePath();
     };
     ctx.globalAlpha = o.dim ?? 1;
     const slots = o.mirrors ? [0, 1, 2, 3, 4] : [0, 1, 2];
     ctx.lineJoin = "round";
+    const back = new Path2D();
+    const unread = new Path2D();
+    const byColor = new Map<string, Path2D>();
     for (const slot of slots) {
-      poly(faceQuad(slot));
-      ctx.fillStyle = "#050506";
-      ctx.fill();
+      add(back, faceQuad(slot));
       for (let c = 0; c < 9; c++) {
-        poly(cellQuad(slot, c));
         const col = o.colors[slot * 9 + c];
-        ctx.fillStyle = col ?? "#121215";
-        ctx.fill();
-        ctx.lineWidth = 1;
-        ctx.strokeStyle = col ? "rgba(0,0,0,0.35)" : "rgba(255,255,255,0.13)";
-        ctx.stroke();
+        let path = unread;
+        if (col) {
+          path = byColor.get(col) ?? new Path2D();
+          byColor.set(col, path);
+        }
+        add(path, cellQuad(slot, c));
       }
+    }
+    ctx.fillStyle = "#050506";
+    ctx.fill(back);
+    ctx.lineWidth = 1;
+    ctx.fillStyle = "#121215";
+    ctx.fill(unread);
+    ctx.strokeStyle = "rgba(255,255,255,0.13)";
+    ctx.stroke(unread);
+    ctx.strokeStyle = "rgba(0,0,0,0.35)";
+    for (const [col, path] of byColor) {
+      ctx.fillStyle = col;
+      ctx.fill(path);
+      ctx.stroke(path);
     }
     if (o.mirrors) {
       // 鏡の線（点線）と札
@@ -159,21 +186,14 @@ export function drawIsoCube(canvas: HTMLCanvasElement, size: Size, o: IsoOptions
       ctx.lineTo(P([2.6, 0])[0], dy);
       ctx.stroke();
       ctx.setLineDash([]);
-      if (o.labels) {
-        ctx.fillStyle = "rgba(235,235,245,0.62)";
-        ctx.font = `${Math.max(10, Math.round(s * 0.36))}px system-ui, sans-serif`;
-        ctx.textAlign = "center";
-        ctx.textBaseline = "top";
-        const [x, y] = P([MIRROR_L + 1.3, 3.3]);
-        ctx.fillText(o.labels.left, x, y);
-        ctx.textAlign = "left";
-        ctx.textBaseline = "middle";
-        const [x2, y2] = P([2.9, MIRROR_D - 0.2]);
-        ctx.fillText(o.labels.down, x2, y2);
-      }
+      const [x, y] = P([MIRROR_L + 1.3, 3.3]);
+      out.left = { x, y };
+      const [x2, y2] = P([2.9, MIRROR_D - 0.2]);
+      out.down = { x: x2, y: y2 };
     }
     ctx.globalAlpha = 1;
   });
+  return out;
 }
 
 // ---- 探索の枝 ----
@@ -189,7 +209,6 @@ export interface BranchOptions {
   bwd: BranchSide;
   meet: number | null; // つないだ位置（0..1）
   color: string;
-  label: string; // 真ん中の札（ここをつなぐ・つながった）
 }
 
 // 決まった乱数（同じ枝が毎回同じ形に描かれる）
@@ -198,8 +217,10 @@ function rand(seed: number): number {
   return x - Math.floor(x);
 }
 
-export function drawBranches(canvas: HTMLCanvasElement, size: Size, o: BranchOptions): void {
-  if (!size.w) return;
+// 戻り値: 真ん中の札（ここをつなぐ・つながった）の位置（上の真ん中）
+export function drawBranches(canvas: HTMLCanvasElement, size: Size, o: BranchOptions): LabelAt {
+  let label: LabelAt = null;
+  if (!size.w) return label;
   timed(() => {
     const f = fit(canvas, size);
     if (!f) return;
@@ -267,9 +288,6 @@ export function drawBranches(canvas: HTMLCanvasElement, size: Size, o: BranchOpt
     // つなぐ所: 前向きの先と後ろ向きの先の間（重なっていれば重なり）。つないだら縦の線
     const a = o.fwd.x;
     const b = o.bwd.x;
-    ctx.font = "11px system-ui, sans-serif";
-    ctx.textAlign = "center";
-    ctx.textBaseline = "top";
     if (o.meet !== null) {
       const mx = X(o.meet);
       ctx.strokeStyle = "#34c759";
@@ -278,8 +296,7 @@ export function drawBranches(canvas: HTMLCanvasElement, size: Size, o: BranchOpt
       ctx.moveTo(mx, mid - spread);
       ctx.lineTo(mx, mid + spread);
       ctx.stroke();
-      ctx.fillStyle = "#34c759";
-      ctx.fillText(o.label, Math.min(w - 40, Math.max(40, mx)), mid + spread + 6);
+      label = { x: Math.min(w - 40, Math.max(40, mx)), y: mid + spread + 4 };
     } else if (a !== null && b !== null) {
       const lo = X(Math.min(a, b));
       const hi = X(Math.max(a, b));
@@ -290,8 +307,8 @@ export function drawBranches(canvas: HTMLCanvasElement, size: Size, o: BranchOpt
       ctx.lineWidth = 1;
       ctx.strokeRect(bx, mid - spread * 0.75, bw, spread * 1.5);
       ctx.setLineDash([]);
-      ctx.fillStyle = "rgba(235,235,245,0.7)";
-      ctx.fillText(o.label, Math.min(w - 40, Math.max(40, bx + bw / 2)), mid + spread * 0.75 + 6);
+      label = { x: Math.min(w - 40, Math.max(40, bx + bw / 2)), y: mid + spread * 0.75 + 4 };
     }
   });
+  return label;
 }

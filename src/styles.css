@@ -2844,6 +2844,10 @@ button.mv {
   gap: 10px;
   min-height: 0;
 }
+.stop-screen .capture-advice {
+  flex: none;
+  margin: 0 auto;
+}
 .sp-top {
   display: flex;
   flex-direction: column;
@@ -2911,6 +2915,28 @@ button.mv {
   flex-direction: column;
   align-items: center;
   justify-content: center;
+}
+.sp-canvas {
+  position: relative;
+}
+.sp-canvas canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.sp-label {
+  position: absolute;
+  font-size: 11px;
+  line-height: 1.2;
+  white-space: nowrap;
+  color: rgba(235, 235, 245, 0.62);
+  pointer-events: none;
+}
+.sp-label.ok {
+  color: #34c759;
+  font-weight: 600;
 }
 .sp-iso {
   width: 100%;
@@ -3034,9 +3060,8 @@ button.mv {
   color: #ff9f0a;
 }
 .sp-branches {
-  display: block;
   width: 100%;
-  height: 110px;
+  height: 122px;
 }
 .sp-axis {
   display: flex;
