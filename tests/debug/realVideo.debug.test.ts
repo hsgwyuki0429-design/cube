@@ -512,6 +512,9 @@ it("実際のプレイ動画", async () => {
     // ピースの材料を集めるため）。タイムの端の前の決まり（端の手が inferred なら時刻も不確か）での不確かさも出す
     if (refiner && process.env.REAL_METHODS && process.env.REAL_METHODS_OUT) {
       const inp = (refiner as unknown as { input: { pieces?: boolean | "v1" | "and" } }).input;
+      // REAL_METHODS_STOP=44.93,45.13（秒）: 止めた時刻（RefineInput.stop）を渡して方法ごとに出す（stopCut まで本体の流れと同じに）
+      const ms0 = process.env.REAL_METHODS_STOP?.split(",").map((x) => Number(x) * 1000);
+      if (ms0) refiner.setStop({ at: ms0[0], until: ms0[1] ?? ms0[0] });
       for (const m of process.env.REAL_METHODS.split(",")) {
         inp.pieces = m === "old" ? false : (m as "v1" | "and");
         const t0 = performance.now();
@@ -534,6 +537,15 @@ it("実際のプレイ動画", async () => {
           oldEndUncertain: r.endUncertain || (e.endByLayer && !e.endByLooks),
           ms: Math.round(performance.now() - t0),
           piecesMs: Math.round(refiner.piecesMs),
+          // まとめ（tests/debug/refinerCompare.debug.test.ts）の材料: 時刻つきの手・始まりの状態・打ち切り・完成の補い
+          timed: r.moves.map((x) => ({ move: x.move, start: x.start, end: x.end, ...(x.inferred ? { inferred: true } : {}) })),
+          startState: r.startState ?? null,
+          forced: r.forced,
+          gapped: !!r.gapped,
+          stopCut: r.stopCut ?? null,
+          endApproxMs: r.endApproxMs ?? null,
+          stop: ms0 ?? null,
+          stopTried: refiner.stopTried,
         };
         appendFileSync(process.env.REAL_METHODS_OUT, JSON.stringify(row) + "\n");
       }

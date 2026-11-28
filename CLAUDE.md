@@ -316,7 +316,10 @@ facelet の直接置換テーブルを手書きすると必ず間違える。**3
 
 ## ステッカーの動きの方程式による解き直し（`src/track/pieces`。`RefineInput.pieces`、既定 false）
 
-精密解析の解き直しを「ステッカーの動きの方程式」として作り直したもの。**本体の既定はまだ今の解き直し（`decodeOffline`）**。
+精密解析の解き直しを「ステッカーの動きの方程式」として作り直したもの。**本体の既定は今の解き直し（`decodeOffline`）のまま**。
+**既定の切り替えは精密解析 4（2026-11-28）で見送った**: 本体の流れ（`Refiner`）で並べると確定の間違いが減らず（2.5Mbps でまとめた形 0 → 3・
+状態で照らして 8 → 16）、実機の録画 2 本ともピース方式がつながらずに戻って、止めた後の待ちが 2〜6 秒延びる（設定だけの打ち切りでは
+1 秒以内にならない）。端の手の時刻が前後の手と逆のまま確定になる本もある。考え直す条件は `docs/roadmap.md` の精密解析 4。
 `RefineInput.pieces`（URL の `?pieces=1`・`REAL_PIECES=1`・`E2E_QUERY='&pieces=1'`）で先に試し、完成までつながらなければ今の解き直しに戻す
 （`Refiner.decodeByPieces`。記録の `refineMethod` は `pieces`）。区間の手順は**連立方程式を表の AND で解く**（`solve.ts`・`tables.ts`。
 2026-11-21）。最初の版（ビームで手を 1 つずつ足す `decode.ts` の `decodePieces`）は比べるために残す（`pieces: "v1"`・`?pieces=v1`・
@@ -460,7 +463,8 @@ facelet の直接置換テーブルを手書きすると必ず間違える。**3
 - 処理時間を測るベンチ（`seqBench` の `@k` など）は**他の重い処理と同時に走らせない**
 - 主な計測の道具: `seqBench`（合成の手順とタイムの誤差）・`refineProfile`（1 フレームの時間、`PROFILE=1` で関数ごと）・`decodeBench`
   （書き出した観測で解き直しを比べる。正解づくりの `buildTruth` と確認役 `tests/debug/lib/exact.ts`）・`betweenMoves`（手と手の間の状態が
-  読めたか）・`liveLog`（実機のライブの記録）・`piecesBench`（ステッカーの動きの方程式と今の解き直しを、書き出した読みと観測で比べる）・`islandBound`（島に分けて解く案の上限。`docs/history.md`）
+  読めたか）・`liveLog`（実機のライブの記録）・`piecesBench`（ステッカーの動きの方程式と今の解き直しを、書き出した読みと観測で比べる。`PB_TIMELINE` で見え方ごとの経過時間）・
+  `refinerCompare`（本体の流れ `Refiner.result` を方法ごとに: `realVideo` の `REAL_METHODS`・`REAL_METHODS_STOP` の行から、記録の状態・端の時刻まで）・`islandBound`（島に分けて解く案の上限。`docs/history.md`）
 
 ---
 

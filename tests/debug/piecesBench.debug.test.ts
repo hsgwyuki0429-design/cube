@@ -309,6 +309,17 @@ it("ステッカーの動きの方程式で解き直す", async () => {
         if (process.env.PB_VERIFY) sopt.debugVerify = (l: string) => process.stdout.write(`  確かめ ${l}\n`);
         if (process.env.PB_STEPS)
           sopt.onStep = (x: { back: boolean; step: number; t: number; hyps: number; best: number; eqs: number; k: number }) => process.stdout.write(`   ${x.back ? "←" : "→"} ${x.step} t=${(x.t / 1000).toFixed(3)} 式 ${x.eqs} k ${x.k} 仮説 ${x.hyps} 一番 ${x.best.toFixed(1)}\n`);
+        // PB_TIMELINE=ファイル: 見え方を 1 つ進めるごとの [経過 ms, 後ろ向き, 見え方の時刻 ms, 一番よい仮説のコスト, 仮説の数] を 1 本 1 行で
+        // （つながらない本で、つながらないと分かる時点を調べる: 精密解析 4）
+        const timeline: number[][] = [];
+        const tl0 = performance.now();
+        if (process.env.PB_TIMELINE) {
+          const prev = sopt.onStep;
+          sopt.onStep = (x: { back: boolean; step: number; t: number; hyps: number; best: number; eqs: number; k: number }) => {
+            prev?.(x);
+            timeline.push([Math.round(performance.now() - tl0), x.back ? 1 : 0, Math.round(x.t), Math.round(x.best * 10) / 10, x.hyps]);
+          };
+        }
         // PB_TRACK=1: 見え方ごとに、正解の状態（手の終わりの時刻で、前後 1 手まで）が仮説に残っているか
         if (process.env.PB_TRACK) {
           const states = [piecesOf(truth.start)];
@@ -360,6 +371,7 @@ it("ステッカーの動きの方程式で解き直す", async () => {
           }
         }
         solved = r.reachedEnd;
+        if (process.env.PB_TIMELINE) appendFileSync(process.env.PB_TIMELINE, `${JSON.stringify({ name, solved, method: r.method, ms: Math.round(performance.now() - tl0), opt: process.env.PB_SOLVE ?? "", timeline })}\n`);
         reasons = r.reasons;
         stats = { ...r.stats, ms: Math.round(r.stats.ms) };
         info = `${r.method}・確かめ ${JSON.stringify(r.verified)}・区間 ${JSON.stringify({ ...r.stats, ms: Math.round(r.stats.ms) })}・理由 ${JSON.stringify(r.reasons)}`;
