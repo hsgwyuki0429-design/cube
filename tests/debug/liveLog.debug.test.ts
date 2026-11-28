@@ -12,6 +12,12 @@
 //     「インスペクションの始まり（作り変えを始めた設定の変更）から、タイマーのスクランブルの状態」で通す（手の数は直前の実機の観測の数を足して比べる）
 //   LIVE_LOG_TRIM=ミリ秒: 記録を一度通し直して、その長さだけ残す新しい記録（本体と同じ LiveLog）を作り、それを通し直す（捨てた後も実機と同じに
 //     なるかの確かめ。本体は 120000）
+//   LIVE_LOG_LIVEOPTS='{"fixRun":0}': 記録の設定の変更でソルブ中の推定を始めるときに、推定の設定（LiveStateOptions）を上書きする（実機と同じ切り替えのまま比べる）
+//   LIVE_LOG_TRACE=1（変わったフレームだけ）・all（全部）・piece（ピースごとの取り得る位置の数と食い違いの続き・錨も）: ソルブ中の推定の仮説に
+//     正解の状態が残っているか（= 一番・~n n 番目・c 矛盾しない仮説がある・≠ どれでもない）、一番よい仮説で正解と違うピース（* 置き方の決まった読みが
+//     正解の位置・! 読みが正解と違う位置・? 決まらない・∋/∌ 取り得る位置に正解があるか）、出来事（深・復帰・見失い・置き直し・まとめ）、
+//     「証拠 a/b」（読みと食い違う数: 正解 / 一番よい仮説。正解だけが合うフレームは戻れたはずの読み）。LIVE_LOG_READS=1 で読みのまとまりごとも
+//   ソルブ中の追跡の 1 フレームの時間（平均・99%・最大・3ms を超えた割合。推定に切り替えた後だけも）も出す
 import { readFileSync } from "node:fs";
 import { gunzipSync } from "node:zlib";
 import { it } from "vitest";
@@ -89,6 +95,103 @@ function lookLine(from: number, sim: SimScene, engine: TrackerEngine, look: { sa
   return `計測中（${(from / 1000).toFixed(2)}s から${switched >= 0 ? `・推定 ${((switched - from) / 1000).toFixed(2)}s から` : ""}）: 見え方と 3D が同じ ${((look.same / Math.max(1, look.counted)) * 100).toFixed(1)}%（${(look.counted / 1000).toFixed(1)} 秒）・最後の 3D ${isSolved(sim.state) ? "揃い" : "揃っていない"}・数えた手 ${moves.length}（まとめて ${simplifyMoves(moves).length}・すぐ打ち消した組 ${undo}）・3D で回した ${turns.filter((x) => !x.instant).length}・塗り替えた ${turns.filter((x) => x.instant).length}`;
 }
 
+// LIVE_LOG_TRACE=1: ソルブ中の推定（LiveState）の仮説に本当の状態が残っているかをフレームごとに（変わった所だけ）出す。
+//   印: = 一番よい仮説が本当の状態・~n n 番目の仮説が本当の状態・c 本当の状態と矛盾しない仮説（決まらないピースあり）がある・≠ どれでもない
+//   違うピース: 一番よい仮説で本当と違うピース（* = このフレームで置き方の決まった読みがあり、読みは本当の位置）。出来事: 深・復帰・見失い・まとめ
+//   LIVE_LOG_TRACE=all で全部のフレーム
+interface Trace { prev: string; stats: { deep: number; recovered: number; lost: number; merged: number; recoverTries: number; relocated: number } | null }
+const newTrace = (): Trace => ({ prev: "", stats: null });
+function truthStates(truth: { start: Uint8Array; moves: TruthMove[] }, t: number, lag: number): Uint8Array[] {
+  let st: Uint8Array = truth.start;
+  const out: Uint8Array[] = [];
+  for (let j = 0; j <= truth.moves.length; j++) {
+    const began = j === 0 || truth.moves[j - 1].start <= t;
+    const still = j === truth.moves.length || truth.moves[j].end > t - lag;
+    if (began && still) out.push(st);
+    if (!began) break;
+    if (j < truth.moves.length) st = applyMove(st, truth.moves[j].move);
+  }
+  return out;
+}
+function traceLine(tr: Trace, engine: TrackerEngine, r: LoggedReading, truth: { start: Uint8Array; moves: TruthMove[]; from: number }): void {
+  const live = engine.live!;
+  const cands = truthStates(truth, r.t, 150).map((s) => hypOf(s));
+  const eq = (m: Uint32Array, c: Uint32Array) => m.every((x, p) => x === c[p]);
+  const fits = (m: Uint32Array, c: Uint32Array) => m.every((x, p) => (x & c[p]) !== 0);
+  const hit = live.hyps.findIndex((h) => cands.some((c) => eq(h.mask, c)));
+  const cons = live.hyps.findIndex((h) => cands.some((c) => fits(h.mask, c)));
+  const mark = hit === 0 ? "=" : hit > 0 ? `~${hit}` : cons >= 0 ? `c${cons}` : "≠";
+  const b = live.best();
+  // 一番近い本当の状態との違うピース
+  let bestC = cands[0];
+  let bestD = 99;
+  for (const c of cands) {
+    const d = c.reduce((n, x, p) => n + ((b.mask[p] & x) === 0 || b.mask[p] !== x ? 1 : 0), 0);
+    if (d < bestD) {
+      bestD = d;
+      bestC = c;
+    }
+  }
+  const fr = r.sight ? liveFrame(r.sight) : null;
+  const readAt = new Map<number, number>();
+  if (fr) for (const g of fr.groups) if (g.mode === 0) for (let j = g.from; j < g.to; j++) if (fr.ys[j * 4] >= 0) readAt.set(fr.piece[j], fr.ys[j * 4]);
+  const wrong: string[] = [];
+  for (let p = 0; p < 20; p++) {
+    if (b.mask[p] === bestC[p]) continue;
+    const y = readAt.get(p);
+    const single = (b.mask[p] & (b.mask[p] - 1)) === 0;
+    const pc = (x: number) => { let n = 0; for (; x; x &= x - 1) n++; return n; };
+    const detail = process.env.LIVE_LOG_TRACE === "piece" ? `(${single ? "" : pc(b.mask[p]) + (b.mask[p] & bestC[p] ? "∋" : "∌")}m${b.miss[p]})` : "";
+    wrong.push(`${p}${single ? "" : "?"}${y === undefined ? "" : y === 31 - Math.clz32(bestC[p]) ? "*" : "!"}${detail}`);
+  }
+  const s = live.stats;
+  const ev: string[] = [];
+  if (tr.stats) {
+    if (s.deep > tr.stats.deep) ev.push("深");
+    if (s.recovered > tr.stats.recovered) ev.push("復帰");
+    else if (s.recoverTries > tr.stats.recoverTries) ev.push("復帰×");
+    if (s.lost > tr.stats.lost) ev.push(`見失い(${b.base?.state.every((c, i) => c === Math.floor(i / 9)) ? "揃い" : "置き直し"})`);
+    if (s.merged > tr.stats.merged) ev.push("まとめ");
+    if (s.relocated > tr.stats.relocated) ev.push("置き直し(ピース)");
+  }
+  tr.stats = { deep: s.deep, recovered: s.recovered, lost: s.lost, merged: s.merged, recoverTries: s.recoverTries, relocated: s.relocated };
+  // 読みと照らす（置き方の決まったまとまりと、センター 1 つのまとまりはいちばん合う置き方で）: 本当の状態の食い違い / 一番よい仮説の食い違い
+  let tMiss = 0;
+  let bMiss = 0;
+  if (fr)
+    for (const g of fr.groups) {
+      if (g.mode === 2) continue;
+      const rr = g.mode === 0 ? [0] : [0, 1, 2, 3];
+      const count = (m: ArrayLike<number>) => Math.min(...rr.map((q) => { let n = 0; for (let j = g.from; j < g.to; j++) { const y = fr.ys[j * 4 + q]; if (y < 0 || !((m[fr.piece[j]] >>> y) & 1)) n++; } return n; }));
+      tMiss += Math.min(...cands.map((c) => count(c)));
+      bMiss += count(b.mask);
+    }
+  const evid = !fr || !fr.n ? "" : `証拠 ${tMiss}/${bMiss}`;
+  if (evid) ev.push(evid);
+  const key = `${mark} ${wrong.join(",")}`;
+  if (key === tr.prev && !ev.length && process.env.LIVE_LOG_TRACE !== "all") return;
+  if (process.env.LIVE_LOG_TRACE === "piece") {
+    const anchor = (live as unknown as { anchor: { t: number } | null }).anchor;
+    ev.push(`錨 ${anchor ? ((anchor.t - truth.from) / 1000).toFixed(2) : "なし"} miss ${Array.from(b.miss).map((m, k) => (m >= 2 ? `${k}:${m}` : "")).filter(Boolean).join(",")}`);
+  }
+  tr.prev = key;
+  const tm = truth.moves.filter((m) => m.start <= r.t).slice(-3).map((m) => MOVE_NAMES[m.move]).join(" ");
+  // 読みのまとまりごとに、置き方 r ごとの食い違いの数（本当の状態 / 一番よい仮説）
+  if (process.env.LIVE_LOG_READS && fr)
+    ev.push(fr.groups.map((g) => `${"scn"[g.mode]}${"URFDLB"[g.face]}:` + [0, 1, 2, 3].map((rr) => {
+      let a = 0;
+      let c = 0;
+      for (let j = g.from; j < g.to; j++) {
+        const y = fr.ys[j * 4 + rr];
+        if (y < 0 || !((bestC[fr.piece[j]] >>> y) & 1)) a++;
+        if (y < 0 || !((b.mask[fr.piece[j]] >>> y) & 1)) c++;
+      }
+      return `${a}/${c}`;
+    }).join(" ") + (g.mode === 1 ? ` cr${g.cr} φ${b.phi[g.face]}` : "")).join(" "));
+  if (process.env.LIVE_LOG_READS && fr) ev.push(fr.groups.map((g) => `${"scn"[g.mode]}${"URFDLB"[g.face]}[${Array.from({ length: g.to - g.from }, (_, q) => `${fr.piece[g.from + q]}@${g.mode === 0 ? fr.ys[(g.from + q) * 4] : Array.from({ length: 4 }, (_, rr) => fr.ys[(g.from + q) * 4 + rr]).join("/")}`).join(" ")}]`).join(" ") + ` 中 ${fr.centers.map((c) => `${"URFDLB"[c.f]}${c.phi}`).join("")}`);
+  console.log(`  ${((r.t - truth.from) / 1000).toFixed(3)} ${mark} 仮説 ${live.hyps.length} 一番 ${b.cost.toFixed(1)}/${b.last.toFixed(1)} 違うピース[${wrong.join(",")}] 読み ${readAt.size} ${ev.join(" ")} | ${live.moves(b).slice(-3).map((m) => MOVE_NAMES[m.move]).join(" ")} || 本当 ${tm}`);
+}
+
 const pct = (xs: number[], q: number) => {
   const s = [...xs].sort((a, b) => a - b);
   return s.length ? s[Math.min(s.length - 1, Math.floor(s.length * q))] : 0;
@@ -141,6 +244,7 @@ it("実機のライブの記録", () => {
     truth = { start: applyMoves(solvedState(), scramble), moves, from: t0, to: t0 + solve.timeMs + 1000 };
     console.log(`直前のソルブ ${(solve.timeMs / 1000).toFixed(2)} 秒・${solve.moves.length} 手・解析 ${solve.analysis}`);
   }
+  if (process.env.LIVE_LOG_TRACE && truth) console.log(`正解の手: ${truth.moves.map((x) => `${MOVE_NAMES[x.move]} ${((x.start - truth!.from) / 1000).toFixed(2)}-${((x.end - truth!.from) / 1000).toFixed(2)}`).join(" / ")}`);
   let segs = data.log.segments as LiveLogSegment[];
   console.log(`記録の版 ${data.log.version ?? 1}・区切り ${segs.length}${segs.some((s) => s.resume) ? `・途中から（${segs.filter((s) => s.resume).map((s) => `${(s.resume!.t / 1000).toFixed(2)}s`).join(" ")}）` : ""}${segs.some((s) => s.unknownStart) ? "・始まりの状態が分からない区切りあり" : ""}`);
   // 版 1 の記録: インスペクションの始まりから、タイマーのスクランブルの状態で
@@ -217,6 +321,9 @@ it("実機のライブの記録", () => {
     let snaps = 0;
     let lastBase = 0;
     const acc = { same: 0, counted: 0 };
+    const trace = newTrace();
+    const liveMs: number[] = []; // そのうち推定に切り替えた後
+    const pushMs: number[] = []; // ソルブ中（本当の最初の手の 300ms 前〜最後の手の 1 秒後）の追跡の 1 フレームの時間
     let runStart: number | null = null;
     const runs: [number, number][] = [];
     for (let i = 0; i < rs.length; i++) {
@@ -226,11 +333,19 @@ it("実機のライブの記録", () => {
         if (e.kind === "options" && !process.env.LIVE_LOG_ENGINE) {
           const o = { ...(e.data as Partial<EngineOptions>) };
           if (piecesOpt || piecesOff) delete o.pieces;
+          // LIVE_LOG_LIVEOPTS='{"fixRun":0}': 記録の設定の変更でソルブ中の推定を始めるとき、推定の設定を上書きする
+          else if (o.pieces && process.env.LIVE_LOG_LIVEOPTS) o.pieces = { ...(o.pieces === true ? {} : o.pieces), ...JSON.parse(process.env.LIVE_LOG_LIVEOPTS) };
           engine.setOptions(o);
         }
       }
       if (piecesOpt && switched < 0 && target && inspecting) starter.frame(r.t, r.sight, target);
+      const wasLive = !!engine.live;
+      const pa = performance.now();
       const u = engine.push(r.dropped ? { ...r, faces: [] } : r, r.sight);
+      if (truth && r.t >= (truth.moves[0]?.start ?? truth.from) - 300 && r.t <= truth.to) {
+        pushMs.push(performance.now() - pa);
+        if (wasLive) liveMs.push(performance.now() - pa);
+      }
       if (piecesOpt && switched < 0 && u && target && !inspecting && statesEqual(Uint8Array.from(u.state), target)) {
         inspecting = true;
         ready = u.moves.length;
@@ -281,6 +396,7 @@ it("実機のライブの記録", () => {
       }
       if (process.env.LIVE_LOG_DUMP && u)
         console.log(`${(r.t / 1000).toFixed(3)} ${u.status} ${u.obsCost.toFixed(1)} ${u.base?.n ?? 0}/${u.view?.n ?? 0} ${r.faces.map((f) => `${f.slot}:${(f.ids ?? []).map((id, c) => (f.valid[c] && id >= 0 ? id : ".")).join(",")}`).join(" ")} | ${u.moves.slice(-8).map((m) => MOVE_NAMES[m.move]).join(" ")}`);
+      if (process.env.LIVE_LOG_TRACE && truth && engine.live && r.t >= truth.from - 500 && r.t <= truth.to) traceLine(trace, engine, r, truth);
       if (truth && r.t >= truth.from && r.t <= truth.to) {
         const shown = Uint8Array.from(engine.live ? engine.live.display() : (engine.view?.state ?? engine.decoder.best().state));
         const dt = (rs[i + 1]?.t ?? r.t) - r.t;
@@ -310,6 +426,7 @@ it("実機のライブの記録", () => {
         `\n  再生: 実機と同じ ${same}・違う ${differ}${firstDiff ? `（最初 ${firstDiff}）` : ""}・作り変え ${snaps}・最後 ${engine.decoder.status}` +
         (truth && acc.counted ? `\n  ${animLine(truth, sim, engine, anim, switched)}` : "") +
         (solveFrom !== null ? `\n  ${lookLine(solveFrom, sim, engine, look, switched)}` : "") +
+        (pushMs.length ? `\n  ソルブ中の追跡の 1 フレーム: 平均 ${(pushMs.reduce((a, b) => a + b, 0) / pushMs.length).toFixed(2)}ms・99% ${pct(pushMs, 0.99).toFixed(2)}ms・最大 ${pct(pushMs, 1).toFixed(1)}ms・3ms を超えた ${((pushMs.filter((x) => x > 3).length / pushMs.length) * 100).toFixed(2)}%（${pushMs.length} 枚）${liveMs.length ? `・推定に切り替えた後 平均 ${(liveMs.reduce((a, b) => a + b, 0) / liveMs.length).toFixed(2)}ms・99% ${pct(liveMs, 0.99).toFixed(2)}ms・最大 ${pct(liveMs, 1).toFixed(1)}ms・3ms を超えた ${((liveMs.filter((x) => x > 3).length / liveMs.length) * 100).toFixed(2)}%（${liveMs.length} 枚）` : ""}` : "") +
         (truth && acc.counted ? `\n  ソルブの間 3D が精密解析と同じ ${((acc.same / acc.counted) * 100).toFixed(1)}%（遅れ 300ms まで）・0.5 秒以上の外れ ${runs.filter(([a, b]) => b - a >= 500).map(([a, b]) => `${((a - truth!.from) / 1000).toFixed(1)}〜${((b - truth!.from) / 1000).toFixed(1)}s`).join(" ")}` : ""),
     );
   });
