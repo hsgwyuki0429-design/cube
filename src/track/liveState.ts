@@ -96,7 +96,7 @@ export const DEFAULT_LIVE_STATE: LiveStateOptions = {
   lostAll: false,
   solvedMin: 8,
   fixRun: 3,
-  fixChain: false,
+  fixChain: true,
   fixAgree: 3,
 };
 

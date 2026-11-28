@@ -8,7 +8,7 @@
 import { readFileSync } from "node:fs";
 import { it } from "vitest";
 import { MOVE_NAMES, applyMove, statesEqual } from "../../src/cube/model";
-import { LiveState, liveFrame } from "../../src/track/liveState";
+import { LiveState, hypOf, liveFrame } from "../../src/track/liveState";
 import { TrackerEngine } from "../../src/track/engine";
 import { ARUCO_REFS } from "../../src/aruco/palette";
 import { StartDetector } from "../../src/app/startDetect";
@@ -47,6 +47,7 @@ it("ライブの状態の推定（フレームごと）", () => {
   const starter = new StartDetector();
   let lost = 0;
   let total = 0;
+  let lastRel = 0;
   for (const r of readings) {
     if (engine && !engine.live) {
       const dropped = !!r.sight && r.faces.length > 0 && !slotsPlausible(r.sight);
@@ -63,6 +64,12 @@ it("ライブの状態の推定（フレームごと）", () => {
     if (!engine && r.t < from) continue;
     // 読みの表示用（記憶は推定の中のものを写す）
     const fr = liveFrame(r.sight, { faces: live.memory.faces.slice() }, live.options);
+    const wrongOf = () => {
+      const tm = truthAt(r.t).map((st) => hypOf(st));
+      const b0 = live.best();
+      return tm.map((c) => Array.from(c).map((x, p) => (b0.mask[p] === x ? "" : `${p}${(b0.mask[p] & (b0.mask[p] - 1)) === 0 ? "" : "?"}${b0.mask[p] & x ? "∋" : ""}`)).filter(Boolean).join(",")).join(" / ");
+    };
+    const before = process.env.LS_SHOW ? wrongOf() : "";
     const a = performance.now();
     const stepped = engine ? !!engine.push(r, r.sight) : live.pushSight(r.sight);
     const ms = performance.now() - a;
@@ -71,7 +78,10 @@ it("ライブの状態の推定（フレームごと）", () => {
     const hit = live.hyps.findIndex((h) => live.known(h) && truth.some((s) => statesEqual(s, live.stateOf(h))));
     total++;
     if (hit < 0) lost++;
-    const mark = (hit === 0 ? "=" : hit > 0 ? "~" : "≠") + (process.env.LS_SHOW ? (truth.some((st) => statesEqual(st, live.display())) ? "D" : "d") : "");
+    const rel = (live.stats as { relocated?: number }).relocated ?? 0;
+    const relMark = rel !== lastRel ? `R${rel}[${before} → ${wrongOf()}]` : "";
+    lastRel = rel;
+    const mark = relMark + (hit === 0 ? "=" : hit > 0 ? "~" : "≠") + (process.env.LS_SHOW ? (truth.some((st) => statesEqual(st, live.display())) ? "D" : "d") : "");
     const b = live.best();
     const top = live.hyps
       .slice(0, 3)
