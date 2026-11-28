@@ -367,6 +367,8 @@ it("手順の総合評価", async () => {
           startUncertain: res.startUncertain,
           endUncertain: res.endUncertain,
           method: res.method,
+          solved: res.solved,
+          inferred: res.moves.filter((m) => m.inferred).length,
           ms: rf.ms / frames,
           resultMs,
           processed: rf.refiner.frames,
