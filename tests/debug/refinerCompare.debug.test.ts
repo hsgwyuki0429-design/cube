@@ -80,6 +80,9 @@ it("本体の流れを方法ごとに並べる", () => {
       analysis = begin || finish ? "partial" : "failed";
     } else analysis = !r.startUncertain && !r.endUncertain ? "done" : "partial";
     const timeErr = analysis === "done" && r.start !== null && r.end !== null ? Math.round(r.end - r.start - truthTime) : null;
+    // 端ごとの誤差（解析 − 正解）。正解の時刻のない T-perm は PB_BM から
+    const startErr = r.start !== null && !Number.isNaN(tm[0].start) ? Math.round(r.start - tm[0].start) : null;
+    const endErr = r.end !== null && !Number.isNaN(tm[tEnd - 1].end) ? Math.round(r.end - tm[tEnd - 1].end) : null;
     const out = {
       name: r.name,
       method: r.method,
@@ -98,13 +101,15 @@ it("本体の流れを方法ごとに並べる", () => {
       analysis,
       liveEdges: [...(r.startUncertain ? ["start"] : []), ...(r.endUncertain ? ["end"] : [])],
       timeErr,
+      startErr,
+      endErr,
       stopCut: r.stopCut,
       ms: r.ms,
       piecesMs: r.piecesMs,
       forced: r.forced,
     };
     process.stdout.write(
-      `${r.name.padEnd(26)} ${r.method.padEnd(4)} ${(r.used ?? "").padEnd(14)} ${solved ? "完成" : startDiff ? "始まり違い" : "未完"} ${out.same ? "同じ" : `距離 ${dist}`} 確定 ${ws.ok}/${want.length} 間違い ${ws.wrong}/${bs.wrong} 推定 ${r.inferred} ${analysis}${out.liveEdges.length ? `(${out.liveEdges.join(",")})` : ""} 誤差 ${timeErr ?? "-"}ms ${(r.ms / 1000).toFixed(1)}秒${r.stopCut ? ` 打ち切り ${r.stopCut.how}:${r.stopCut.dropped}` : ""}\n`,
+      `${r.name.padEnd(26)} ${r.method.padEnd(4)} ${(r.used ?? "").padEnd(14)} ${solved ? "完成" : startDiff ? "始まり違い" : "未完"} ${out.same ? "同じ" : `距離 ${dist}`} 確定 ${ws.ok}/${want.length} 間違い ${ws.wrong}/${bs.wrong} 推定 ${r.inferred} ${analysis}${out.liveEdges.length ? `(${out.liveEdges.join(",")})` : ""} 誤差 ${timeErr ?? "-"}ms（始め ${startErr ?? "-"}・終わり ${endErr ?? "-"}） ${(r.ms / 1000).toFixed(1)}秒${r.stopCut ? ` 打ち切り ${r.stopCut.how}:${r.stopCut.dropped}` : ""}\n`,
     );
     if (process.env.RC_OUT) appendFileSync(process.env.RC_OUT, `${JSON.stringify(out)}\n`);
   }
