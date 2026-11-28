@@ -2,19 +2,16 @@
 // 間引いたフレームの数・タイマーの開始と停止（Solve.edges）・精密解析の入力と結果をメタデータとして入れて、共有シート（できなければ保存）に渡す。
 // 手元では tests/debug/realVideo.debug.test.ts に REAL_VIDEO=書き出したファイル で通す（圧縮し直さずに読み、始まりの状態・ソルブの範囲・
 // 解析の設定は書き出しから取る）。映像は端末の外に勝手に送らない: 書き出すのは利用者がボタンを押したときだけ
-import { controller } from "../app/controller";
+// 止めた後の画面の開発用の「書き出す」（src/ui/bundleExport.ts）も同じメタデータを使い、ライブの記録と要約を足す
+import { type SolveRecording, controller } from "../app/controller";
 import { settingsStore } from "../app/settings";
 import { timerStore } from "../app/timer";
 import { muxRecording } from "../vision/mp4Mux";
 
 export const RECORDING_EXPORT_VERSION = 1;
 
-export async function exportRecording(): Promise<void> {
-  const cap = controller.lastRecording;
-  if (!cap) {
-    controller.toast("書き出す録画がありません（タイマーで計ったソルブの録画を、次のソルブを始めるまで残します）");
-    return;
-  }
+// 録画のメタデータ（uuid ボックスの JSON）
+export function recordingMeta(cap: SolveRecording): Record<string, unknown> {
   const st = controller.store.get();
   const t = timerStore.get();
   const s = settingsStore.get();
@@ -22,7 +19,7 @@ export async function exportRecording(): Promise<void> {
   const chunks = cap.recording.chunks;
   let bytes = 0;
   for (const c of chunks) bytes += c.data.byteLength;
-  const meta = {
+  return {
     kind: "cubevision-recording",
     version: RECORDING_EXPORT_VERSION,
     date: new Date().toISOString(),
@@ -42,17 +39,10 @@ export async function exportRecording(): Promise<void> {
     rests: controller.perf.rests.filter((r) => (r.t1 ?? Infinity) >= cap.input.from),
     framePath: controller.framePath(),
   };
-  let muxed: ReturnType<typeof muxRecording>;
-  try {
-    muxed = muxRecording(cap.recording, meta);
-  } catch (e) {
-    controller.toast(`録画を書き出せませんでした（${(e as Error).message}）`);
-    return;
-  }
-  const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "");
-  const name = `cubevision-rec-${stamp}.mp4`;
-  const file = new File(muxed.parts as BlobPart[], name, { type: "video/mp4" });
-  const mb = (file.size / 1e6).toFixed(1);
+}
+
+// 共有シート（できなければ保存）に渡す。saved: 保存したときに出す文
+export async function shareOrSave(file: File, saved: string): Promise<void> {
   try {
     if (navigator.canShare?.({ files: [file] })) {
       await navigator.share({ files: [file] });
@@ -64,8 +54,26 @@ export async function exportRecording(): Promise<void> {
   const url = URL.createObjectURL(file);
   const a = document.createElement("a");
   a.href = url;
-  a.download = name;
+  a.download = file.name;
   a.click();
   setTimeout(() => URL.revokeObjectURL(url), 30000);
-  controller.toast(`録画を保存しました（${muxed.frames} フレーム・${mb}MB）`);
+  controller.toast(saved);
+}
+
+export async function exportRecording(): Promise<void> {
+  const cap = controller.lastRecording;
+  if (!cap) {
+    controller.toast("書き出す録画がありません（タイマーで計ったソルブの録画を、次のソルブを始めるまで残します）");
+    return;
+  }
+  let muxed: ReturnType<typeof muxRecording>;
+  try {
+    muxed = muxRecording(cap.recording, recordingMeta(cap));
+  } catch (e) {
+    controller.toast(`録画を書き出せませんでした（${(e as Error).message}）`);
+    return;
+  }
+  const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "");
+  const file = new File(muxed.parts as BlobPart[], `cubevision-rec-${stamp}.mp4`, { type: "video/mp4" });
+  await shareOrSave(file, `録画を保存しました（${muxed.frames} フレーム・${(file.size / 1e6).toFixed(1)}MB）`);
 }

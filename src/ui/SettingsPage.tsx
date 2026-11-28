@@ -176,6 +176,11 @@ export function SettingsPage() {
           <button class="btn" onClick={() => void exportRecording()}>
             録画を書き出す
           </button>
+          <div class="form" style={{ marginTop: 14 }}>
+            <Field label="開発用の書き出し" desc="止めた後の画面に「書き出す」と最後のソルブの様子（止めた後の待ち・解析の結果・ソルブ中の fps など）を出します。「書き出す」は録画・ライブの記録・様子を 1 つのファイルにします（精密解析が終わってから押せます。iPhone は「ファイルに保存」）。映像が入るので、送る相手に気をつけてください">
+              <Toggle k="devExport" />
+            </Field>
+          </div>
         </div>
       </div>
 

@@ -1,12 +1,13 @@
 // ソルブの場面ごと（崩し・インスペクション・ソルブ・止めた後）の fps と、ライブ・録画・精密解析がそれぞれ何枚扱ったかを並べる
 // （ライブ 2.5: ソルブ中に fps が落ちる原因を調べる）。実機の書き出しをそのまま読む:
 //   FPS_LIVE=ライブの記録（cubevision-live-….json.gz）・FPS_REC=同じソルブの録画の書き出し（cubevision-rec-….mp4）（どちらか片方でもよい）
+//   開発用の「書き出す」でまとめたファイル（cubevision-….mp4）なら FPS_REC=そのファイル だけで両方（FPS_LIVE は省ける。FPS_FILE=… も同じ）。
+//   要約（summary）があれば先頭に出す
 //   npx vitest run -c vitest.debug.config.ts tests/debug/fpsPhases.debug.test.ts --silent=false
 // 書き出しに 1 秒ごとの計測（perf: src/app/perfLog.ts。2026-11-27 から）があれば、場面ごとの平均も出す
-import { readFileSync } from "node:fs";
-import { gunzipSync } from "node:zlib";
 import { it } from "vitest";
-import { exportTimesUs, loadExport } from "./lib/recording";
+import { exportTimesUs, loadBundleLive, loadExport, loadLiveLog } from "./lib/recording";
+import { summaryLines } from "../../src/app/solveSummary";
 import { type PerfRow, summarizePerf } from "../../src/app/perfLog";
 
 interface Phase {
@@ -18,11 +19,13 @@ interface Phase {
 const fmt = (x: number, d = 1) => (Number.isFinite(x) ? x.toFixed(d) : "-");
 
 it("場面ごとの fps", () => {
+  const one = process.env.FPS_FILE;
   const liveFile = process.env.FPS_LIVE;
-  const recFile = process.env.FPS_REC;
+  const recFile = process.env.FPS_REC ?? one ?? (liveFile && /\.(mp4|mov)$/i.test(liveFile) ? liveFile : undefined);
   if (!liveFile && !recFile) return;
-  const live = liveFile ? JSON.parse(gunzipSync(readFileSync(liveFile)).toString()) : null;
+  const live = liveFile ? loadLiveLog(liveFile) : recFile ? loadBundleLive(recFile) : null;
   const meta = recFile ? loadExport(recFile) : null;
+  if (meta?.summary) console.log(`要約（アプリ）:\n  ${summaryLines(meta.summary).join("\n  ")}`);
   // 場面の境: 作り変えを始めた設定の変更（インスペクションの始まり）・ソルブの始まり・止めた時刻・解析が終わった（ライブを休み終えた）
   const startT: number | undefined = meta?.analysis.live?.startT ?? live?.timer?.startT;
   const endT: number | undefined = meta?.analysis.live?.endT ?? (live && startT !== undefined ? startT + (live.solves?.[0]?.provisionalMs ?? live.solves?.[0]?.timeMs ?? 0) : undefined);

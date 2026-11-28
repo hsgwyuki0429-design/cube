@@ -446,7 +446,7 @@ self.onmessage = async (event: MessageEvent<ToWorker>) => {
         focus = undefined;
         return;
       case "live-log":
-        post({ type: "live-log", id: msg.id, log: liveLog.toJSON() });
+        post({ type: "live-log", id: msg.id, log: liveLog.toJSON(msg.from) });
         return;
       case "perf": {
         // 精密解析: 復号した・処理した枚数と遅れ（ソルブ中から進めている解析）。画素にする時間も忙しさに入れる

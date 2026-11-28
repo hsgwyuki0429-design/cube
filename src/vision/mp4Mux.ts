@@ -6,9 +6,12 @@
 //   メタデータの timeOriginUs に入れる。リアルタイムの圧縮は B フレームがないので、復号の順 = 表示の順
 // - メタデータ（録画の設定・タイマーの時刻・精密解析の結果）は最上位の uuid ボックス（RECORDING_UUID）に JSON で入れる。ffmpeg・
 //   動画のアプリは知らないボックスを読み飛ばすので、ふつうの動画としても見られる
+// - 開発用の「書き出す」（止めた後の画面: src/ui/bundleExport.ts）は、同じ形にライブの記録（gzip した JSON）を別の uuid ボックス
+//   （LIVE_LOG_UUID）で足す（extra）。1 つのファイルに録画・ライブの記録・要約が入る
 import type { Recording } from "./recorder";
 
 export const RECORDING_UUID = "cubevision-rec01"; // 16 文字（uuid ボックスの 16 バイト）
+export const LIVE_LOG_UUID = "cubevision-liv01"; // ライブの記録（gzip した JSON。gzip できない端末ではそのままの JSON）
 const enc = new TextEncoder();
 
 function u32(n: number): Uint8Array {
@@ -92,8 +95,8 @@ export interface MuxedRecording {
   durationUs: number;
 }
 
-// meta: uuid ボックスに入れる JSON（timeOriginUs は自動で足す）
-export function muxRecording(rec: Recording, meta: Record<string, unknown> = {}): MuxedRecording {
+// meta: uuid ボックスに入れる JSON（timeOriginUs は自動で足す）。extra: 最後に足す uuid ボックス（uuid は 16 文字）
+export function muxRecording(rec: Recording, meta: Record<string, unknown> = {}, extra: { uuid: string; data: Uint8Array }[] = []): MuxedRecording {
   const codec = rec.config.codec;
   const h264 = codec.startsWith("avc1") || codec.startsWith("avc3");
   const samples: Uint8Array[] = [];
@@ -174,7 +177,11 @@ export function muxRecording(rec: Recording, meta: Record<string, unknown> = {})
   const moov = box("moov", mvhd, box("trak", tkhd, mdia));
   const json = enc.encode(stringifyMeta({ ...meta, timeOriginUs: t0 }));
   const uuid = box("uuid", enc.encode(RECORDING_UUID), json);
-  return { parts: [ftyp, u32(mdatSize), enc.encode("mdat"), ...samples, moov, uuid], frames: n, timeOriginUs: t0, durationUs };
+  const more = extra.map((x) => {
+    if (x.uuid.length !== 16) throw new Error(`uuid は 16 文字: ${x.uuid}`);
+    return [u32(x.data.byteLength + 24), enc.encode("uuid"), enc.encode(x.uuid), x.data];
+  });
+  return { parts: [ftyp, u32(mdatSize), enc.encode("mdat"), ...samples, moov, uuid, ...more.flat()], frames: n, timeOriginUs: t0, durationUs };
 }
 
 // メタデータの JSON: 解析の入力・結果には Infinity・-Infinity（JSON では null になる）や型付きの配列があるので、そのまま戻せる形にする
@@ -188,6 +195,12 @@ export function parseMeta(text: string): Record<string, unknown> {
 
 // MP4 の最上位のボックスをたどって、書き出しのメタデータ（uuid ボックスの JSON）を読む。なければ null（ふつうの動画）
 export function readRecordingMeta(file: Uint8Array): Record<string, unknown> | null {
+  const body = readUuidBox(file, RECORDING_UUID);
+  return body ? parseMeta(new TextDecoder().decode(body)) : null;
+}
+
+// 最上位の uuid ボックス（uuid の 16 文字の後の中身）。なければ null
+export function readUuidBox(file: Uint8Array, id: string): Uint8Array | null {
   const view = new DataView(file.buffer, file.byteOffset, file.byteLength);
   const dec = new TextDecoder();
   let pos = 0;
@@ -200,9 +213,7 @@ export function readRecordingMeta(file: Uint8Array): Record<string, unknown> | n
       head = 16;
     } else if (size === 0) size = file.byteLength - pos;
     if (size < head) return null;
-    if (type === "uuid" && dec.decode(file.subarray(pos + head, pos + head + 16)) === RECORDING_UUID) {
-      return parseMeta(dec.decode(file.subarray(pos + head + 16, pos + size)));
-    }
+    if (type === "uuid" && dec.decode(file.subarray(pos + head, pos + head + 16)) === id) return file.subarray(pos + head + 16, pos + size);
     pos += size;
   }
   return null;

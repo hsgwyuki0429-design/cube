@@ -12,7 +12,9 @@ import { PIECE_OF } from "../../../src/track/pieces/model";
 import { CENTER_SLOT, bitsOf, buildTable } from "../../../src/track/pieces/table";
 import type { SightFrame } from "../../../src/track/sight";
 import { planesToRgba } from "../../../src/vision/framePixels";
-import { readRecordingMeta } from "../../../src/vision/mp4Mux";
+import { gunzipSync } from "node:zlib";
+import { LIVE_LOG_UUID, readRecordingMeta, readUuidBox } from "../../../src/vision/mp4Mux";
+import type { SolveSummary } from "../../../src/app/solveSummary";
 import type { RefineInput, RefineResult } from "../../../src/vision/refine";
 
 export interface ExportMeta {
@@ -38,6 +40,9 @@ export interface ExportMeta {
   solve?: { timeMs: number; edges?: unknown; analysis?: string; refineMethod?: string; moves?: unknown[] };
   perf?: import("../../../src/app/perfLog").PerfRow[]; // 1 秒ごとの処理の様子（2026-11-27 から）
   rests?: import("../../../src/app/liveRest").RestSpan[]; // 止めた後にライブが休んだ区間
+  summary?: SolveSummary; // 開発用の「書き出す」（まとめたファイル: src/ui/bundleExport.ts）の最後のソルブの様子
+  bundle?: { version: number; liveLog: string; liveGzip: boolean };
+  pair?: { solveId: string | null; recFrom: number; timeOriginUs: number | null; startT: number | null; endT: number | null };
   framePath?: { live: string; liveNote: string | null; liveWaits?: number; liveWaitNote?: string | null; recorder: string; recorderNote: string | null; recorderWaits?: number; recorderWaitNote?: string | null; requested: boolean }; // カメラのフレームの渡し方（waits: 一時的に渡さなかった回数）
 }
 
@@ -51,6 +56,31 @@ export function loadExport(file: string): ExportMeta | null {
   }
   const m = readRecordingMeta(new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength));
   return m && m.kind === "cubevision-recording" ? (m as unknown as ExportMeta) : null;
+}
+
+// まとめたファイル（開発用の「書き出す」）に入っているライブの記録（「ライブの記録を書き出す」と同じ形）。なければ null
+export function loadBundleLive(file: string): Record<string, any> | null {
+  let buf: Buffer;
+  try {
+    buf = readFileSync(file);
+  } catch {
+    return null;
+  }
+  const body = readUuidBox(new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength), LIVE_LOG_UUID);
+  if (!body) return null;
+  const raw = body[0] === 0x1f && body[1] === 0x8b ? gunzipSync(body) : Buffer.from(body);
+  return JSON.parse(raw.toString("utf8"));
+}
+
+// ライブの記録を読む: .json・.json.gz（「ライブの記録を書き出す」）か、まとめたファイル（.mp4）
+export function loadLiveLog(file: string): Record<string, any> {
+  if (/\.(mp4|mov)$/i.test(file)) {
+    const live = loadBundleLive(file);
+    if (!live) throw new Error(`ライブの記録が入っていない（まとめたファイルではない）: ${file}`);
+    return live;
+  }
+  const raw = readFileSync(file);
+  return JSON.parse((raw[0] === 0x1f && raw[1] === 0x8b ? gunzipSync(raw) : raw).toString("utf8"));
 }
 
 // フレームの時刻（µs。本体の時間軸）

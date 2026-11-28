@@ -20,6 +20,8 @@
 //   REAL_REF=ファイル（精密解析の結果を書き出す。REAL_REFINE=0 なら読み込んで、ライブの一致だけ測る: ライブを直して何度も測るとき）
 //   REAL_PIECES=1（精密解析の解き直しをステッカーの動きの方程式で: RefineInput.pieces。表の AND 版。REAL_PIECES=v1 は最初の版）
 // 設定画面の「録画を書き出す」で書き出した録画（cubevision-rec-….mp4）は、REAL_VIDEO=そのファイル だけで本体と同じ条件になる
+// （止めた後の画面の開発用の「書き出す」でまとめたファイル cubevision-日時-タイム.mp4 も同じ。中の要約を「要約（アプリ）」に出す。
+//   REAL_OUT=ファイル で 1 行の JSON: アプリの結果と同じか・手元の結果。scripts/real-table.mjs が読む）
 // （tests/debug/lib/recording.ts）: 圧縮し直さず・縮めずに YUV のまま読み（本体と同じ planesToRgba）、時刻は本体の時間軸（ms）、始まりの状態・
 //   解析の範囲・インスペクションの間引き・止めた時刻・終わりの状態・認識と追跡の設定は書き出しから。ライブは省き（REAL_NOLIVE=0 で通す）、
 //   止まったフレームは飛ばす（REAL_STILL=0 で飛ばさない）。本体の結果と比べて「アプリの結果と同じ」を出す（REAL_EXPECT_SAME=1 なら違えば失敗）。
@@ -51,6 +53,7 @@ import { StillSkipper } from "../../src/vision/motion";
 import { sightFrame } from "../../src/track/sight";
 import { type RefineResult, Refiner } from "../../src/vision/refine";
 import { DEFAULT_PIPELINE } from "../../src/vision/pipeline";
+import { summaryLines } from "../../src/app/solveSummary";
 import { type StatFrame, compareResults, exportPlan, loadExport, readExportFrames, readStats, statFrame } from "./lib/recording";
 import type { SightFrame } from "../../src/track/sight";
 import { loadTestOpenCv } from "../cv";
@@ -484,9 +487,12 @@ it("実際のプレイ動画", async () => {
       // REAL_APP_TRUTH=ファイル: 本体の結果を piecesBench の正解の形（buildTruth の BT_OUT と同じ { startState, moves }）で書き出す
       // （PB_TRUTH にそのフォルダを渡す。本当の正解ではなく、本体の解析と比べるため）
       if (process.env.REAL_APP_TRUTH && a.result?.solved) writeFileSync(process.env.REAL_APP_TRUTH, JSON.stringify({ startState: a.result.startState ?? a.input.state, moves: a.result.moves, note: "app" }));
+      if (exp.summary) out.push(`要約（アプリ）:\n  ${summaryLines(exp.summary).join("\n  ")}`);
       if (!a.result) out.push(`  本体の結果なし（${a.error ?? (a.pending ? "解析中に書き出した" : "?")}）`);
       else if (refiner) {
         const diff = compareResults(a.result, res);
+        // REAL_OUT=ファイル: 1 行の JSON（アプリの結果と同じか・手元の結果。scripts/real-table.mjs が読む）
+        if (process.env.REAL_OUT) appendFileSync(process.env.REAL_OUT, `${JSON.stringify({ file, sameAsApp: sameAsApp ? diff.length === 0 : null, diff, solved: res.solved, method: res.method, moves: res.moves.length, inferred: res.moves.filter((m) => m.inferred).length, start: res.start, end: res.end })}\n`);
         out.push(sameAsApp ? `アプリの結果と同じ: ${diff.length ? "いいえ" : "はい"}` : `アプリの結果との違い（条件を変えたので参考）: ${diff.length ? "" : "なし"}`);
         for (const d of diff) out.push(`  ${d}`);
         if (process.env.REAL_EXPECT_SAME && diff.length) {

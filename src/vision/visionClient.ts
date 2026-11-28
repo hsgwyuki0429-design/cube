@@ -285,11 +285,11 @@ export class VisionClient {
 
   // ライブの記録（src/track/liveLog.ts）をもらう
   private logQueries = new Map<number, (log: unknown) => void>();
-  liveLog(): Promise<unknown> {
+  liveLog(from?: number): Promise<unknown> {
     const id = this.nextId++;
     return new Promise((resolve) => {
       this.logQueries.set(id, resolve);
-      this.post({ type: "live-log", id });
+      this.post({ type: "live-log", id, ...(from !== undefined ? { from } : {}) });
       setTimeout(() => {
         if (this.logQueries.delete(id)) resolve(null);
       }, 10000);

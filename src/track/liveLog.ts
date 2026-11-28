@@ -132,18 +132,8 @@ export class LiveLog {
       const cps = seg.checkpoints ?? [];
       let j = -1;
       for (let i = 0; i < cps.length; i++) if (cps[i].t <= until) j = i;
-      if (j >= 0) {
-        const { t, cp, options } = cps[j];
-        seg.checkpoints = cps.slice(j + 1);
-        seg.start = cp.state;
-        seg.orients = cp.orients;
-        seg.options = options;
-        seg.resume = { t, moves: cp.moves, origin: cp.origin, snaps: cp.snaps, refs: cp.refs, lastSeen: cp.lastSeen };
-        seg.events = seg.events.filter((e) => e.t >= t);
-        let k = 0;
-        while (k < seg.readings.length && seg.readings[k].t <= t) k++;
-        seg.readings.splice(0, k);
-      } else if (seg.readings[0].t < this.lastT - HARD_MS) {
+      if (j >= 0) Object.assign(seg, cutAt(seg, j));
+      else if (seg.readings[0].t < this.lastT - HARD_MS) {
         const cut = this.lastT - this.keepMs;
         let k = 0;
         while (k < seg.readings.length && seg.readings[k].t < cut) k++;
@@ -157,9 +147,41 @@ export class LiveLog {
     while (this.segments.length > 1 && !this.segments[0].readings.length) this.segments.shift();
   }
 
-  toJSON(): { version: number; segments: LiveLogSegment[] } {
+  // from: この時刻から通し直せる分だけ（開発用の「書き出す」で 1 回のソルブの分: src/ui/bundleExport.ts）。from より前に終わった区切りは
+  // 入れず、from より前から続く区切りは from より前でいちばん新しい始まりの候補から（候補がなければ区切りの始まりから）。記録そのものは変えない
+  toJSON(from = -Infinity): { version: number; segments: LiveLogSegment[]; from?: number } {
     this.flushSkips();
     this.trim();
-    return { version: LIVE_LOG_VERSION, segments: this.segments.map(({ checkpoints: _, ...s }) => s) };
+    const strip = ({ checkpoints: _, ...s }: LiveLogSegment) => s;
+    if (!Number.isFinite(from)) return { version: LIVE_LOG_VERSION, segments: this.segments.map(strip) };
+    const out: LiveLogSegment[] = [];
+    for (const seg of this.segments) {
+      const rs = seg.readings;
+      if (!rs.length || rs[rs.length - 1].t < from) continue;
+      const cps = seg.checkpoints ?? [];
+      let j = -1;
+      for (let i = 0; i < cps.length; i++) if (cps[i].t <= from) j = i;
+      out.push(strip(j >= 0 && rs[0].t < from ? { ...seg, ...cutAt(seg, j) } : seg));
+    }
+    // 読みのない区切りしかない（追跡を始めた直後）: いちばん新しい区切りだけ
+    if (!out.length && this.segments.length) out.push(strip(this.segments[this.segments.length - 1]));
+    return { version: LIVE_LOG_VERSION, segments: out, from };
   }
+}
+
+// 区切りを始まりの候補 j の時点から始まるようにしたもの（その前の読みと設定の変更を捨てる。元の区切りは変えない）
+function cutAt(seg: LiveLogSegment, j: number): Partial<LiveLogSegment> {
+  const cps = seg.checkpoints ?? [];
+  const { t, cp, options } = cps[j];
+  let k = 0;
+  while (k < seg.readings.length && seg.readings[k].t <= t) k++;
+  return {
+    checkpoints: cps.slice(j + 1),
+    start: cp.state,
+    orients: cp.orients,
+    options,
+    resume: { t, moves: cp.moves, origin: cp.origin, snaps: cp.snaps, refs: cp.refs, lastSeen: cp.lastSeen },
+    events: seg.events.filter((e) => e.t >= t),
+    readings: seg.readings.slice(k),
+  };
 }

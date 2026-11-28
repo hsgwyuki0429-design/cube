@@ -145,6 +145,7 @@ class Controller {
   readonly recorder = new FrameRecorder(); // タイマー計測中の録画（ソルブ後の精密解析用）
   readonly perf = new PerfLog(); // 1 秒ごとの処理の様子（調査用: 書き出しに入れる）
   lastRecording: SolveRecording | null = null; // 直近のソルブの録画（開発用の書き出し）
+  onCaptureSettled?: (cap: SolveRecording) => void; // 直近のソルブの解析が終わった（結果か失敗が入った: src/app/devCapture.ts）
   readonly refiner = new RefineClient();
   // 動画ファイルの解析（ソルブ中から進める解析と別の Worker。並べて動かしても追跡を止めない）
   private readonly videoRefiner = new RefineClient();
@@ -650,8 +651,12 @@ class Controller {
         (r) => {
           cap.result = r;
           cap.waitMs = Math.round(performance.now() - endAt);
+          this.onCaptureSettled?.(cap);
         },
-        (e) => (cap.error = errorText(e)),
+        (e) => {
+          cap.error = errorText(e);
+          this.onCaptureSettled?.(cap);
+        },
       );
     }
     const guard = window.setInterval(() => this.liveRest.check(performance.now()), 1000);
@@ -840,6 +845,8 @@ export interface SolveRecording {
   retried?: string; // ソルブ中から進めた解析が失敗し、録画全体を解析し直した（その理由）
   waitMs?: number; // 止めてから解析の結果が出るまで（ms。止めた後の待ち）
   solveLoad?: string; // ソルブ中の重さの配り方（URL の ?solveload=）
+  // 開発用の「書き出す」の材料（解析が終わったときに src/app/devCapture.ts が足す）: ライブの記録（このソルブを通し直せる分）・要約
+  bundle?: { live: Record<string, unknown>; liveBytes: Uint8Array; liveGzip: boolean; summary: import("./solveSummary").SolveSummary };
 }
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));

@@ -2,7 +2,7 @@
 // 中身（長さ付きの NAL）・avcC・書き出しのメタデータがそのまま読めること
 import { describe, expect, it } from "vitest";
 import { demuxFile } from "../src/aruco/demux";
-import { muxRecording, readRecordingMeta, splitAnnexB } from "../src/vision/mp4Mux";
+import { LIVE_LOG_UUID, muxRecording, readRecordingMeta, readUuidBox, splitAnnexB } from "../src/vision/mp4Mux";
 import type { Recording } from "../src/vision/recorder";
 
 const SPS = Uint8Array.of(0x67, 0x42, 0x00, 0x20, 0x95, 0xa0, 0x28, 0x0f, 0x68);
@@ -55,6 +55,20 @@ describe("mp4Mux", () => {
     const nal = slice(true, 4);
     expect(Array.from(data)).toEqual([0, 0, 0, nal.length, ...nal]);
     expect(readRecordingMeta(buf)).toEqual({ kind: "test", n: 1, inf: Infinity, ninf: -Infinity, u8: [3, 4], timeOriginUs: 123_456_789 });
+  });
+
+  it("ライブの記録を足したまとめたファイル: 同じフレームに読め、メタデータとライブの記録の両方を取り出せる", async () => {
+    const rec = recording();
+    const live = Uint8Array.of(0x1f, 0x8b, 1, 2, 3, 4, 5);
+    const m = muxRecording(rec, { kind: "test" }, [{ uuid: LIVE_LOG_UUID, data: live }]);
+    const file = new Blob(m.parts as BlobPart[]);
+    const d = await demuxFile(file);
+    expect(d.samples).toHaveLength(6);
+    const buf = new Uint8Array(await file.arrayBuffer());
+    expect(readRecordingMeta(buf)).toEqual({ kind: "test", timeOriginUs: 123_456_789 });
+    expect(Array.from(readUuidBox(buf, LIVE_LOG_UUID)!)).toEqual(Array.from(live));
+    expect(readUuidBox(new Uint8Array(await new Blob(muxRecording(rec).parts as BlobPart[]).arrayBuffer()), LIVE_LOG_UUID)).toBeNull();
+    expect(() => muxRecording(rec, {}, [{ uuid: "short", data: live }])).toThrow();
   });
 
   it("ふつうの動画（メタデータなし）は null", () => {

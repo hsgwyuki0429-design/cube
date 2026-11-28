@@ -2,6 +2,7 @@
 // フリー（タイマーなしで回す）は 2026-11 に外した。上に認識の様子、タイム、記録（best・ao5・ao12・直近のタイム）。下に回す前はスクランブル、回した後は
 // 回した手、右下に 3D キューブ。タイマーの計測中は、タイムとカメラ・回した手だけを残して他を隠す（`focus`）
 import { useEffect, useRef } from "preact/hooks";
+import { DevExport } from "./DevExport";
 import { controller } from "../app/controller";
 import { settingsStore } from "../app/settings";
 import { averageOf, effectiveTime, formatTime } from "../app/storage";
@@ -301,6 +302,7 @@ function DoneStrip() {
         </div>
       )}
       {t.message && <p class="strip-note">{t.message}</p>}
+      {r && <DevExport />}
     </div>
   );
 }

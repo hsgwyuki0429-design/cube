@@ -2820,3 +2820,27 @@ button.mv {
     opacity: 0.35;
   }
 }
+
+/* 止めた後の画面の開発用の「書き出す」と最後のソルブの様子（src/ui/DevExport.tsx。?debug か設定の「開発用の書き出し」） */
+.dev-export {
+  margin-top: 8px;
+  font-size: 11px;
+  color: rgba(235, 235, 245, 0.62);
+}
+.dev-export-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.dev-export-head .pill[disabled] {
+  opacity: 0.5;
+}
+.dev-summary {
+  margin: 4px 0 0;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-width: 100%;
+}

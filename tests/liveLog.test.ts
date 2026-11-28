@@ -61,4 +61,34 @@ describe("ライブの記録の区切りの始まり", () => {
     expect(log.toJSON().segments.at(-1)!.options).toEqual({ snapToView: true });
     expect(mergeOptions({ observer: { a: 1 } }, { observer: { b: 2 }, x: 1 })).toEqual({ observer: { a: 1, b: 2 }, x: 1 });
   });
+
+  it("toJSON(from): from から通し直せる分だけ（前の区切りは入れない・from より前の候補から・記録は変えない）", () => {
+    const log = new LiveLog();
+    log.start([0], { a: 1 });
+    for (let t = 0; t <= 5000; t += 100) log.add(reading(t), () => cp(t));
+    log.start([9], { a: 2 }); // 次のソルブの区切り
+    for (let t = 5100; t <= 20000; t += 100) {
+      if (t === 9000) log.event("options", { b: 1 });
+      log.add(reading(t), () => cp(t));
+    }
+    const j = log.toJSON(12000);
+    expect(j.from).toBe(12000);
+    expect(j.segments).toHaveLength(1);
+    const seg = j.segments[0];
+    expect(seg.resume!.t).toBeLessThanOrEqual(12000);
+    expect(seg.resume!.t).toBeGreaterThan(8000);
+    expect(seg.start).toEqual([seg.resume!.t]);
+    expect(seg.readings[0].t).toBeGreaterThan(seg.resume!.t);
+    expect(seg.readings[seg.readings.length - 1].t).toBe(20000);
+    // 記録そのものはそのまま
+    const all = log.toJSON();
+    expect(all.segments).toHaveLength(2);
+    expect(all.segments[1].readings[0].t).toBe(5100);
+    expect(all.segments[1].resume).toBeUndefined();
+    // from が前の区切りの途中: 前の区切りはその前の候補から・次の区切りは始まりから
+    const k = log.toJSON(3500);
+    expect(k.segments).toHaveLength(2);
+    expect(k.segments[0].resume!.t).toBe(3000);
+    expect(k.segments[1].readings[0].t).toBe(5100);
+  });
 });

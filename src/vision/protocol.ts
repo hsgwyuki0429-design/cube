@@ -28,7 +28,7 @@ export type ToWorker =
   | { type: "track-reset"; state: number[]; orients?: number[] }
   | { type: "track-stop" }
   | { type: "track-query"; id: number }
-  | { type: "live-log"; id: number }
+  | { type: "live-log"; id: number; from?: number } // from: この時刻から通し直せる分だけ（LiveLog.toJSON）
   // 1 秒ごとの処理の様子（src/app/perfLog.ts）: この Worker の忙しさ・処理した枚数の累計
   | { type: "perf"; id: number }
   | { type: "refine"; id: number; recording: Recording; input: RefineInput }
