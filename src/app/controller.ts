@@ -1,5 +1,6 @@
 // アプリの中枢: カメラ → 認識 Worker → スキャン／追跡 の流れをまとめる。UI はこのストアを購読するだけ。
 import { LIVE_TRACKED_ORIENT } from "../track/orient";
+import type { FramePath } from "../vision/frameGate";
 import { Matrix4, Quaternion } from "three";
 import { type Mat3, ORIENTATIONS, mul } from "../cube/model";
 import { F, isSolved, solvedState } from "../cube/model";
@@ -800,13 +801,18 @@ class Controller {
   }
 
   // 実際に使ったカメラのフレームの渡し方（書き出しに残す: vframe = VideoFrame のまま・bitmap = 今までのやり方）と、戻した理由
-  framePath(): { live: "vframe" | "bitmap"; liveNote: string | null; recorder: "vframe" | "bitmap"; recorderNote: string | null; requested: boolean } {
+  // waits: 映像のフレームがまだないなど一時的に VideoFrame を作れず・渡せず、そのフレームだけ渡さなかった回数（戻してはいない）と最後の理由
+  framePath(): FramePath {
     return {
       requested: SOLVE_LOAD.vframe,
       live: this.vision?.videoFrames ? "vframe" : "bitmap",
       liveNote: this.vision?.videoFrameNote ?? null,
+      liveWaits: this.vision?.frameGate.waits ?? 0,
+      liveWaitNote: this.vision?.frameGate.waitNote ?? null,
       recorder: this.recorder.videoFrames ? "vframe" : "bitmap",
       recorderNote: this.recorder.videoFrameNote,
+      recorderWaits: this.recorder.frameGate.waits,
+      recorderWaitNote: this.recorder.frameGate.waitNote,
     };
   }
 

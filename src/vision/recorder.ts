@@ -1,5 +1,7 @@
 // タイマー計測中のカメラ映像を、WebCodecs で圧縮してメモリに残す（全フレーム・正確なタイムスタンプつき）。
 // ソルブの後でこれを1フレームずつ解析し直し、手順と時刻を正確に出す（リアルタイムでは処理が追いつかないフレームも含めて）。
+import { FrameGate } from "./frameGate";
+
 export interface RecordedChunk {
   type: "key" | "delta";
   timestamp: number; // µs（performance.now() と同じ時間軸）
@@ -101,9 +103,18 @@ export class FrameRecorder {
   hw: HardwareAcceleration | null = null; // 頼んだハードウェアの使い方（prefer-hardware で対応していればハードウェアの圧縮）
   recording = false;
   dropped = 0;
-  onQueue: ((n: number) => void) | null = null;
-  videoFrames = false; // カメラのフレームをそのまま圧縮に渡す（既定。?solveload=default で使わない。作れなければ自動で戻す）
-  videoFrameNote: string | null = null; // VideoFrame をやめた理由（調査用） // 調査用（src/app/perfLog.ts）: 足すときの圧縮の待ち
+  onQueue: ((n: number) => void) | null = null; // 調査用（src/app/perfLog.ts）: 足すときの圧縮の待ち
+  // カメラのフレームをそのまま圧縮に渡すか（既定。?solveload=default で使わない）。一時的な失敗では戻さない（src/vision/frameGate.ts）
+  readonly frameGate = new FrameGate("録画");
+  get videoFrames(): boolean {
+    return this.frameGate.enabled;
+  }
+  set videoFrames(on: boolean) {
+    this.frameGate.enabled = on;
+  }
+  get videoFrameNote(): string | null {
+    return this.frameGate.note; // VideoFrame をやめた理由（調査用）
+  }
   frames = 0;
   bitrate = 0; // いまの録画の圧縮の強さ（調査用）
   private lastDrop = -Infinity;
@@ -217,17 +228,13 @@ export class FrameRecorder {
       return;
     }
     if (this.encoder.encodeQueueSize > 3) this.lastDrop = t; // 詰まり始めた
-    // ?solveload=vframe: 大きさが同じなら、カメラのフレームをそのまま圧縮に渡す（canvas に描かない）
+    // vframe（既定）: 大きさが同じなら、カメラのフレームをそのまま圧縮に渡す（canvas に描かない）。映像のフレームがまだない（一時的）なら
+    // このフレームは足さずに次を待つ（canvas に描いても古い・空の絵になる）。映像があるのに続けて作れなければ canvas に描くやり方に戻す
     let frame: VideoFrame | null = null;
-    if (this.videoFrames && video.videoWidth === this.width && video.videoHeight === this.height) {
-      try {
-        frame = new VideoFrame(video, { timestamp: Math.round(t * 1000) });
-      } catch (e) {
-        // 作れない端末: 今までのやり方（canvas に描く）に戻す
-        this.videoFrames = false;
-        this.videoFrameNote = `作れない: ${String(e)}`;
-        console.warn("録画: VideoFrame を使わずに描きます:", e);
-      }
+    if (this.frameGate.enabled && video.videoWidth === this.width && video.videoHeight === this.height) {
+      const made = this.frameGate.make(video, Math.round(t * 1000));
+      if (made.kind === "wait") return;
+      if (made.kind === "frame") frame = made.frame;
     }
     if (!frame) {
       this.ctx.drawImage(video, 0, 0, this.width, this.height);
@@ -236,6 +243,7 @@ export class FrameRecorder {
     const keyFrame = t - this.lastKey > 1000;
     if (keyFrame) this.lastKey = t;
     this.encoder.encode(frame, { keyFrame });
+    this.frameGate.sent();
     this.added.push(frame.timestamp);
     if (this.added.length > 16) this.added.shift();
     frame.close();
