@@ -4,7 +4,8 @@
 //   npx vitest run -c vitest.debug.config.ts tests/debug/liveState.debug.test.ts --silent=false
 // 始まりは LS_FROM の時点の本当の状態（その時刻までに回し終えた手）。LS_ENGINE=1 なら liveReplay と同じく、本体のライブの追跡で始め、
 // タイマーの開始の判定で推定に切り替える（LS_FROM は表示の始まり）。行の印: = 一番よい仮説が本当の状態・~ 仮説のどれかが本当の状態・
-// ≠ どれでもない（本当の状態は、回し始めた手を回し終えたとみなしてもよい）
+// ≠ どれでもない（本当の状態は、回し始めた手を回し終えたとみなしてもよい）。LS_SHOW=1 で、3D に出す状態（display）が本当の状態か（D / d）と、
+// 置き直した（relocate）フレームに R と、その前後で本当の状態と違うピースも
 import { readFileSync } from "node:fs";
 import { it } from "vitest";
 import { MOVE_NAMES, applyMove, statesEqual } from "../../src/cube/model";
