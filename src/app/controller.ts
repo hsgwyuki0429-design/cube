@@ -20,7 +20,7 @@ import { RefineClient, VisionClient } from "../vision/visionClient";
 import { ARUCO_OBSERVER, LIVE_OBSERVER } from "../track/observer";
 import { ARUCO_NAMES, ARUCO_REFS } from "../aruco/palette";
 import { type Settings, facingOf, settingsStore } from "./settings";
-import { STICKERS } from "../aruco/design";
+import { STICKERS, stickerPipeline } from "../aruco/design";
 import { loadSolves, personalSequences } from "./storage";
 import { createStore } from "./store";
 import { markPhase } from "./crashGuard";
@@ -280,9 +280,10 @@ class Controller {
     this.vision.setTrackingOptions(this.liveEngineOptions(s));
   }
 
-  // 認識の設定（ステッカーの符号・マーカーの配置は STICKERS だけ）。ライブも直前のマーカーの周りだけで検出する（arucoRegion）
+  // 認識の設定（ステッカーの符号・マーカーの配置は STICKERS だけ。既定は 4 個、URL の ?stickers=standard で 1 個）。ライブも直前の
+  // マーカーの周りだけで検出する（arucoRegion）。ライブ・精密解析・スキャン・開始と停止の判定はどれもこの設定の認識の結果を使う
   pipelineConfig(): Partial<PipelineConfig> {
-    return { ...STICKERS, arucoRegion: true, arucoTrack: true };
+    return { ...stickerPipeline(STICKERS), arucoRegion: true, arucoTrack: true };
   }
 
   // ライブの認識: 面の格子で追う（arucoGrid。src/vision/arucoFrame.ts の liveMarkers）。回転途中の形（arucoTurn）は使わない。

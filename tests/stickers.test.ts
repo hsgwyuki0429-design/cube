@@ -79,3 +79,18 @@ describe("読んだステッカーをデコーダの観測に使う", () => {
     expect(Array.from(out[1].faces[0].ids!)).toEqual(Array.from({ length: 9 }, (_, c) => stickerIds(applyMoves(solvedState(), "F"))[VIEW[2 * 9 + c]]));
   });
 });
+
+describe("ステッカーの配置の選び方（起動したとき）", () => {
+  it("URL の ?stickers= が優先・なければ設定・なければ既定（知らない値は既定）", async () => {
+    const { stickersAtStart, stickerPipeline } = await import("../src/aruco/design");
+    expect(stickersAtStart("", null).arucoDesign).toBe("quad-half");
+    expect(stickersAtStart("", "standard").arucoDesign).toBe("standard");
+    expect(stickersAtStart("?stickers=quad-half", "standard").arucoDesign).toBe("quad-half");
+    expect(stickersAtStart("?demo&stickers=standard", null).arucoDesign).toBe("standard");
+    expect(stickersAtStart("?stickers=xx", "standard").arucoDesign).toBe("quad-half");
+    expect(stickersAtStart("", "xx").arucoDesign).toBe("quad-half");
+    // 1 個の配置は専用の検出、4 個は配置から決まる既定のまま
+    expect(stickerPipeline(stickersAtStart("", "standard")).arucoQuad).toBe(true);
+    expect(stickerPipeline(stickersAtStart("", null)).arucoQuad).toBeUndefined();
+  });
+});

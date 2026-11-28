@@ -162,10 +162,11 @@ function makeFingers(cells: Omit<Cell, "occluded">[], pitch: number, rnd: () => 
 
 const ALL_MOVES = parseMoves("U U2 U' R R2 R' F F2 F' D D2 D' L L2 L' B B2 B'");
 
-export function makeScenes(perPitch: number): Scene[] {
+// pitches: 正面のマスの間隔（既定 PITCHES）。場面の乱数は間隔の並びの順に続くので、既定の間隔の後ろに足せば前の場面は変わらない
+export function makeScenes(perPitch: number, pitches: number[] = PITCHES): Scene[] {
   const scenes: Scene[] = [];
   let seed = 1;
-  for (const pitch of PITCHES) {
+  for (const pitch of pitches) {
     for (let i = 0; i < perPitch; i++) {
       const rnd = rng(seed++ * 7919);
       let st = solvedStickers();
