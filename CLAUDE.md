@@ -397,7 +397,12 @@ facelet の直接置換テーブルを手書きすると必ず間違える。**3
 
 **触ったら回すもの**
 
-- 認識・追跡: `npm test` と `npm run build && npm run e2e`（タイマーは `E2E_MODE=timer`）
+- テストは 2 つに分けてある（`vitest.config.ts` の `SLOW_TESTS`。合成画像を描いて認識から精密解析まで通す重い 10 ファイル）:
+  - ふだん: `npm test`（重いもの以外）
+  - 認識・追跡・精密解析（`src/aruco`・`src/vision`・`src/track`）を触ったら: さらに `npm run test:slow`（重いものだけ）
+  - PR の前: `npm run test:all`（全部。CI もこれ）
+  - 重いテストを足したら `SLOW_TESTS` に入れる。`npx vitest run tests/xxx.test.ts` はどちらに入っていても動く
+- 認識・追跡: さらに `npm run build && npm run e2e`（タイマーは `E2E_MODE=timer`）
 - ArUco: さらに `npx vitest run tests/quadDetect.test.ts tests/aruco.test.ts tests/arucoCube.test.ts tests/arucoLive.test.ts tests/arucoTurn.test.ts tests/turnHint.test.ts tests/gridRead.test.ts`、
   合成動画での E2E（`scripts/aruco-e2e.mjs`・`scripts/video-e2e.mjs`）
 - 符号・色・PDF: `tests/debug/stickerPdf.debug.test.ts`
