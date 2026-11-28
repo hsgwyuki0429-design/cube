@@ -1,15 +1,21 @@
-// カメラ映像と、検出結果のオーバーレイ（スキャン中の隠れたセル。格子・各セルの分類色・面の名前・デバッグ情報は ?debug のときだけ）
+// カメラ映像と、検出結果のオーバーレイ（スキャン中の隠れたセル。読み取りの図 = 面の格子・マス・面の札は ?debug か設定の「読み取りを表示」の
+// ときだけ。マーカーの四隅・処理時間の文字は ?debug のときだけ）。読み取りの図は今の方式に合わせる: マスはマーカーの ID を直接読めたら
+// その ID のステッカーの色（揃った状態の facelet → その面の表示色）、ID はあるが直接は読んでいない（前のフレームから引き継いだなど）なら
+// 薄い印、ID がなければ「読めない」の印。そのフレームで 1 マスも直接読めなかった面（ライブが最近見えていた面の格子で追っているだけ）は描かない。
+// 色の分類では塗らない（ライブは色で補わない）。止めた後にライブが休んでいる間は描かない
 import { useEffect, useRef } from "preact/hooks";
 import { controller } from "../app/controller";
 import { settingsStore } from "../app/settings";
 import { useStore } from "../app/store";
-import { type Lab, NAMED_COLORS, colorDistance, nearestNamed } from "../vision/color";
+import { ARUCO_NAMES } from "../aruco/palette";
+import { displayColors } from "../app/controller";
 import { type Mat3, type Pt, applyH } from "../vision/homography";
 import { slotPoint } from "../vision/layout";
 import type { FrameMessage } from "../vision/protocol";
 import { polygonPath } from "./canvas";
 import { SLOT_LABEL } from "./notation";
 import { cellH, type FaceLayer } from "../aruco/cube";
+import { cellReads } from "./readings";
 
 // 面の格子のまとまり: ふだんは 3×3 の 1 つ。回している途中の層があれば、本体（残りの 2 列）と層（外側の 1 列）
 function blocksOf(face: { H: Mat3; layer?: FaceLayer }): { H: Mat3; rect: [number, number, number, number]; layer: boolean }[] {
@@ -23,16 +29,10 @@ function blocksOf(face: { H: Mat3; layer?: FaceLayer }): { H: Mat3; rect: [numbe
   ];
 }
 
-function classifyColor(lab: Lab, refs: Lab[] | null, display: string[] | null): string {
-  if (refs && display) {
-    let best = 0;
-    refs.forEach((r, i) => {
-      if (colorDistance(lab, r) < colorDistance(lab, refs[best])) best = i;
-    });
-    return colorDistance(lab, refs[best]) > 34 ? "rgba(0,0,0,0)" : display[best];
-  }
-  return NAMED_COLORS[nearestNamed(lab)].display;
-}
+const STICKER_DISPLAY = displayColors(ARUCO_NAMES);
+const STALE_MS = 400; // これだけ結果が届かなければ図を消す
+// その ID のステッカーの色（ID = 揃った状態の facelet 番号 → その面の表示色）
+const stickerColor = (id: number, display: string[] | null) => (display ?? STICKER_DISPLAY)[Math.floor(id / 9)] ?? "#888";
 
 // 画面いっぱいに広げたときに映す範囲の下限（映像の縦・横の割合）。1 = 映像を全部映す（余白は映像の縁を伸ばしてぼかした絵で埋める:
 // drawBackdrop）。以前は 0.62 で画面いっぱいに広げていたが、カメラに映せる範囲が狭く感じた
@@ -165,7 +165,18 @@ export function CameraView() {
   }, []);
 
   useEffect(() => {
+    // 結果が届かなくなったら（止めた後の休み・カメラが止まった）古い図を消す
+    let stale = 0;
+    const clear = () => {
+      const c = canvas.current;
+      c?.getContext("2d")?.clearRect(0, 0, c.width, c.height);
+    };
+    controller.liveRest.onChange = (resting) => {
+      if (resting) clear();
+    };
     const draw = (m: FrameMessage) => {
+      clearTimeout(stale);
+      stale = window.setTimeout(clear, STALE_MS);
       const c = canvas.current;
       const video = controller.camera.video;
       if (!c || !video.videoWidth) return;
@@ -189,10 +200,10 @@ export function CameraView() {
       const mirror = controller.store.get().mirror && !controller.store.get().demo;
       const map = ([x, y]: Pt): Pt => [mirror ? ox + (m.width - x) * s : ox + x * s, oy + y * s];
       const st = controller.store.get();
-      const track = st.track;
-      const refs = track?.refs ?? st.cube?.refs ?? null;
       const display = st.cube?.display ?? null;
       const debug = settingsStore.get().debug;
+      // 読み取りの図: ?debug か設定の「読み取りを表示」。止めた後にライブが休んでいる間は描かない
+      const readings = (debug || settingsStore.get().showReadings) && !controller.liveRest.resting;
 
       if (debug) {
         ctx.strokeStyle = "rgba(255,0,255,0.7)";
@@ -205,9 +216,12 @@ export function CameraView() {
 
       for (const face of m.faces) {
         const anchor = face.slot === 2;
-        // 面の格子・マスの読み・面の名前はデバッグ表示（?debug）のときだけ描く（ふだんはキューブの上に何も重ねない）
+        const reads = cellReads(face);
+        const direct = reads.filter((r) => r === "direct").length;
+        // 1 マスも直接読めなかった面は描かない（最近見えていた面の格子で追っているだけで、もう見えていないことがある）
+        const show = readings && direct > 0;
         // 枠と格子: 回している途中の層（外側の 1 列）があれば、本体（残りの 2 列）と層を別々の格子で描く
-        const blocks = debug ? blocksOf(face) : [];
+        const blocks = show ? blocksOf(face) : [];
         for (const bl of blocks) {
           const [x0, y0, x1, y1] = bl.rect;
           const at = (x: number, y: number) => map(applyH(bl.H, x, y));
@@ -228,15 +242,16 @@ export function CameraView() {
           }
           ctx.stroke();
         }
-        // 各セルの分類色（小さな四角。層のマスは層の格子で置く）
-        for (let cell = 0; cell < (debug ? 9 : 0); cell++) {
+        // マス（小さな四角。層のマスは層の格子で置く）: 直接読めた = その ID のステッカーの色・直接は読んでいない ID = 薄い印・ID なし = 読めない
+        for (let cell = 0; cell < (show ? 9 : 0); cell++) {
           const x = (cell % 3) + 0.5;
           const y = Math.floor(cell / 3) + 0.5;
           const Hc = cellH(face, cell);
           const pts = ([[x - 0.17, y - 0.17], [x + 0.17, y - 0.17], [x + 0.17, y + 0.17], [x - 0.17, y + 0.17]] as Pt[]).map(([u, v]) => map(applyH(Hc, u, v)));
           polygonPath(ctx, pts);
-          if (face.valid[cell]) {
-            ctx.fillStyle = classifyColor(face.labs[cell], refs, display);
+          const read = reads[cell];
+          if (read === "direct") {
+            ctx.fillStyle = stickerColor(face.ids![cell], display);
             ctx.fill();
             ctx.lineWidth = 3;
             ctx.strokeStyle = "rgba(0,0,0,0.75)";
@@ -244,6 +259,18 @@ export function CameraView() {
             ctx.lineWidth = 1.5;
             ctx.strokeStyle = "rgba(255,255,255,0.95)";
             ctx.stroke();
+            ctx.lineWidth = 1;
+          } else if (read === "kept") {
+            // 薄い印: その ID の色を薄く・細い点線の枠
+            ctx.globalAlpha = 0.35;
+            ctx.fillStyle = stickerColor(face.ids![cell], display);
+            ctx.fill();
+            ctx.globalAlpha = 1;
+            ctx.setLineDash([3, 3]);
+            ctx.lineWidth = 1.2;
+            ctx.strokeStyle = "rgba(255,255,255,0.7)";
+            ctx.stroke();
+            ctx.setLineDash([]);
             ctx.lineWidth = 1;
           } else {
             ctx.strokeStyle = "rgba(255,84,104,0.9)";
@@ -275,13 +302,13 @@ export function CameraView() {
           ctx.setLineDash([]);
           ctx.lineWidth = 1;
         }
-        // 正面のラベルは下に（上面と重ならないように）
-        if (!debug) continue;
+        // 面の札（正面は下に: 上面と重ならないように）: 直接読めたマス / 9
+        if (!show) continue;
         const label = map(slotPoint(face, 1.5, anchor ? 3.3 : -0.3));
         ctx.font = "600 12px system-ui, sans-serif";
         ctx.textAlign = "center";
         ctx.fillStyle = "rgba(10,12,18,0.7)";
-        const text = `${SLOT_LABEL[face.slot]}${debug ? ` ${face.found}/9` : ""}`;
+        const text = `${SLOT_LABEL[face.slot]} ${direct}/9`;
         const tw = ctx.measureText(text).width + 12;
         ctx.fillRect(label[0] - tw / 2, label[1] - 10, tw, 18);
         ctx.fillStyle = "#fff";
@@ -317,7 +344,12 @@ export function CameraView() {
         hint.current.style.display = text ? "" : "none";
       }
     };
-    return controller.onFrameResult(draw);
+    const off = controller.onFrameResult(draw);
+    return () => {
+      off();
+      clearTimeout(stale);
+      controller.liveRest.onChange = null;
+    };
   }, []);
 
   return (

@@ -37,6 +37,8 @@ export interface ExportMeta {
   };
   solve?: { timeMs: number; edges?: unknown; analysis?: string; refineMethod?: string; moves?: unknown[] };
   perf?: import("../../../src/app/perfLog").PerfRow[]; // 1 秒ごとの処理の様子（2026-11-27 から）
+  rests?: import("../../../src/app/liveRest").RestSpan[]; // 止めた後にライブが休んだ区間
+  framePath?: { live: string; liveNote: string | null; recorder: string; recorderNote: string | null; requested: boolean }; // カメラのフレームの渡し方
 }
 
 // 書き出した録画なら、そのメタデータ（ふつうの動画なら null）

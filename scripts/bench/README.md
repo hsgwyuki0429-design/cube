@@ -43,6 +43,13 @@
 - まとめ: `python3 islandsum.py rows.jsonl`（本ごと・ビットレートごと・隙間）、`python3 islandfb.py rows.jsonl`（今の方式に戻った本だけ）、
   `python3 islandold.py rows.jsonl old.jsonl`（今の方式だけとの比べ）
 
+## ライブの物差しの 35 通り（`liveReplay`）
+
+- 上の 1・3・4（動画・`full.sh`・`startfiles.mjs`）のあと、`live.sh <動画> <fps>`（fps 0 = 全フレーム。先に 0 を: その精密解析が
+  `$BENCH/live/ref-<動画>.json` になり、ほかの fps はそれを読む）を 7 本 × 0・6・10・15・20（タイマーの `timerEdges` には 30 も）→ `$BENCH/live`
+- `replay35.sh`（`WT=版の worktree`）。直す前の数は `docs/history.md` の「ソルブ中のライブの状態を表の AND で推定する」の「推定（既定）」と同じになる
+- `timerEdges` は `TE_DIR` に `read-<番号>-<fps>.json`・`ref-<番号>.json` の名前で置く（`$BENCH/live` のファイルへのリンクでよい）
+
 ## 既定の切り替えの判断（精密解析 4）
 
 - 材料: 上の「島に分けて解く案の上限」と同じ（`mat/` の原画質と `cropenc/` の full 63 本）。止めた時刻は原画質のライブの読み（`realVideo` の

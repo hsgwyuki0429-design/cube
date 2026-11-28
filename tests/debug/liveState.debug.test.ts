@@ -4,11 +4,12 @@
 //   npx vitest run -c vitest.debug.config.ts tests/debug/liveState.debug.test.ts --silent=false
 // 始まりは LS_FROM の時点の本当の状態（その時刻までに回し終えた手）。LS_ENGINE=1 なら liveReplay と同じく、本体のライブの追跡で始め、
 // タイマーの開始の判定で推定に切り替える（LS_FROM は表示の始まり）。行の印: = 一番よい仮説が本当の状態・~ 仮説のどれかが本当の状態・
-// ≠ どれでもない（本当の状態は、回し始めた手を回し終えたとみなしてもよい）
+// ≠ どれでもない（本当の状態は、回し始めた手を回し終えたとみなしてもよい）。LS_SHOW=1 で、3D に出す状態（display）が本当の状態か（D / d）と、
+// 置き直した（relocate）フレームに R と、その前後で本当の状態と違うピースも
 import { readFileSync } from "node:fs";
 import { it } from "vitest";
 import { MOVE_NAMES, applyMove, statesEqual } from "../../src/cube/model";
-import { LiveState, liveFrame } from "../../src/track/liveState";
+import { LiveState, hypOf, liveFrame } from "../../src/track/liveState";
 import { TrackerEngine } from "../../src/track/engine";
 import { ARUCO_REFS } from "../../src/aruco/palette";
 import { StartDetector } from "../../src/app/startDetect";
@@ -47,6 +48,7 @@ it("ライブの状態の推定（フレームごと）", () => {
   const starter = new StartDetector();
   let lost = 0;
   let total = 0;
+  let lastRel = 0;
   for (const r of readings) {
     if (engine && !engine.live) {
       const dropped = !!r.sight && r.faces.length > 0 && !slotsPlausible(r.sight);
@@ -63,6 +65,12 @@ it("ライブの状態の推定（フレームごと）", () => {
     if (!engine && r.t < from) continue;
     // 読みの表示用（記憶は推定の中のものを写す）
     const fr = liveFrame(r.sight, { faces: live.memory.faces.slice() }, live.options);
+    const wrongOf = () => {
+      const tm = truthAt(r.t).map((st) => hypOf(st));
+      const b0 = live.best();
+      return tm.map((c) => Array.from(c).map((x, p) => (b0.mask[p] === x ? "" : `${p}${(b0.mask[p] & (b0.mask[p] - 1)) === 0 ? "" : "?"}${b0.mask[p] & x ? "∋" : ""}`)).filter(Boolean).join(",")).join(" / ");
+    };
+    const before = process.env.LS_SHOW ? wrongOf() : "";
     const a = performance.now();
     const stepped = engine ? !!engine.push(r, r.sight) : live.pushSight(r.sight);
     const ms = performance.now() - a;
@@ -71,7 +79,10 @@ it("ライブの状態の推定（フレームごと）", () => {
     const hit = live.hyps.findIndex((h) => live.known(h) && truth.some((s) => statesEqual(s, live.stateOf(h))));
     total++;
     if (hit < 0) lost++;
-    const mark = hit === 0 ? "=" : hit > 0 ? "~" : "≠";
+    const rel = (live.stats as { relocated?: number }).relocated ?? 0;
+    const relMark = rel !== lastRel ? `R${rel}[${before} → ${wrongOf()}]` : "";
+    lastRel = rel;
+    const mark = relMark + (hit === 0 ? "=" : hit > 0 ? "~" : "≠") + (process.env.LS_SHOW ? (truth.some((st) => statesEqual(st, live.display())) ? "D" : "d") : "");
     const b = live.best();
     const top = live.hyps
       .slice(0, 3)

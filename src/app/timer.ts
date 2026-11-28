@@ -546,7 +546,10 @@ controller.onTrack(onTrack);
 timerStore.subscribe((t) => {
   controller.setLiveSnap(t.phase !== "scrambling" && t.phase !== "preparing");
   controller.setLivePieces(t.phase === "solving");
+  // 止めた後のライブの休みは done の間だけ（「次のソルブ」で離れたら解く: src/app/liveRest.ts）
+  controller.liveRest.setPhase(t.phase, performance.now());
 });
+controller.liveRest.setPhase(timerStore.get().phase, 0);
 controller.onFrameResult(onFrame);
 onPadEvent(onPad);
 // 1 秒ごとの処理の様子（src/app/perfLog.ts）の場面: タイマーの場面

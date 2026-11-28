@@ -66,4 +66,12 @@ it("場面ごとの fps", () => {
   }
   const perf: PerfRow[] = meta?.perf ?? live?.perf ?? [];
   if (perf.length) for (const p of phases) console.log(`  ${p.name}: ${summarizePerf(perf.filter((r) => r.t >= p.from && r.t < p.to))}`);
+  // カメラのフレームの渡し方（vframe か今までのやり方 bitmap か・戻した理由）と、止めた後にライブが休んだ区間（止めた時刻から・終わった理由）
+  const path = meta?.framePath ?? live?.framePath;
+  if (path) console.log(`フレームの渡し方: ライブ ${path.live}${path.liveNote ? `（${path.liveNote}）` : ""}・録画 ${path.recorder}${path.recorderNote ? `（${path.recorderNote}）` : ""}${path.requested ? "" : "（?solveload=default）"}`);
+  const rests: { t0: number; t1?: number; why?: string }[] = meta?.rests ?? live?.rests ?? [];
+  const WHY: Record<string, string> = { result: "解析の結果", error: "解析の失敗", next: "次のソルブ", guard: "保険の 180 秒" };
+  if (rests.length) console.log(`ライブの休み: ${rests.map((r) => `${endT !== undefined ? `止めて ${((r.t0 - endT) / 1000).toFixed(1)}〜${r.t1 !== undefined ? ((r.t1 - endT) / 1000).toFixed(1) : "?"} 秒` : `${(r.t0 / 1000).toFixed(1)}〜${r.t1 !== undefined ? (r.t1 / 1000).toFixed(1) : "?"}s`}（${r.why ? WHY[r.why] : "続いている"}）`).join("・")}`);
+  else if (perf.length) console.log("ライブの休み: 記録なし");
+  if (perf.length) console.log(`休んで送らなかったフレーム: 止めた後 ${perf.filter((r) => endT !== undefined && r.t >= endT).reduce((n, r) => n + (r.rest ?? 0), 0)} 枚`);
 });
