@@ -2411,6 +2411,34 @@ E2E では止めた後（ライブを休む）の精密解析はソルブ中の�
   目標の 10 秒前後に届かない分は、録画のフレームが増えた分（次の手: 止めた後は空いたライブの Worker で検出を手伝う `DetectPool`・ソルブ中の
   ライブの補助の Worker を休ませる `helperoff`）。実機で確かめる（docs/roadmap.md）
 
+### 実機で vframe がいつも bitmap に戻っていた件（2026-11-28。`src/vision/frameGate.ts`）
+
+**分かったこと**: 2026-11-28 の iPhone の書き出し 3 つがどれも `framePath: { live: "bitmap", liveNote: "送れない: InvalidStateError: Video element
+has no video frame", recorder: "vframe" }` だった。ソルブ中のカメラは 42fps（vframe なら 52〜55fps: 上の表）。
+
+**原因**: ライブ（`visionClient.ts`）は、カメラの映像がまだ届く前（または一時的に届かないとき）に `new VideoFrame(video)` が 1 回失敗しただけで、
+そのページの間ずっと今までのやり方（bitmap）に戻していた。録画（`recorder.ts`）も同じ作りで、1 回作れなければずっと canvas に描いていた
+（録画は精密解析を始めるとき＝映像が届いた後に始まるので、実機では起きていなかった）。
+
+**直したこと**: 戻すかどうかを `FrameGate`（ライブと録画で同じもの）で決める。
+- 映像のフレームがまだない（`video.readyState` が `HAVE_CURRENT_DATA` より前・映像の大きさが 0）なら作らずに、そのフレームだけ渡さずに次を待つ
+- 作れない・渡せない（`postMessage` が投げる）ときも、そのフレームだけ渡さない。作っている間に `readyState` が戻っていたら数えない。
+  **映像が届いているのに 30 回続けた（`MAX_FAILS`。60fps で 0.5 秒）ら戻す**。途中で 1 回でも渡せたら数え直す
+- ほかに戻すのは、Worker で描けないと分かった（`vframe-failed`）・VideoFrame がないときだけ。戻したら今までどおりそのページの間は使わない
+- 録画も同じ: 一時的なら canvas に描かずにそのフレームを足さない（映像のフレームがないのに描いても古い・空の絵になる）。`dropped`（圧縮が
+  追いつかずに間引いた数。3% を超えたら次からビットレートを下げる）には数えない
+- ライブで送らなかったフレームの通し番号は、主の Worker にも `foreign-skip` で知らせる（今までは補助の Worker に送るはずだったものだけ。主の
+  Worker が届かない番号を 300ms 待っていた）
+- 書き出しの `framePath` に、一時的に渡さなかった回数と最後の理由（`liveWaits`・`liveWaitNote`・`recorderWaits`・`recorderWaitNote`）を足した
+
+**確かめ**: 単体（`tests/frameGate.test.ts`: 映像の前の失敗・InvalidStateError では何回でも戻さない・映像があるのに 30 回続けば戻す・途中で
+作れたら数え直す・渡せないも同じ数え方・VideoFrame がない・Worker で描けない）。E2E は `E2E_VFRAME_FAIL=N`（カメラの映像からの
+`new VideoFrame` を最初の N 回 InvalidStateError で失敗させる）を足し、タイマーでは VideoFrame を頼んだのに渡し方が vframe でなければ NG
+（書き出しを保存したときは書き出しの `framePath` も読む）。結果（このコンテナ・CPU 4 つ）:
+偽のカメラ（`fakeCamVideo` の既定の 40 手）で `E2E_VFRAME_FAIL=5` → 直した後は 5 回とも送らずに待ち、`live: "vframe"`・`liveWaits: 5`・録画も vframe、
+書き出しの `framePath` も同じ、精密解析は done(meet)。直す前（main `689800b`）の同じ条件では 2 回目の失敗で `live: "bitmap"`・`liveNote` が実機と
+同じ「送れない: InvalidStateError: … Video element has no video frame」になり、録画も bitmap に戻った（NG）。デモの E2E（追跡・タイマー）は今までどおり
+
 ## 読み取りの図を今の方式に合わせる（2026-11-28。`src/ui/CameraView.tsx`・`src/ui/readings.ts`）
 
 カメラの映像の上の読み取りの図（面の格子・マス・面の名前。`?debug` のときだけ）が、色の読みの時代のままだった。認識と追跡は変えず、描き方だけ直した。
