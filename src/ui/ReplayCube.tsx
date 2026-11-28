@@ -282,7 +282,11 @@ export function ReplayCube(props: ReplayCubeProps) {
     let prevEnd = -Infinity;
     for (let i = from; i < ms.length; i++) {
       const m = ms[i];
-      const len = Math.max(MIN_TURN_MS, (m.t > m.s ? m.t - m.s : UNKNOWN_TURN_MS) * slow);
+      // 1 手の長さは次の手の回し始めまで（同じ面の 2 手を 1 手にまとめた手は、回し始めが前の手より前・回し終わりが次の手より後に
+      // なることがあり、そのまま描くと再現が実際より遅れていった）
+      const next = ms[i + 1];
+      const span = m.t > m.s ? m.t - m.s : UNKNOWN_TURN_MS;
+      const len = Math.max(MIN_TURN_MS, (next && next.s > m.s ? Math.min(span, next.s - m.s) : span) * slow);
       const at = Math.max((m.s - real0) * slow, prevEnd + GAP_MS);
       sched.push({ at, len, real: m.s });
       prevEnd = at + len;

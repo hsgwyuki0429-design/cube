@@ -267,7 +267,7 @@ try {
       const r = await page.evaluate(() => {
         const t = window.__cubevisionTimer.get();
         const syn = window.__cubevision.synthetic;
-        return { startT: t.startT, inspectionStart: t.inspectionStart, truthStart: syn && syn.solveFrom >= 0 ? syn.truth[syn.solveFrom]?.start : NaN, truthEnd: syn?.truth[syn.truth.length - 1]?.t, helper: window.__cubevision.vision?.helperFrames, processed: window.__cubevision.vision?.processed, rec: window.__cubevisionAnalysis?.recording, result: t.result, solves: t.solves.length, solved: window.__cubevision.store.get().track?.solved, truth: syn ? syn.truth.slice(syn.solveFrom).map((x) => ({ ...x })) : [] };
+        return { startT: t.startT, inspectionStart: t.inspectionStart, truthStart: syn && syn.solveFrom >= 0 ? syn.truth[syn.solveFrom]?.start : NaN, truthEnd: syn?.truth[syn.truth.length - 1]?.t, helper: window.__cubevision.vision?.helperFrames, appWait: window.__cubevision.lastRecording?.waitMs, processed: window.__cubevision.vision?.processed, rec: window.__cubevisionAnalysis?.recording, result: t.result, solves: t.solves.length, solved: window.__cubevision.store.get().track?.solved, truth: syn ? syn.truth.slice(syn.solveFrom).map((x) => ({ ...x })) : [] };
       });
       // 正解: 解き始め（インスペクション後の最初の手）から最後の手まで
       const n = r.result?.moves.length ?? 0;
@@ -276,7 +276,7 @@ try {
       const ok = r.result && r.result.tracked && r.solved && r.result.timeMs > 0 && n > 5;
       const analysisOk = r.result?.analysis === "done" || process.env.E2E_ALLOW_NO_ANALYSIS;
       console.log(
-        `seed ${seed} timer: ${ok ? "OK" : "NG"} live ${(live?.timeMs / 1000).toFixed(3)}s → ${r.result?.analysis}${r.result?.refineMethod ? `(${r.result.refineMethod})` : ""} ${(r.result?.timeMs / 1000).toFixed(3)}s (truth ≈ ${(truthMs / 1000).toFixed(3)}s, ${sol.length} moves) moves ${n}${r.result?.moves.some((m) => m.inferred) ? ` 推定 ${r.result.moves.map((m, i) => (m.inferred ? i : -1)).filter((i) => i >= 0).join(",")}` : ""} tps ${r.result?.tps.toFixed(2)} ${r.result?.pad ? `pad ${JSON.stringify(r.result.pad)} ` : ""}splits ${JSON.stringify(r.result?.splits?.map((x) => [x.name, x.moves]))} 認識 ${r.processed} 枚（うち補助 ${r.helper}） rec ${r.rec ? `${r.rec.bitrate / 1e6}Mbps ${r.rec.frames} 枚・間引き ${r.rec.dropped}` : "-"} analysis-wait ${((Date.now() - waitFrom) / 1000).toFixed(1)}s ${logs.filter((l) => l.includes("[analysis]")).map((l) => l.replace(/^.*\[analysis\] /, "")).join(" / ")}`,
+        `seed ${seed} timer: ${ok ? "OK" : "NG"} live ${(live?.timeMs / 1000).toFixed(3)}s → ${r.result?.analysis}${r.result?.refineMethod ? `(${r.result.refineMethod})` : ""} ${(r.result?.timeMs / 1000).toFixed(3)}s (truth ≈ ${(truthMs / 1000).toFixed(3)}s, ${sol.length} moves) moves ${n}${r.result?.moves.some((m) => m.inferred) ? ` 推定 ${r.result.moves.map((m, i) => (m.inferred ? i : -1)).filter((i) => i >= 0).join(",")}` : ""} tps ${r.result?.tps.toFixed(2)} ${r.result?.pad ? `pad ${JSON.stringify(r.result.pad)} ` : ""}splits ${JSON.stringify(r.result?.splits?.map((x) => [x.name, x.moves]))} 認識 ${r.processed} 枚（うち補助 ${r.helper}） rec ${r.rec ? `${r.rec.bitrate / 1e6}Mbps ${r.rec.frames} 枚・間引き ${r.rec.dropped}` : "-"} analysis-wait ${((Date.now() - waitFrom) / 1000).toFixed(1)}s（止めた後の待ち waitMs ${r.appWait ?? "-"}） ${logs.filter((l) => l.includes("[analysis]")).map((l) => l.replace(/^.*\[analysis\] /, "")).join(" / ")}`,
       );
       // 1 秒ごとの処理の様子（src/app/perfLog.ts）を場面ごとに（ライブ 2.5: ソルブ中の fps の低下）
       const perf = await page.evaluate(() => {

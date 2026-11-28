@@ -26,7 +26,7 @@ import { ReplayCube } from "./ReplayCube";
 import { replayMoves } from "./SolveDetail";
 import { shareSolve } from "./shareCard";
 import { PenaltyRow, bestGain, openSolve } from "./solveUi";
-import { drawBranches, drawIsoCube } from "./stopDraw";
+import { type Size, drawBranches, drawIsoCube, watchSize } from "./stopDraw";
 
 const STICKER = displayColors(ARUCO_NAMES); // 面ごとの表示色（揃った状態の facelet の面 → 色）
 const BINS = 16;
@@ -63,15 +63,14 @@ const PHASE_LABEL: Record<string, string> = { クロス: "クロス", "F2L 1": "
 
 function IsoCanvas({ colors, mirrors, dim, cls }: { colors: (string | null)[]; mirrors: boolean; dim?: number; cls: string }) {
   const ref = useRef<HTMLCanvasElement>(null);
+  const size = useRef<Size>({ w: 0, h: 0 });
   const key = colors.join();
   useEffect(() => {
     const c = ref.current;
     if (!c) return;
-    const draw = () => drawIsoCube(c, { colors, mirrors, dim, labels: mirrors ? { left: "左（鏡）", down: "下（鏡）" } : undefined });
+    const draw = () => drawIsoCube(c, size.current, { colors, mirrors, dim, labels: mirrors ? { left: "左（鏡）", down: "下（鏡）" } : undefined });
     draw();
-    const ro = new ResizeObserver(draw);
-    ro.observe(c);
-    return () => ro.disconnect();
+    return watchSize(c, size.current, draw);
   }, [key, mirrors, dim]);
   return <canvas ref={ref} class={cls} aria-hidden="true" />;
 }
@@ -133,6 +132,7 @@ const log2 = (n: number) => Math.log2(Math.max(1, n));
 function SearchStage({ startT, endT, stopColors }: { startT: number; endT: number; stopColors: (string | null)[] }) {
   const s = useStore(showStore, (x) => x.search);
   const ref = useRef<HTMLCanvasElement>(null);
+  const size = useRef<Size>({ w: 0, h: 0 });
   const dur = Math.max(1, endT - startT);
   const at = (t: number | null) => (t === null ? null : Math.min(1, Math.max(0, (t - startT) / dur)));
   const label = !s ? "" : s.meetT !== null ? "つながった" : s.step === "bridge" ? "隠れた区間を橋渡し" : s.step === "finish" ? "見えない手を補う" : "ここをつなぐ";
@@ -140,7 +140,7 @@ function SearchStage({ startT, endT, stopColors }: { startT: number; endT: numbe
     const c = ref.current;
     if (!c || !s) return;
     const draw = () =>
-      drawBranches(c, {
+      drawBranches(c, size.current, {
         fwd: { x: at(s.f.t), alive: Math.min(6, Math.round(log2(s.f.near)) + 1), dead: Math.min(14, Math.round(log2(s.f.dropped + 1) * 1.4)) },
         bwd: { x: at(s.b.t), alive: Math.min(6, Math.round(log2(s.b.near)) + 1), dead: Math.min(14, Math.round(log2(s.b.dropped + 1) * 1.4)) },
         meet: at(s.meetT),
@@ -148,9 +148,7 @@ function SearchStage({ startT, endT, stopColors }: { startT: number; endT: numbe
         label,
       });
     draw();
-    const ro = new ResizeObserver(draw);
-    ro.observe(c);
-    return () => ro.disconnect();
+    return watchSize(c, size.current, draw);
   }, [s, startT, endT]);
   const dir = (d: SearchShow["f"], arrow: string) => (
     <div>

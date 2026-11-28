@@ -13,12 +13,31 @@ function timed(f: () => void): void {
   if (ms > drawStats.max) drawStats.max = ms;
 }
 
+// 表示の大きさ（CSS の px）。描くたびに測るとレイアウトを強いるので、ResizeObserver で測った値を渡す（watchSize）
+export interface Size {
+  w: number;
+  h: number;
+}
+
+// canvas の大きさを見張り、変わったら（と最初に）draw を呼ぶ。戻り値で見張りをやめる
+export function watchSize(canvas: HTMLCanvasElement, size: Size, draw: () => void): () => void {
+  const ro = new ResizeObserver((es) => {
+    const r = es[es.length - 1].contentRect;
+    if (Math.round(r.width) === size.w && Math.round(r.height) === size.h) return;
+    size.w = Math.round(r.width);
+    size.h = Math.round(r.height);
+    draw();
+  });
+  ro.observe(canvas);
+  return () => ro.disconnect();
+}
+
 // canvas の大きさを表示の大きさ × 画素の比に合わせ、表示の座標で描けるようにする
-export function fit(canvas: HTMLCanvasElement): { ctx: CanvasRenderingContext2D; w: number; h: number } | null {
-  const r = canvas.getBoundingClientRect();
+function fit(canvas: HTMLCanvasElement, size: Size): { ctx: CanvasRenderingContext2D; w: number; h: number } | null {
+  if (!size.w || !size.h) return null;
   const dpr = Math.min(3, window.devicePixelRatio || 1);
-  const w = Math.max(1, Math.round(r.width));
-  const h = Math.max(1, Math.round(r.height));
+  const w = size.w;
+  const h = size.h;
   if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
     canvas.width = Math.round(w * dpr);
     canvas.height = Math.round(h * dpr);
@@ -87,9 +106,10 @@ export interface IsoOptions {
   labels?: { left: string; down: string };
 }
 
-export function drawIsoCube(canvas: HTMLCanvasElement, o: IsoOptions): void {
+export function drawIsoCube(canvas: HTMLCanvasElement, size: Size, o: IsoOptions): void {
+  if (!size.w) return;
   timed(() => {
-    const f = fit(canvas);
+    const f = fit(canvas, size);
     if (!f) return;
     const { ctx, w, h } = f;
     const box = o.mirrors ? BOX : BOX_CUBE;
@@ -178,9 +198,10 @@ function rand(seed: number): number {
   return x - Math.floor(x);
 }
 
-export function drawBranches(canvas: HTMLCanvasElement, o: BranchOptions): void {
+export function drawBranches(canvas: HTMLCanvasElement, size: Size, o: BranchOptions): void {
+  if (!size.w) return;
   timed(() => {
-    const f = fit(canvas);
+    const f = fit(canvas, size);
     if (!f) return;
     const { ctx, w, h } = f;
     const pad = 10;
