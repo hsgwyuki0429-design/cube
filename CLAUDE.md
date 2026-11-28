@@ -84,8 +84,10 @@ src/vision Vision             ← 映像 → マーカー → 見えている面
   アプリ本体のチャンクを読み込んで落ちる
 - **ソルブ中の重さ**（ライブ 2.5）: ソルブ中は精密解析の Worker が 1 コアを使い切り（実機で止めた時 6〜12 秒遅れ）、カメラのフレームが本体に
   届く数が落ちる。**カメラのフレームは `VideoFrame` のままライブの Worker と録画に渡す**（`vframe`。画像にする・縮める・描くのはメインスレッドで
-  しない。実機の iPhone でソルブ中のカメラ 36〜38 → 52〜55fps・メインスレッド 580 → 30ms/秒）。VideoFrame を作れない・渡せない・Worker で
-  描けない端末では自動で今までのやり方に戻す。URL の `?solveload=default` で今までのやり方（ほかの候補 `pause`・`duty50`・`helperoff`・`lazy` は
+  しない。実機の iPhone でソルブ中のカメラ 36〜38 → 52〜55fps・メインスレッド 580 → 30ms/秒）。**今までのやり方に戻すのは、VideoFrame がない・Worker で描けないと分かった・映像が届いているのに
+  30 回続けて作れない・渡せない（`MAX_FAILS`）ときだけ**（`src/vision/frameGate.ts`。ライブと録画で同じ）。映像のフレームがまだない
+  （`readyState` が `HAVE_CURRENT_DATA` より前・InvalidStateError）ときは、そのフレームだけ渡さずに次を待つ（1 回の失敗で戻すと、iPhone で
+  ずっと bitmap になりソルブ中が 42fps だった）。書き出しの `framePath` に一時的に渡さなかった回数（`liveWaits`・`recorderWaits`）。URL の `?solveload=default` で今までのやり方（ほかの候補 `pause`・`duty50`・`helperoff`・`lazy` は
   比べる用: `src/app/solveLoad.ts`）。**止めた後は精密解析が終わるまでライブの認識を止める**（`src/app/liveRest.ts`。時間では切らない。
   間引いて 0.5 秒に 1 枚でも遅くなった。20 秒で切っていたら、ライブが戻った後の精密解析が 1 秒 49 → 4.5 枚に落ち、待ちが 38.7 秒になった）。
   ただし**「次のソルブ」でタイマーの場面が done から離れたら休みを解く**（休み中に回したスクランブルをライブが見ず、スクランブル中は作り変えないので

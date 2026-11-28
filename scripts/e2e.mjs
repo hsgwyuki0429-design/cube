@@ -13,6 +13,9 @@
 //   E2E_MODE=timer E2E_NEXT=1（止めた後、精密解析の間にライブが休み始めたら「次のソルブ」を押し、合成キューブで案内どおりに崩す。
 //   休みが「次のソルブ」で解け、案内が最後まで進んでインスペクションになれば OK: src/app/liveRest.ts。デモの合成カメラのときだけ）
 //   E2E_MODE=timer E2E_LIVELOG=フォルダ（「ライブの記録を書き出す」を押して保存する。手元の tests/debug/liveLog.debug.test.ts で通し直す）
+//   E2E_MODE=timer E2E_VFRAME_FAIL=5（カメラの映像からの new VideoFrame を最初の 5 回 InvalidStateError で失敗させる: 実機の iPhone で、映像が
+//   届く前の 1 回の失敗でずっと bitmap に戻っていた件。src/vision/frameGate.ts）。タイマーでは、VideoFrame を頼んだのにフレームの渡し方が
+//   vframe でなければ NG（書き出しを保存したときは、書き出しの framePath も見る）
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
 import { chromium } from "playwright-core";
@@ -132,6 +135,24 @@ try {
     const t0 = Date.now();
     // E2E_NOHELPER=1: 認識の補助の Worker を使わない（コアが少ない端末のように）
     if (process.env.E2E_NOHELPER) await page.addInitScript(() => Object.defineProperty(navigator, "hardwareConcurrency", { get: () => 2 }));
+    // E2E_VFRAME_FAIL=N: カメラの映像（<video>）からの new VideoFrame を最初の N 回、映像のフレームがまだないときと同じ InvalidStateError で失敗させる
+    if (process.env.E2E_VFRAME_FAIL)
+      await page.addInitScript((n) => {
+        const Orig = window.VideoFrame;
+        if (!Orig) return;
+        let left = n;
+        window.__vframeFailed = 0;
+        window.VideoFrame = new Proxy(Orig, {
+          construct(target, args) {
+            if (left > 0 && args[0] instanceof HTMLVideoElement) {
+              left--;
+              window.__vframeFailed++;
+              throw new DOMException("Failed to construct 'VideoFrame': Video element has no video frame", "InvalidStateError");
+            }
+            return Reflect.construct(target, args);
+          },
+        });
+      }, Number(process.env.E2E_VFRAME_FAIL));
     // E2E_READINGS=1: 設定の「読み取りを表示」をオンにして始める（src/ui/CameraView.tsx）
     if (process.env.E2E_READINGS)
       await page.addInitScript(() => {
@@ -258,6 +279,14 @@ try {
         return { inspect: c.perfSummary(t.inspectionStart, t.startT), solve: c.perfSummary(t.startT, end), after: c.perfSummary(end, now), rows: c.perf.rows.filter((r) => r.t >= t.inspectionStart - 2000), rests: c.perf.rests.map((r) => ({ ...r })), framePath: c.framePath() };
       });
       console.log(`  perf インスペクション: ${perf.inspect}\n  perf ソルブ: ${perf.solve}\n  perf 止めた後〜解析: ${perf.after}\n  フレームの渡し方 ${JSON.stringify(perf.framePath)}・ライブの休み ${perf.rests.map((r) => `${r.t1 !== undefined ? ((r.t1 - r.t0) / 1000).toFixed(1) : "?"} 秒（${r.why ?? "続いている"}）`).join("・") || "なし"}`);
+      // VideoFrame を頼んだのに今までのやり方に戻っていたら NG（一時的な失敗では戻さない: src/vision/frameGate.ts）
+      const vframeFailed = await page.evaluate(() => window.__vframeFailed ?? 0);
+      if (vframeFailed) console.log(`  VideoFrame をわざと失敗させた回数 ${vframeFailed}`);
+      const pathNg = (fp) => fp?.requested && (fp.live !== "vframe" || fp.recorder !== "vframe");
+      if (pathNg(perf.framePath)) {
+        console.log(`  フレームの渡し方: NG（VideoFrame を頼んだのに戻っている）`);
+        failures++;
+      } else if (perf.framePath?.requested) console.log(`  フレームの渡し方: OK（live ${perf.framePath.live}・一時的に送らなかった ${perf.framePath.liveWaits} 回）`);
       if (process.env.E2E_PERF) {
         const { appendFileSync } = await import("node:fs");
         appendFileSync(process.env.E2E_PERF, `${JSON.stringify({ seed, query: process.env.E2E_QUERY ?? "", waitMs: Date.now() - waitFrom, analysis: r.result?.analysis, method: r.result?.refineMethod, inferred: r.result?.moves.filter((m) => m.inferred).length, moves: n, processed: r.processed, rec: r.rec, rows: perf.rows, rests: perf.rests, framePath: perf.framePath, startT: r.startT, inspectionStart: r.inspectionStart, live: live?.timeMs })}\n`);
@@ -293,6 +322,16 @@ try {
         const file = `${dir}/seed${seed}-${dl.suggestedFilename()}`;
         await dl.saveAs(file);
         console.log(`  export: ${file}`);
+        {
+          const { readFileSync } = await import("node:fs");
+          const { readRecordingMeta } = await import("../src/vision/mp4Mux.ts");
+          const fp = readRecordingMeta(new Uint8Array(readFileSync(file)))?.framePath;
+          console.log(`  書き出しの framePath: ${JSON.stringify(fp)}`);
+          if (!fp || pathNg(fp)) {
+            console.log("  書き出しの framePath: NG");
+            failures++;
+          }
+        }
         if (process.env.E2E_EXPORT_CHECK) {
           const env = { ...process.env, REAL_VIDEO: file, REAL_EXPECT_SAME: "1", ...(process.env.E2E_EXPORT_STATS ? { REAL_STATS_OUT: process.env.E2E_EXPORT_STATS, REAL_STATS_LABEL: "合成（E2E）", REAL_NAME: `seed${seed}` } : {}) };
           const code = await new Promise((resolve) => {
