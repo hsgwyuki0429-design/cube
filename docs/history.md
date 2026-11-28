@@ -2721,7 +2721,7 @@ has no video frame", recorder: "vframe" }` だった。ソルブ中のカメラ�
   奥は奥のまま）。物理的に鏡に映した位置で描くと左の面が正面の面と重なるので、位置だけずらした。色はその ID の揃った状態の面の色
 - **再現**は記録のリプレイ（`ReplayCube`）に `bare`（操作の列・見え方の切り替えを出さない）・`slow`・`playKey`・`onAt`・`onClock`・`onEnd` を足して
   使う。見え方はクロスの面を下にした定点（F2L に合わせて回す）。区切りはクロス・F2L 1〜4（入ったスロットの数が 1〜4 になった最初の手:
-  `cfopPhases`）・OLL・PLL。PLL の名前は OLL まで済んだ状態を、PLL 21 通り（`algorithms.ts` の 23 手順）× 上の面の向き 4 × 前後の AUF で照らす
+  `src/cube/solveStats.ts` の区切りと同じ）・OLL・PLL。PLL の名前は OLL まで済んだ状態を、PLL 21 通り（`algorithms.ts` の 23 手順）× 上の面の向き 4 × 前後の AUF で照らす
   （`src/cube/pll.ts`。全部の手順の逆で崩した状態を、持ち方と AUF を変えても見分ける: `tests/pll.test.ts`）
 - **記録に足したもの**: `Solve.liveReads`（タイマーの開始〜停止の間に、ライブのフレームの見え方 `FrameMessage.sight` でマーカーを直接読めたマス
   = ID があり向きが決まったマスの合計と、処理したフレームの数。開始の判定より前に回し始めていた分も数えるので、直近 200 秒を撮影時刻で残して

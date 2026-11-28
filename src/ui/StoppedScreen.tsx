@@ -16,7 +16,7 @@ import { readBins, showStore } from "../app/stopShow";
 import { useStore } from "../app/store";
 import { newScramble, timerStore } from "../app/timer";
 import { ARUCO_NAMES } from "../aruco/palette";
-import { cfopPhases } from "../cube/analysis";
+import { solveStats, statsInputFromSolve } from "../cube/solveStats";
 import { f2lPlan } from "../cube/f2l";
 import { holdWithDown } from "../cube/hold";
 import { type CubeState, applyMoves, moveIndex, parseMoves, solvedState } from "../cube/model";
@@ -46,14 +46,13 @@ function solveData(r: Solve) {
   } catch {
     return null;
   }
-  const cfop = moves.length ? cfopPhases(start, moves) : null;
-  const end = (i: number) => (i > 0 ? r.moves[i - 1].t : 0);
-  const phases = cfop
-    ? cfop.phases.map((p, i) => ({ name: p.name, index: p.index, from: i ? cfop.phases[i - 1].index : 0, t0: i ? end(cfop.phases[i - 1].index) : 0, t1: end(p.index) }))
-    : [];
-  const oll = cfop?.phases.find((p) => p.name === "OLL");
-  const pll = cfop && oll ? pllName(cfop.states[oll.index], cfop.face) : null;
-  return { start, moves, cfop, phases, pll, face: cfop?.face ?? 0 };
+  // 区切り（クロス・F2L 1〜4・OLL・PLL）と秒数は練習の数字の部品（src/cube/solveStats.ts）から。index = その区間が済んだ手の数
+  const stats = moves.length ? solveStats(statsInputFromSolve(r)) : null;
+  const phases = (stats?.phases ?? []).map((p) => ({ name: p.name as string, index: p.to, from: p.from, t0: 0, t1: p.ms }));
+  const oll = phases.find((p) => p.name === "OLL");
+  const face = stats && stats.crossFace >= 0 ? stats.crossFace : 0;
+  const pll = stats?.phases && oll ? pllName(applyMoves(start, moves.slice(0, oll.index)), face) : null;
+  return { start, moves, phases, pll, face };
 }
 
 // 区切りの名前（大きく出す）
