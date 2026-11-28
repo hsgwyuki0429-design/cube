@@ -26,10 +26,12 @@
 **認識は ArUco マーカー専用。** マーカーの ID から色（センターの面）が決まるので、揃ったキューブならスキャンなしで始められる。
 普通の色のステッカー・ステッカーレス・手の検出（MediaPipe）は削除した。
 
-- **ステッカーは 1 種類だけ**（`STICKERS`、`src/aruco/design.ts`。設定では選ばない）: 自作 3×3 の 54 種類 `unique54`（マスごとに違う。
+- **ステッカーは既定で 4 個の配置**（`STICKERS`、`src/aruco/design.ts`）: 自作 3×3 の 54 種類 `unique54`（マスごとに違う。
   ID = facelet 番号で向きも決めて貼る。1 枚の ID と向きから面の真ん中が分かる `centerOffset`）のマーカーを、幅 1/2 で 2×2 に 4 個
   （`quad-half`。同じ ID・同じ向き）。印刷用 PDF は `docs/stickers/cubevision_unique54_designs.pdf` の 5 ページ目
   （`node scripts/aruco-stickers.mjs designs`）。4 個は指に強く、ぶれ・遠さに弱い。デモ・E2E の合成キューブもこれを描く
+- **1 個の配置**（`standard`。1 枚に大きいマーカー 1 個・PDF の 2 ページ目 16mm）を**設定の画面の「ステッカー」**か URL の **`?stickers=standard`**
+  で選べる（下の「認識」の「配置の切り替え」）。**既定は 4 個のまま**（実機で比べてから決める: `docs/roadmap.md` の「マーカーの配置」）
 - 認識の部品（`src/aruco/`）はほかの符号（`aruco12`・`aruco`）と配置（1 個 `standard` など）も扱える（`PipelineConfig.stickers`・
   `arucoDesign`。テスト・ArUco の画面のテストモード・比較用）
 - **検出は専用の検出器**（`src/aruco/quadDetect.ts`。二値化は WASM SIMD `src/aruco/threshWasm.ts`、同じ結果の JS もある）。認識の Worker は
@@ -106,11 +108,12 @@ src/vision Vision             ← 映像 → マーカー → 見えている面
 - **実機の書き出しは 1 つのファイル**（開発用の「書き出す」: `src/ui/bundleExport.ts`）: `?debug` か設定の「開発用の書き出し」がオンなら、止めた後の画面に
   「書き出す」と最後のソルブの様子（要約: `src/app/solveSummary.ts`。止めた後の待ち・解析の結果と段・フレームの渡し方・休み・ソルブ中のカメラ fps・
   ライブの枚数・読めたマスの中央・面なしの割合・録画の抜け）を出す（`src/ui/DevExport.tsx`）。押せるのは精密解析が終わってから（「解析中」）。
-  ファイルは今の録画の MP4（`cubevision-日時-タイム.mp4`。iPhone は共有シートの「ファイルに保存」）に、そのソルブを通し直せる分のライブの記録
+  ファイルは今の録画の MP4（`cubevision-日時-タイム-配置.mp4`: 配置は `quad`（4 個）・`std`（1 個）。iPhone は共有シートの「ファイルに保存」）に、そのソルブを通し直せる分のライブの記録
   （`LiveLog.toJSON(from)`: 録画の始まりの 2 秒前より前でいちばん新しい始まりの候補から。gzip した JSON を uuid ボックス `LIVE_LOG_UUID`）と、
   メタデータに要約（`summary`）・組の印（`pair`: 記録の番号）を入れたもの。材料は解析が終わったときに作る（押したらすぐ共有シート）。
   手元の道具はこの 1 つをそのまま読む: `REAL_VIDEO=`・`LIVE_LOG=`（`LIVE_LOG_REC` を省ける）・`FPS_REC=`・`RS_FILES=`。まとめて表にするのは
-  `node scripts/real-table.mjs フォルダ`（今までの録画とライブの記録の組も読む）。E2E は `E2E_MODE=timer E2E_BUNDLE=フォルダ E2E_EXPORT_CHECK=1`
+  `node scripts/real-table.mjs フォルダ`（今までの録画とライブの記録の組も読む。配置の列・`--group stickers` で配置ごとの中央の行と
+  recordingStats の「配置ごと」と同じ表: `tests/debug/lib/layoutTable.ts`）。E2E は `E2E_MODE=timer E2E_BUNDLE=フォルダ E2E_EXPORT_CHECK=1`
 - 実機のライブの記録: 設定画面の「ライブの記録を書き出す」（`src/track/liveLog.ts`）→ 手元で `LIVE_LOG=ファイル` で
   `tests/debug/liveLog.debug.test.ts` に通し直す（追跡は読みだけで決まる）。古い読みを捨てるときは区切りの始まりを追跡が落ち着いていた時点
   （`TrackerEngine.checkpoint`）に進めるので、捨てた後も通し直せる（版 2。版 1 は `LIVE_LOG_FROM=inspect`）。正解は `LIVE_LOG_REC=同じソルブの録画の書き出し`
@@ -210,6 +213,22 @@ facelet の直接置換テーブルを手書きすると必ず間違える。**3
 - **面の割り当ての入れ替わり**（`slotJump`）・**スロットがありえないフレーム**（`src/track/slotCheck.ts`。センターの ID と面どうしの接し方から
   決まる置き方に合わないフレームは、ライブの追跡に「何も見えなかった」として渡す。見え方は `src/track/sight.ts`）
 - 読み直し（`src/aruco/reread.ts`、`arucoReread`）はライブ・精密解析とも使わない
+
+**配置の切り替え**（設定の「ステッカー」= `Settings.stickerLayout`、または `?stickers=standard`。既定は `quad-half`）: `STICKERS` は起動したときに
+決まる（`stickersAtStart`: URL が優先、なければ設定。設定の画面で変えたら保存して `?stickers=` を外して読み込み直す。解析中のソルブがあれば
+確かめてから。Worker は受け取った `PipelineConfig.arucoDesign` を使う）→
+`stickerPipeline`（認識の設定。1 個の配置も専用の検出: `arucoQuad: true`。`arucoQuad` を省いたときの既定 `usesQuad` は変えないので、配置だけを
+指定したテスト・比較は今まで通り OpenCV）→ `controller.pipelineConfig` を通るので、ライブ・精密解析・スキャン・開始と停止の判定・動画ファイルの
+解析が同じ配置。デモの合成キューブも `STICKERS` を描く（E2E は `E2E_QUERY='&stickers=standard'`、偽のカメラの動画は `FAKE_DESIGN=standard`）。
+記録の `Solve.stickers`・録画とライブの記録の書き出しの `stickers` に残し、手元の解析し直し（`realVideo`）は書き出しの配置に従う
+（`tests/debug/lib/recording.ts` の `exportLayout`。ふつうの動画は `REAL_DESIGN=`）。1 個の配置の決まり:
+- 格子で読む（`gridRead.ts`）: マーカーの間がないので、明るい所はマーカーの外の色の縁（ステッカーの 0.42〜0.5）の真ん中を回る点。縁は細いので
+  明るさの基準は符号の明るいマス（上から 1/4）と比べて明るい方、色は符号の明るいマス（検出の `Marker.rgb` と同じ）。4 個の配置は今まで通り
+- ライブの格子で読めたとみなす数は 4 個の配置の 8 個（`TRACK_MIN`）に対し 4 枚（`gridMin`）。外れた面の範囲を広げる量はステッカーの辺で同じ
+- 専用の検出の、枠の欠けた・細くつぶれたマーカーは隣に同じ ID が読めたときだけ使う決まり（`weak`）は、1 個の配置では隣がないので使わない
+  （捨てる）。指で隠れたマーカーはそのマスごと読めない（4 個の配置のように残りのマーカーで読むことはない）
+- 面の組み立ては 1 枚 = 1 個（`virtualMarkers` は 4 個の配置だけ）。手の時刻のずれ（`cellShifts`）・色で補う縁（`ringGeometry`）・回転途中の形
+  （`turnMarkers`）は配置の `at` から決まる
 
 **ライブの認識は面の格子で追う**（`liveMarkers`）: 最近見えていた面の格子の各マスで、位置を少し合わせてマーカーの明暗を直接読み、
 検出を省く。検出するのは、面の割り当てが変わった・面が 250ms 戻らない（`MISSING_MS`）・正面が 500ms たって 3 枚以上（`GRID_REDETECT_*`）
@@ -415,7 +434,7 @@ facelet の直接置換テーブルを手書きすると必ず間違える。**3
 - **データ**（`DataScreen.tsx`・`charts.tsx`）・**記録の詳しい画面**（`SolveDetail.tsx`。リプレイは実際と同じ速さ・見え方 3 通り・
   次の F2L を光らせる: `src/cube/f2l.ts`。X クロスの最短: `src/cube/xcross.ts`）
 - **解析**（`AnalyzeScreen.tsx`）は下のバーから外した。開発用に `#aruco`・`aruco.html`・`store` の `screen: "analyze"` から開く
-- **設定**（`SettingsPage.tsx`）はカメラ・表示・タイマーの好みだけ。性能に関わる値（鏡像・持ち方基準の向き・解像度・fps・精密解析・
+- **設定**（`SettingsPage.tsx`）はカメラ（使うカメラ・貼ったステッカーの配置）・表示・タイマーの好みだけ。性能に関わる値（鏡像・持ち方基準の向き・解像度・fps・精密解析・
   認識の調整）は選ばせず既定の値で動かす（`src/app/settings.ts` の `FIXED`）。鏡像と表記の向きはカメラの向きから自動（`facingOf`）
 
 ---
@@ -461,7 +480,7 @@ facelet の直接置換テーブルを手書きすると必ず間違える。**3
   `REAL_APP_TRUTH`（本体の結果を正解の形で）を付ければ `piecesBench` にも通せる。読める量は `REAL_STATS_OUT=rows.jsonl`（1 フレームに読めた
   マス・ピース、確かな読みのない区間、実際の fps・抜け）→ `RS_ROWS=rows.jsonl` で `recordingStats.debug.test.ts`。比べる相手は同じ物差しの
   x264 の 5・2.5Mbps（bench-2 の圧縮。表は `docs/history.md`）。書き出しのフォルダは `RS_FILES=フォルダ` でそのまま並べられる。
-  ソルブごとの表（要約・アプリの結果と同じか・ライブの通し直しと 3D の一致）は `node scripts/real-table.mjs フォルダ`（GitHub のリリースに置いた
+  ソルブごとの表（配置・要約・アプリの結果と同じか・ライブの通し直しと 3D の一致・読める量）は `node scripts/real-table.mjs フォルダ [--group stickers]`（GitHub のリリースに置いた
   実機の材料は毎回これで通す）。E2E: `E2E_MODE=timer E2E_BUNDLE=フォルダ E2E_EXPORT_CHECK=1`（まとめた書き出し → 手元で realVideo と liveLog）・
   `E2E_EXPORT=フォルダ`（録画だけ）
 - ライブの良し悪しは「3D に出した状態が本当の状態（精密解析の手順と時刻）と同じだった時間の割合」（遅れ 300ms まで）。追跡だけ・解き直し

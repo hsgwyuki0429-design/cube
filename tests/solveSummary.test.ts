@@ -21,6 +21,7 @@ describe("solveSummary", () => {
     const s = summarizeSolve({
       solveId: "x",
       timeMs: 4000,
+      stickers: "standard",
       analysis: "done",
       waitMs: 7500,
       result: { solved: true, moves: [{}, { inferred: true }, {}], method: "meet", decodeStage: "deep" },
@@ -38,7 +39,7 @@ describe("solveSummary", () => {
     // 止める前の休み（前のソルブ）は入れない
     expect(s.rests).toEqual([{ from: 0.1, to: 7.5, why: "result" }]);
     const lines = summaryLines(s).join("\n");
-    expect(lines).toContain("確定");
+    expect(lines.startsWith("1 個・確定")).toBe(true);
     expect(lines).toContain("深い解き直し");
     expect(lines).toContain("推定 1/3");
     expect(lines).toContain("待ち 7.5 秒");

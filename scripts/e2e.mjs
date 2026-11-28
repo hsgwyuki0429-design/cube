@@ -340,9 +340,12 @@ try {
         const live = box ? JSON.parse((box[0] === 0x1f ? gunzipSync(box) : Buffer.from(box)).toString("utf8")) : null;
         const frames = live?.log?.segments?.reduce((n, s) => n + s.readings.length, 0) ?? 0;
         const sameSolve = !!meta?.pair?.solveId && meta.pair.solveId === live?.pair?.solveId && meta.pair.solveId === meta.analysis?.live?.solveId && meta.solve?.id === meta.pair.solveId;
-        const nameOk = /^cubevision-\d{8}-\d{6}-(\d+\.\d{2}s|DNF)(-partial|-failed)?\.mp4$/.test(dl.suggestedFilename());
-        const bOk = !!meta?.summary && !!meta?.analysis?.result && frames > 0 && sameSolve && nameOk && !pathNg(meta.framePath);
-        console.log(`  bundle: ${file}（${(buf.byteLength / 1e6).toFixed(1)}MB）${bOk ? "OK" : "NG"}・要約 ${meta?.summary ? "あり" : "なし"}・解析の結果 ${meta?.analysis?.result ? "あり" : "なし"}・ライブの記録 ${frames} 枚（区切り ${live?.log?.segments?.length ?? 0}・${live?.log?.from !== undefined ? `${(live.log.from / 1000).toFixed(1)}s から` : "-"}）・同じソルブの組 ${sameSolve ? "はい" : "いいえ"}・名前 ${nameOk ? "OK" : "NG"}`);
+        // 配置: URL の ?stickers= と、記録・要約・ファイル名が同じか
+        const wantLayout = new URLSearchParams(process.env.E2E_QUERY ?? "").get("stickers") === "standard" ? "standard" : "quad-half";
+        const nameOk = new RegExp(`^cubevision-\\d{8}-\\d{6}-(\\d+\\.\\d{2}s|DNF)-${wantLayout === "standard" ? "std" : "quad"}(-partial|-failed)?\\.mp4$`).test(dl.suggestedFilename());
+        const layoutOk = meta?.summary?.stickers === wantLayout && meta?.solve?.stickers === wantLayout && meta?.stickers === wantLayout;
+        const bOk = !!meta?.summary && !!meta?.analysis?.result && frames > 0 && sameSolve && nameOk && layoutOk && !pathNg(meta.framePath);
+        console.log(`  bundle: ${file}（${(buf.byteLength / 1e6).toFixed(1)}MB）${bOk ? "OK" : "NG"}・要約 ${meta?.summary ? "あり" : "なし"}・解析の結果 ${meta?.analysis?.result ? "あり" : "なし"}・ライブの記録 ${frames} 枚（区切り ${live?.log?.segments?.length ?? 0}・${live?.log?.from !== undefined ? `${(live.log.from / 1000).toFixed(1)}s から` : "-"}）・同じソルブの組 ${sameSolve ? "はい" : "いいえ"}・名前 ${nameOk ? "OK" : "NG"}・配置 ${meta?.summary?.stickers ?? "-"}（${layoutOk ? "OK" : `NG: ${wantLayout} のはず`}）`);
         if (!bOk) failures++;
         if (process.env.E2E_EXPORT_CHECK) {
           const run = (test, env, pick) =>

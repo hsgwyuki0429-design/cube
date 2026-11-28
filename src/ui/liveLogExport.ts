@@ -1,6 +1,7 @@
 // 「ライブの記録を書き出す」（設定画面）: 認識の Worker が残しているライブの記録（src/track/liveLog.ts）に、端末・カメラ・直前のソルブを
 // 添えて 1 つのファイルにし、共有シート（できなければ保存）に渡す。手元では tests/debug/liveLog.debug.test.ts で同じ追跡を通し直す。
 // 映像は入れない（読み取ったマーカーの ID・色・位置だけ）
+import { STICKERS } from "../aruco/design";
 import { controller } from "../app/controller";
 import { settingsStore } from "../app/settings";
 import { timerStore } from "../app/timer";
@@ -54,6 +55,8 @@ export function liveLogData(log: unknown, timer?: { phase: string; startT: numbe
     rests: controller.perf.rests,
     framePath: controller.framePath(),
     url: location.search,
+    // ステッカーのマーカーの配置（?stickers=）
+    stickers: STICKERS.arucoDesign,
     log,
   };
 }

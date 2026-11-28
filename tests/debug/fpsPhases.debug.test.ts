@@ -6,7 +6,7 @@
 //   npx vitest run -c vitest.debug.config.ts tests/debug/fpsPhases.debug.test.ts --silent=false
 // 書き出しに 1 秒ごとの計測（perf: src/app/perfLog.ts。2026-11-27 から）があれば、場面ごとの平均も出す
 import { it } from "vitest";
-import { exportTimesUs, loadBundleLive, loadExport, loadLiveLog } from "./lib/recording";
+import { exportLayout, exportTimesUs, loadBundleLive, loadExport, loadLiveLog } from "./lib/recording";
 import { summaryLines } from "../../src/app/solveSummary";
 import { type PerfRow, summarizePerf } from "../../src/app/perfLog";
 
@@ -32,7 +32,7 @@ it("場面ごとの fps", () => {
   let inspect: number | undefined = meta?.analysis.input.from;
   if (live && startT !== undefined) for (const e of live.log.segments[0].events) if (e.kind === "options" && e.data?.snapToView === true && e.t < startT) inspect = e.t;
   const recTimes = meta && recFile ? exportTimesUs(recFile, meta).map((u) => u / 1000) : [];
-  const readings: { t: number; helper?: boolean; procMs: number; faces: unknown[] }[] = live ? live.log.segments.flatMap((s: { readings: unknown[] }) => s.readings) : [];
+  const readings: { t: number; helper?: boolean; procMs: number; faces: { ids?: number[]; masked?: boolean[] }[] }[] = live ? live.log.segments.flatMap((s: { readings: unknown[] }) => s.readings) : [];
   const lastT = Math.max(recTimes[recTimes.length - 1] ?? 0, readings[readings.length - 1]?.t ?? 0);
   const firstT = Math.min(recTimes[0] ?? Infinity, readings[0]?.t ?? Infinity);
   const phases: Phase[] = [];
@@ -44,6 +44,8 @@ it("場面ごとの fps", () => {
     phases.push({ name: "止めた後 3〜10 秒", from: endT + 3000, to: endT + 10000 });
     phases.push({ name: "止めた後 10 秒〜", from: endT + 10000, to: lastT });
   } else phases.push({ name: "全部", from: firstT, to: lastT });
+  // ステッカーのマーカーの配置（?stickers=。2026-11-28 から。古い書き出しは精密解析の入力の pipeline から）
+  console.log(`ステッカーの配置 ${live?.stickers ?? (meta ? exportLayout(meta) : "quad-half（記録なし）")}`);
   if (meta) console.log(`ソルブ中の重さの配り方 ?solveload=${meta.analysis.solveLoad ?? "（記録なし）"}・止めた後の待ち ${meta.analysis.waitMs !== undefined ? `${(meta.analysis.waitMs / 1000).toFixed(1)} 秒` : "（記録なし）"}・精密解析 ${meta.analysis.result ? `${meta.analysis.result.solved ? "完成" : "完成しない"}・推定 ${meta.analysis.result.moves.filter((m) => m.inferred).length}/${meta.analysis.result.moves.length}` : "-"}`);
   console.log(`インスペクション ${fmt((inspect ?? NaN) / 1000, 2)}s・ソルブ ${fmt((startT ?? NaN) / 1000, 2)}〜${fmt((endT ?? NaN) / 1000, 2)}s`);
   const st = meta?.analysis.result?.decodeInfo?.stream;
@@ -62,9 +64,14 @@ it("場面ごとの fps", () => {
     const med = (xs: number[]) => (xs.length ? [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)] : NaN);
     // 認識の Worker の忙しさの目安: 処理した枚数 × 1 枚の時間 ÷ 長さ（主の Worker は追跡の分を含まない）
     const busy = (xs: typeof rs) => xs.reduce((s, r) => s + r.procMs, 0) / (sec * 1000);
+    // ライブの読める量: 1 フレームに ID が読めたマス・面が組めなかったフレーム・組めた面のマスのうち指で隠れた割合
+    const cells = rs.length ? rs.reduce((n, r) => n + r.faces.reduce((k, f) => k + (f.ids ?? []).filter((id) => id >= 0).length, 0), 0) / rs.length : NaN;
+    const faceless = rs.length ? rs.filter((r) => !r.faces.length).length / rs.length : NaN;
+    const faceCells = rs.reduce((n, r) => n + r.faces.length * 9, 0);
+    const masked = faceCells ? rs.reduce((n, r) => n + r.faces.reduce((k, f) => k + (f.masked ?? []).filter(Boolean).length, 0), 0) / faceCells : NaN;
     console.log(
       `${p.name}（${fmt(sec)} 秒）: 録画 ${rec.length ? `${fmt(rec.length / sec)}fps・抜け ${holes}` : "-"}` +
-        ` | ライブ ${rs.length ? `${fmt(rs.length / sec)} 枚/秒（主 ${fmt(main.length / sec)}・補助 ${fmt(help.length / sec)}）・認識 中央 主 ${fmt(med(main.map((r) => r.procMs)))}ms 補助 ${fmt(med(help.map((r) => r.procMs)))}ms・忙しさ 主 ${fmt(busy(main) * 100, 0)}% 補助 ${fmt(busy(help) * 100, 0)}%` : "-"}`,
+        ` | ライブ ${rs.length ? `${fmt(rs.length / sec)} 枚/秒（主 ${fmt(main.length / sec)}・補助 ${fmt(help.length / sec)}）・認識 中央 主 ${fmt(med(main.map((r) => r.procMs)))}ms 補助 ${fmt(med(help.map((r) => r.procMs)))}ms・忙しさ 主 ${fmt(busy(main) * 100, 0)}% 補助 ${fmt(busy(help) * 100, 0)}%・読めたマス ${fmt(cells, 2)}・面が組めない ${fmt(faceless * 100)}%・指 ${fmt(masked * 100)}%` : "-"}`,
     );
   }
   const perf: PerfRow[] = meta?.perf ?? live?.perf ?? [];

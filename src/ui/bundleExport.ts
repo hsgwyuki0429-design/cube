@@ -1,10 +1,11 @@
 // 開発用の「書き出す」（止めた後の画面: src/ui/DevExport.tsx。?debug か設定の「開発用の書き出し」がオンのとき）: 直近のソルブの録画（今の
 // 「録画を書き出す」と同じ MP4・同じメタデータ）に、そのソルブを通し直せる範囲のライブの記録（今の「ライブの記録を書き出す」と同じ形を gzip して
 // 別の uuid ボックス: src/vision/mp4Mux.ts の LIVE_LOG_UUID）と、最後のソルブの様子の要約（src/app/solveSummary.ts。メタデータの summary）を
-// 入れた 1 つのファイルにする。ファイル名はソルブの日時とタイム（cubevision-20261128-153012-12.34s.mp4）。
+// 入れた 1 つのファイルにする。ファイル名はソルブの日時・タイム・配置（cubevision-20261128-153012-12.34s-quad.mp4。1 個は -std）。
 // 材料（ライブの記録・要約）は精密解析が終わったとき（controller.onCaptureSettled）に作っておく: 押したらすぐ共有シートに渡す（iPhone は
 // 押してから時間がかかると共有シートを出せない）。ライブの記録は直近 120 秒しか残らないので、後で押しても同じソルブの分が入る。
 // 手元では realVideo・liveLog・fpsPhases・recordingStats・scripts/real-table.mjs がこの 1 つのファイルをそのまま読む
+import { STICKERS } from "../aruco/design";
 import { type SolveRecording, controller } from "../app/controller";
 import { settingsStore } from "../app/settings";
 import { type SolveSummary, summarizeSolve } from "../app/solveSummary";
@@ -75,6 +76,7 @@ export function summaryOf(cap: SolveRecording, live = cap.bundle?.live): SolveSu
   return summarizeSolve({
     solveId: cap.live?.solveId,
     timeMs: solve?.timeMs,
+    stickers: solve?.stickers ?? STICKERS.arucoDesign,
     analysis: solve?.analysis,
     waitMs: cap.waitMs,
     result: cap.result,
@@ -91,14 +93,15 @@ export function summaryOf(cap: SolveRecording, live = cap.bundle?.live): SolveSu
   });
 }
 
-// ファイル名: ソルブの日時（端末の時刻）とタイム
-export function bundleName(date: number, timeMs: number | undefined, penalty?: string, analysis?: string): string {
+// ファイル名: ソルブの日時（端末の時刻）・タイム・配置（quad = 4 個・std = 1 個）
+export function bundleName(date: number, timeMs: number | undefined, penalty?: string, analysis?: string, stickers: string = STICKERS.arucoDesign): string {
   const d = new Date(date);
   const p2 = (n: number) => String(n).padStart(2, "0");
   const stamp = `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
   const time = penalty === "DNF" ? "DNF" : timeMs !== undefined && Number.isFinite(timeMs) ? `${(timeMs / 1000).toFixed(2)}s` : "time";
   const tag = analysis === "partial" ? "-partial" : analysis === "failed" ? "-failed" : "";
-  return `cubevision-${stamp}-${time}${tag}.mp4`;
+  const lay = stickers === "standard" ? "std" : "quad";
+  return `cubevision-${stamp}-${time}-${lay}${tag}.mp4`;
 }
 
 export async function exportBundle(): Promise<void> {
@@ -117,7 +120,7 @@ export async function exportBundle(): Promise<void> {
     return;
   }
   const solve = cap.live ? timerStore.get().solves.find((x) => x.id === cap.live!.solveId) : undefined;
-  const name = bundleName(solve?.date ?? Date.now(), solve?.timeMs, solve?.penalty, solve?.analysis);
+  const name = bundleName(solve?.date ?? Date.now(), solve?.timeMs, solve?.penalty, solve?.analysis, solve?.stickers ?? STICKERS.arucoDesign);
   const file = new File(muxed.parts as BlobPart[], name, { type: "video/mp4" });
   await shareOrSave(file, `書き出しました（${muxed.frames} フレーム・${(file.size / 1e6).toFixed(1)}MB）`);
 }

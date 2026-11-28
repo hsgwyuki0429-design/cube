@@ -17,6 +17,7 @@ interface ReadingLike {
 export interface SummaryInput {
   solveId?: string;
   timeMs?: number; // 記録のタイム
+  stickers?: string; // 撮ったときのステッカーのマーカーの配置（Solve.stickers: quad-half = 4 個・standard = 1 個）
   analysis?: string; // 記録の Solve.analysis（done・partial・failed・pending）
   waitMs?: number; // 止めてから解析の結果が出るまで
   result?: { solved: boolean; moves: { inferred?: boolean }[]; method?: string; decodeStage?: string } | null;
@@ -36,6 +37,7 @@ export interface SolveSummary {
   version: number;
   solveId?: string;
   timeMs?: number;
+  stickers?: string; // quad-half（4 個）・standard（1 個）
   analysis: string; // done・partial・failed・pending・error・none
   waitMs?: number;
   solved?: boolean;
@@ -90,6 +92,7 @@ export function summarizeSolve(x: SummaryInput): SolveSummary {
     version: SUMMARY_VERSION,
     ...(x.solveId ? { solveId: x.solveId } : {}),
     ...(x.timeMs !== undefined ? { timeMs: x.timeMs } : {}),
+    ...(x.stickers ? { stickers: x.stickers } : {}),
     analysis: res ? (x.analysis ?? "done") : x.error ? "error" : (x.analysis ?? "none"),
     ...(x.waitMs !== undefined ? { waitMs: x.waitMs } : {}),
     ...(x.retried ? { retried: x.retried } : {}),
@@ -142,6 +145,7 @@ export function summarizeSolve(x: SummaryInput): SolveSummary {
 
 const ANALYSIS: Record<string, string> = { done: "確定", partial: "一部推定", failed: "速報値", pending: "解析中", error: "解析の失敗", none: "解析なし" };
 const STAGE: Record<string, string> = { first: "1 回目", "deep-tried": "深い解き直しもした・1 回目", deep: "深い解き直し", pieces: "ピース方式" };
+export const LAYOUT_NAME: Record<string, string> = { "quad-half": "4 個", standard: "1 個" };
 const WHY: Record<string, string> = { result: "解析の結果", error: "解析の失敗", next: "次のソルブ", guard: "保険の 180 秒" };
 const f1 = (x: number | undefined) => (x === undefined || !Number.isFinite(x) ? "-" : x.toFixed(1));
 
@@ -149,7 +153,7 @@ const f1 = (x: number | undefined) => (x === undefined || !Number.isFinite(x) ? 
 export function summaryLines(s: SolveSummary): string[] {
   const lines: string[] = [];
   const how = [s.method, s.stage ? (STAGE[s.stage] ?? s.stage) : undefined, s.retried ? "録画全体のやり直し" : undefined].filter(Boolean).join("・");
-  lines.push(`${ANALYSIS[s.analysis] ?? s.analysis}${s.solved === false ? "（完成しない）" : ""}${how ? `・${how}` : ""}${s.moves !== undefined ? `・推定 ${s.inferred}/${s.moves}` : ""}・待ち ${s.waitMs !== undefined ? `${(s.waitMs / 1000).toFixed(1)} 秒` : "-"}`);
+  lines.push(`${s.stickers ? `${LAYOUT_NAME[s.stickers] ?? s.stickers}・` : ""}${ANALYSIS[s.analysis] ?? s.analysis}${s.solved === false ? "（完成しない）" : ""}${how ? `・${how}` : ""}${s.moves !== undefined ? `・推定 ${s.inferred}/${s.moves}` : ""}・待ち ${s.waitMs !== undefined ? `${(s.waitMs / 1000).toFixed(1)} 秒` : "-"}`);
   if (s.error) lines.push(s.error);
   const fp = s.framePath;
   if (fp) lines.push(`渡し方 ${fp.live ?? "-"}/${fp.recorder ?? "-"}（一時 ${fp.liveWaits ?? 0}/${fp.recorderWaits ?? 0}）${fp.requested === false ? "・default" : ""}${fp.liveNote ? `・${fp.liveNote}` : ""}${fp.recorderNote ? `・録画 ${fp.recorderNote}` : ""}`);

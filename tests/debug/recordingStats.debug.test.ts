@@ -6,6 +6,10 @@
 //   間引いたフレーム（実機の書き出しだけ。録画全体）・マス / ピース = 精密に処理した 1 フレームに ID が読めた数の平均・
 //   確かな読みのない区間 = 確かな読み（src/track/pieces/solve.ts の strongOf と同じ）のある見え方のない間（1 秒より長いものの数と合計、いちばん長いもの）。
 //   「決まった面だけ」はセンター 1 つの面の読みを数えないもの
+// 配置ごと（ステッカーのマーカーの配置: 書き出しの stickers。?stickers=standard で撮ったもの）の表も出す: 1 フレームに読めたマス・誤読
+//   （精密解析の答えを正解の代わりにして照らした、合わない読みの割合: lib/recording.ts の misreadOf）・面が組めなかったフレームの割合・
+//   指で隠れたマスの割合・精密解析の完成と推定（本体の結果。書き出しになければこの解析の結果）・止めた後の待ち（本体。書き出しの waitMs）。
+//   配置ごとに平均と中央の 2 行（tests/debug/lib/layoutTable.ts。scripts/real-table.mjs の --group stickers も同じ）
 //   RS_FILES=フォルダかファイル（, 区切り）: 書き出し（開発用の「書き出す」でまとめたファイル・「録画を書き出す」の録画）をそのまま読む
 //   （1 本ずつ realVideo を REAL_STATS_OUT 付きで通してから並べる。RS_LABEL=条件の名前、既定は「実機」）
 import { spawnSync } from "node:child_process";
@@ -14,6 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { it } from "vitest";
 import { loadExport } from "./lib/recording";
+import { layoutTable } from "./lib/layoutTable";
 
 interface Row {
   name: string;
@@ -36,6 +41,13 @@ interface Row {
   solved: boolean;
   inferred: number;
   recorder?: { frames: number; dropped: number; codec: string; hw: string | null; bitrate: number };
+  layout?: string; // ステッカーのマーカーの配置（2026-11-28 から）
+  faceless?: number;
+  masked?: number;
+  misread?: number;
+  misreadReads?: number;
+  waitMs?: number;
+  app?: { solved: boolean; inferred: number; moves: number } | null;
 }
 
 it("読める量のまとめ", () => {
@@ -73,5 +85,8 @@ it("読める量のまとめ", () => {
     const avg = (f: (r: Row) => number) => g.reduce((n, r) => n + f(r), 0) / g.length;
     out.push(`| ${l} | ${g.length} | ${avg((r) => r.fps).toFixed(1)} | ${avg((r) => r.cells).toFixed(2)} | ${avg((r) => r.pieces).toFixed(2)} | ${avg((r) => r.gaps1Sec).toFixed(1)} 秒 | ${avg((r) => r.longest).toFixed(2)} 秒 | ${avg((r) => r.sure1Sec ?? Number.NaN).toFixed(1)} 秒 | ${g.filter((r) => r.solved).length}/${g.length} |`);
   }
+  // 配置ごと（平均と中央。scripts/real-table.mjs の --group stickers と同じ: lib/layoutTable.ts）
+  out.push("");
+  out.push(...layoutTable(rows));
   console.log(out.join("\n"));
 }, 3600000);
