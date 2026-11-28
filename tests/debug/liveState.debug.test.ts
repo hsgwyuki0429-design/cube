@@ -71,7 +71,7 @@ it("ライブの状態の推定（フレームごと）", () => {
     const hit = live.hyps.findIndex((h) => live.known(h) && truth.some((s) => statesEqual(s, live.stateOf(h))));
     total++;
     if (hit < 0) lost++;
-    const mark = hit === 0 ? "=" : hit > 0 ? "~" : "≠";
+    const mark = (hit === 0 ? "=" : hit > 0 ? "~" : "≠") + (process.env.LS_SHOW ? (truth.some((st) => statesEqual(st, live.display())) ? "D" : "d") : "");
     const b = live.best();
     const top = live.hyps
       .slice(0, 3)
