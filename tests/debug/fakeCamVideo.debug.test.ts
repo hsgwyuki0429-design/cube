@@ -7,7 +7,7 @@
 //   （少し傾ける）→ ソルブ（スクランブルを戻す手順に、往復する乱数の手 FAKE_EXTRA 手を足したもの。1 手 FAKE_SOLVE_MS）→ 揃った状態で FAKE_HOLD1 秒
 // 撮り方の案内（src/app/captureAdvice.ts）の場面: FAKE_DIST（視点の距離の倍率。2 = 遠い）・FAKE_BRIGHT（明るさの倍率。0.35 = 暗い）・
 //   FAKE_EYE="x,y,z"（視点。"0.3,6,1.2" = 真上から）・FAKE_SHIFT="x,y"（キューブを画面の中でずらす。キューブの座標で）・FAKE_ONLY=hold
-//   （揃った状態のまま FAKE_HOLD0 秒だけ）
+//   （揃った状態のまま FAKE_HOLD0 秒だけ）・FAKE_DESIGN=standard（ステッカーのマーカーの配置。E2E は E2E_QUERY='&stickers=standard' で同じ配置に）
 import { spawn } from "node:child_process";
 import { it } from "vitest";
 import { designOf } from "../../src/aruco/design";
@@ -45,7 +45,7 @@ it("偽のカメラの動画", async () => {
   const bright = Number(process.env.FAKE_BRIGHT ?? 1);
   const eye0 = (process.env.FAKE_EYE ?? "2.4,2.4,5.5").split(",").map(Number) as [number, number, number];
   const shift = (process.env.FAKE_SHIFT ?? "0,0").split(",").map(Number);
-  const design = designOf("quad-half");
+  const design = designOf(process.env.FAKE_DESIGN ?? "quad-half");
   const ff = spawn("ffmpeg", ["-loglevel", "error", "-y", "-f", "rawvideo", "-pix_fmt", "rgb24", "-s", `${W}x${H}`, "-r", String(FPS), "-i", "-", "-pix_fmt", "yuv420p", "-f", "yuv4mpegpipe", out], { stdio: ["pipe", "inherit", "inherit"] });
   let st = solvedStickers();
   let n = 0;

@@ -2,6 +2,7 @@
 // 間引いたフレームの数・タイマーの開始と停止（Solve.edges）・精密解析の入力と結果をメタデータとして入れて、共有シート（できなければ保存）に渡す。
 // 手元では tests/debug/realVideo.debug.test.ts に REAL_VIDEO=書き出したファイル で通す（圧縮し直さずに読み、始まりの状態・ソルブの範囲・
 // 解析の設定は書き出しから取る）。映像は端末の外に勝手に送らない: 書き出すのは利用者がボタンを押したときだけ
+import { STICKERS } from "../aruco/design";
 import { controller } from "../app/controller";
 import { settingsStore } from "../app/settings";
 import { timerStore } from "../app/timer";
@@ -27,6 +28,8 @@ export async function exportRecording(): Promise<void> {
     version: RECORDING_EXPORT_VERSION,
     date: new Date().toISOString(),
     url: location.search,
+    // ステッカーのマーカーの配置（?stickers=。精密解析の入力の pipeline.arucoDesign と同じ。手元の解析し直しはこれに従う）
+    stickers: STICKERS.arucoDesign,
     device: { ua: navigator.userAgent, cores: navigator.hardwareConcurrency ?? 0, dpr: window.devicePixelRatio, screen: [screen.width, screen.height] },
     camera: st.cameraInfo,
     stats: st.stats,

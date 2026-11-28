@@ -113,6 +113,26 @@ export function designLook(d: StickerDesign, scheme: StickerScheme = "unique54")
   return { colorArea: area, meanDeltaE: dE, minPairDeltaE: minPair, pairs };
 }
 
-// 対応するステッカー: 各ステッカーに 54 種類（マスごとに違う 3×3 の符号）の色付き ArUco マーカーを、幅 1/2 で 2×2 に 4 個
-// （cubevision_unique54_designs.pdf の「4 個・幅 1/2」。src/aruco/codes.ts・この DESIGNS）
-export const STICKERS = { stickers: "unique54", arucoDesign: "quad-half" } as const;
+// 対応するステッカー: 各ステッカーに 54 種類（マスごとに違う 3×3 の符号）の色付き ArUco マーカーを、既定は幅 1/2 で 2×2 に 4 個
+// （cubevision_unique54_designs.pdf の 5 ページ目「4 個・幅 1/2」。src/aruco/codes.ts・この DESIGNS）。
+// 比べる用に、1 枚に大きいマーカー 1 個（standard。PDF の 2 ページ目・16mm）も URL の ?stickers=standard で選べる（ライブ・精密解析・
+// スキャン・開始と停止・デモの合成キューブまで同じ配置）。記録（Solve.stickers）と書き出しに残し、手元で解析し直すときもそれに従う
+export type StickerLayout = "quad-half" | "standard";
+export const STICKER_LAYOUTS: readonly StickerLayout[] = ["quad-half", "standard"];
+export const DEFAULT_LAYOUT: StickerLayout = "quad-half";
+export interface StickerChoice {
+  stickers: "unique54";
+  arucoDesign: StickerLayout;
+}
+export const stickersOf = (layout: string | null | undefined): StickerChoice => ({
+  stickers: "unique54",
+  arucoDesign: STICKER_LAYOUTS.includes(layout as StickerLayout) ? (layout as StickerLayout) : DEFAULT_LAYOUT,
+});
+// URL の ?stickers=（ないか知らない値なら既定）。Worker では location の検索部分に stickers がないので既定だが、Worker は設定
+// （PipelineConfig.arucoDesign）を受け取って使う
+export const stickersFromQuery = (search: string): StickerChoice => stickersOf(new URLSearchParams(search).get("stickers"));
+export const STICKERS: StickerChoice = stickersFromQuery(typeof location === "undefined" ? "" : location.search);
+// 認識の設定（PipelineConfig の一部）: 符号・配置と検出器。1 個の配置も専用の検出（src/aruco/quadDetect.ts。OpenCV を読み込まない）で
+// 読む（arucoQuad: true。合成の 60 場面で色が正しいマス OpenCV 74.0% → 75.9%・誤り 0）。arucoQuad の既定（配置から決める
+// usesQuad）は変えないので、配置だけを指定したテスト・比較は今まで通り OpenCV
+export const stickerPipeline = (c: StickerChoice): StickerChoice & { arucoQuad?: true } => (c.arucoDesign === "standard" ? { ...c, arucoQuad: true } : { ...c });

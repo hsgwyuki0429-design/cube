@@ -5,8 +5,13 @@
 //   C: 速い回転（120fps・約 8 手/秒・回している層のぶれ。スロー撮影の動画の解析）。精密解析の手順が正しいか
 //   npx vitest run -c vitest.debug.config.ts tests/debug/arucoEval.debug.test.ts --silent=false
 //   DESIGNS=standard,quad-half・PARTS=A,B,C・N=場面の数（距離ごと、既定 20）・SEEDS=手順の数（既定 4）
+//   A の設定: 既定は本体と同じ（ライブ = controller.liveConfig: 面の格子で読む・色で補わない、精密 = REFINE_PIPELINE。配置は
+//   stickerPipeline: 1 個の配置も専用の検出）。OLD=1 で前の比べ（DEFAULT_PIPELINE に配置だけ。1 個の配置は OpenCV）。
+//   PITCHES=90,65,45,32（正面のマスの間隔 px。32 は実機で遠くから撮ったときの大きさ。後ろに足しても前の場面は変わらない）・
+//   H264=5000 など（1 場面を 4 枚続けて 60fps の本体の録画と同じ形の H.264 に圧縮して戻し、4 枚目を読む。kbps）
+import { spawnSync } from "node:child_process";
 import { it } from "vitest";
-import { designOf } from "../../src/aruco/design";
+import { designOf, stickerPipeline, stickersOf } from "../../src/aruco/design";
 import { ARUCO_REFS } from "../../src/aruco/palette";
 import { MOVE_NAMES, type Vec3, applyMoves, parseMoves, solvedState } from "../../src/cube/model";
 import { TrackerEngine } from "../../src/track/engine";
@@ -14,11 +19,23 @@ import { simplifyMoves } from "../../src/track/merge";
 import { ARUCO_OBSERVER } from "../../src/track/observer";
 import { cellCenter } from "../../src/vision/layout";
 import { DEFAULT_PIPELINE, frameReading, processFrame } from "../../src/vision/pipeline";
-import { Refiner } from "../../src/vision/refine";
+import { REFINE_PIPELINE, Refiner } from "../../src/vision/refine";
 import { applyMoveStickers, renderArucoCube, solvedStickers } from "../arucoCube";
 import { H, W, inPoly, makeScenes } from "../arucoScenes";
 import type { Finger } from "../render";
 import { loadTestOpenCv } from "../cv";
+
+// 本体の録画と同じ形の H.264（CLAUDE.md の ffmpeg の条件。60fps）に圧縮して戻す
+function h264(frames: { data: Uint8ClampedArray; width: number; height: number }[], kbps: number): { data: Uint8ClampedArray; width: number; height: number }[] {
+  const { width: w, height: h } = frames[0];
+  const raw = Buffer.concat(frames.map((f) => Buffer.from(f.data.buffer, f.data.byteOffset, f.data.byteLength)));
+  const br = `${kbps}k`;
+  const enc = spawnSync("ffmpeg", ["-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", `${w}x${h}`, "-r", "60", "-i", "-", "-pix_fmt", "yuv420p", "-c:v", "libx264", "-threads", "1", "-profile:v", "baseline", "-preset", "veryfast", "-tune", "zerolatency", "-b:v", br, "-maxrate", br, "-bufsize", `${kbps / 2}k`, "-g", "60", "-f", "h264", "-"], { input: raw, maxBuffer: 1 << 30 });
+  const dec = spawnSync("ffmpeg", ["-loglevel", "error", "-f", "h264", "-i", "-", "-f", "rawvideo", "-pix_fmt", "rgba", "-"], { input: enc.stdout, maxBuffer: 2 ** 32 });
+  const n = w * h * 4;
+  if (dec.stdout.length < n * frames.length) throw new Error(`H.264 の圧縮・復号に失敗: ${enc.stderr} ${dec.stderr}`);
+  return frames.map((_, i) => ({ data: new Uint8ClampedArray(dec.stdout.buffer.slice(dec.stdout.byteOffset + i * n, dec.stdout.byteOffset + (i + 1) * n)), width: w, height: h }));
+}
 
 const colorOf = (lab: number[]) => ARUCO_REFS.findIndex((r) => r[0] === lab[0] && r[1] === lab[1] && r[2] === lab[2]);
 const pct = (a: number, b: number) => `${((a / Math.max(1, b)) * 100).toFixed(1)}%`;
@@ -34,10 +51,35 @@ it("ArUco の総合評価", async () => {
   };
 
   if (parts.includes("A")) {
-    const scenes = makeScenes(Number(process.env.N ?? 20));
+    const scenes = makeScenes(Number(process.env.N ?? 20), process.env.PITCHES ? process.env.PITCHES.split(",").map(Number) : undefined);
     for (const key of designs) {
       const design = designOf(key);
-      for (const thorough of [false, true]) {
+      // 場面の画像。H264= なら 1 場面ずつ、雑音だけ変えた REPEAT 枚を 60fps の H.264 に圧縮して戻し、最後の 1 枚を読む（止まった
+      // キューブを撮り続けたときの画質。最初の 1 枚は圧縮の立ち上がりで粗い）
+      const REPEAT = 8;
+      const frames = scenes.map((sc, si) => {
+        const img = renderArucoCube(cv, { width: W, height: H, stickers: sc.st, orient: sc.orient, eye: sc.eye, noise: 2.5, seed: si + 1, scheme: "unique54", design, fingers: sc.fingers, shake: sc.shake || undefined });
+        if (!process.env.H264) return img;
+        let z = si * 7919 + 13;
+        const rnd = () => (z = (z * 1664525 + 1013904223) >>> 0) / 4294967296;
+        const seq = Array.from({ length: REPEAT }, (_, k) => {
+          if (!k) return img;
+          const d = new Uint8ClampedArray(img.data);
+          for (let i = 0; i < d.length; i++) if ((i & 3) !== 3) d[i] += (rnd() + rnd() + rnd() - 1.5) * 4;
+          return { ...img, data: d };
+        });
+        return h264(seq, Number(process.env.H264))[REPEAT - 1];
+      });
+      const app = stickerPipeline(stickersOf(key));
+      const cfgs = process.env.OLD
+        ? [false, true].map((thorough) => ({ name: thorough ? "精密" : "ライブ", cfg: { ...DEFAULT_PIPELINE, arucoDesign: key, arucoThorough: thorough } }))
+        : [
+            { name: "ライブ", cfg: { ...DEFAULT_PIPELINE, ...app, arucoRegion: true, arucoTrack: true, arucoTurn: false, arucoGrid: true, arucoColorFill: false } },
+            { name: "精密", cfg: { ...DEFAULT_PIPELINE, ...REFINE_PIPELINE, ...app, arucoThorough: true, arucoRegion: true } },
+          ];
+      for (const { name, cfg } of cfgs) {
+        const thorough = name === "精密";
+        let ms = 0;
         type Tally = { n: number; ok: number; bad: number };
         const cats = new Map<string, Tally>();
         const add = (k: string, ok: boolean, bad: boolean) => {
@@ -48,8 +90,10 @@ it("ArUco の総合評価", async () => {
           cats.set(k, t);
         };
         for (const [si, sc] of scenes.entries()) {
-          const img = renderArucoCube(cv, { width: W, height: H, stickers: sc.st, orient: sc.orient, eye: sc.eye, noise: 2.5, seed: si + 1, scheme: "unique54", design, fingers: sc.fingers, shake: sc.shake || undefined });
-          const r = processFrame(cv, img, 0, { ...DEFAULT_PIPELINE, arucoDesign: key, arucoThorough: thorough, ...JSON.parse((thorough ? process.env.EXTRA_REFINE : process.env.EXTRA_LIVE) ?? "{}") }, {});
+          const img = frames[si];
+          const t0 = performance.now();
+          const r = processFrame(cv, img, 0, { ...cfg, ...JSON.parse((thorough ? process.env.EXTRA_REFINE : process.env.EXTRA_LIVE) ?? "{}") }, {});
+          ms += performance.now() - t0;
           // 読んだマス → そのマスの中心が入る本当のマス
           const read = new Map<number, number>();
           for (const f of r.faces)
@@ -71,7 +115,8 @@ it("ArUco の総合評価", async () => {
             if (c.occluded === 0 && sc.shake === 0) add(`指なし・ぶれなし 間隔 ${sc.pitch}px`, ok, bad);
           }
         }
-        for (const [k, t] of cats) log(`A ${key} ${thorough ? "精密" : "ライブ"} ${k}: 色が正しいマス ${pct(t.ok, t.n)}・誤り ${pct(t.bad, t.n)}（${t.n}）`);
+        for (const [k, t] of cats) log(`A ${key} ${name} ${k}: 色が正しいマス ${pct(t.ok, t.n)}・誤り ${pct(t.bad, t.n)}（${t.n}）`);
+        log(`A ${key} ${name} 1 フレーム ${(ms / scenes.length).toFixed(1)}ms（前のフレームなし: 検出 + 格子）`);
       }
     }
   }

@@ -1,6 +1,6 @@
 // 認識 Worker のクライアント。空いているときだけ最新フレームを送る（詰まったら間引く）。
 import { markerSize, stickerScheme } from "../aruco/codes";
-import { STICKERS, designOf } from "../aruco/design";
+import { STICKERS, designOf, stickerPipeline } from "../aruco/design";
 import type { EngineOptions, TrackUpdate } from "../track/engine";
 import type { Lab } from "./color";
 import type { PipelineConfig } from "./pipeline";
@@ -24,7 +24,8 @@ const MAX_INFLIGHT_EACH = 2; // Worker 2 つのとき、それぞれに送って
 
 // 本体のステッカー（3×3 の符号を 4 個）は専用の検出（src/aruco/quadDetect.ts）で読むので、認識の Worker は OpenCV を読み込まない
 // （約 4MB の読み込みと、Worker 1 個あたり 134MB のヒープがいらない。src/vision/arucoFrame.ts の usesQuad と同じ条件）
-const NEEDS_OPENCV = !(markerSize(stickerScheme(STICKERS.stickers)) === 3 && designOf(STICKERS.arucoDesign).at.length === 4);
+// 1 個の配置（?stickers=standard）も専用の検出で読む（stickerPipeline の arucoQuad）
+const NEEDS_OPENCV = !(markerSize(stickerScheme(STICKERS.stickers)) === 3 && (designOf(STICKERS.arucoDesign).at.length === 4 || !!stickerPipeline(STICKERS).arucoQuad));
 
 // Worker に処理の様子（累計）を聞く（src/app/perfLog.ts）。忙しくて 900ms 以内に答えなければ null
 const perfAsks = new Map<number, (p: WorkerPerf | null) => void>();

@@ -6,7 +6,8 @@
 // - 実機の録画を x264 と比べる物差し（readStats）: 1 フレームに読めたマス・ピース、確かな読みのない区間、実際の fps・抜け
 import { spawn, spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { MOVE_NAMES } from "../../../src/cube/model";
+import { type CubeState, MOVE_NAMES, VIEW, applyMoves } from "../../../src/cube/model";
+import { stickerIds } from "../../../src/cube/stickers";
 import { buildSights } from "../../../src/track/pieces/decode";
 import { PIECE_OF } from "../../../src/track/pieces/model";
 import { CENTER_SLOT, bitsOf, buildTable } from "../../../src/track/pieces/table";
@@ -35,7 +36,8 @@ export interface ExportMeta {
     waitMs?: number; // 止めてから解析の結果が出るまで（2026-11-27 から）
     solveLoad?: string; // URL の ?solveload=
   };
-  solve?: { timeMs: number; edges?: unknown; analysis?: string; refineMethod?: string; moves?: unknown[] };
+  solve?: { timeMs: number; edges?: unknown; analysis?: string; refineMethod?: string; moves?: unknown[]; stickers?: string };
+  stickers?: string; // ステッカーのマーカーの配置（2026-11-28 から。なければ精密解析の入力の pipeline.arucoDesign、それもなければ quad-half）
   perf?: import("../../../src/app/perfLog").PerfRow[]; // 1 秒ごとの処理の様子（2026-11-27 から）
   rests?: import("../../../src/app/liveRest").RestSpan[]; // 止めた後にライブが休んだ区間
   framePath?: { live: string; liveNote: string | null; liveWaits?: number; liveWaitNote?: string | null; recorder: string; recorderNote: string | null; recorderWaits?: number; recorderWaitNote?: string | null; requested: boolean }; // カメラのフレームの渡し方（waits: 一時的に渡さなかった回数）
@@ -171,19 +173,68 @@ export interface StatFrame {
   t: number;
   cells: number; // ID が読めたマス
   pieces: number; // ID が読めたピース（同じピースのステッカーは 1 つ）
+  faceless?: boolean; // 面が 1 つも組めなかった
+  faceCells?: number; // 組めた面のマス（9 × 面の数）
+  masked?: number; // そのうち指で隠れたマス（DetectedFace.masked）
+  reads?: number[]; // ID が読めたマス: [slot * 9 + cell, id] の並び（誤読の物差し: misreadOf）
 }
 
-export function statFrame(t: number, faces: { ids?: number[] }[]): StatFrame {
+export function statFrame(t: number, faces: { slot?: number; ids?: number[]; masked?: boolean[] }[]): StatFrame {
   const seen = new Set<number>();
   let cells = 0;
-  for (const f of faces)
-    for (const id of f.ids ?? []) {
-      if (id < 0) continue;
+  let masked = 0;
+  const reads: number[] = [];
+  for (const f of faces) {
+    (f.ids ?? []).forEach((id, cell) => {
+      if (id < 0) return;
       cells++;
       const p = PIECE_OF[id];
       seen.add(p >= 0 ? p : 100 + Math.floor(id / 9)); // センターは面ごと
+      if (f.slot !== undefined) reads.push(f.slot * 9 + cell, id);
+    });
+    masked += f.masked?.filter(Boolean).length ?? 0;
+  }
+  return { t, cells, pieces: seen.size, faceless: !faces.length, faceCells: faces.length * 9, masked, reads };
+}
+
+// 誤読の物差し（実機の録画には正解がないので、精密解析の答えを正解の代わりにする）: 手を回していない（回し始めの 80ms 前〜回し終わりの
+// 80ms 後に入らない）フレームで、答えの状態のステッカーの並びと、読みにいちばん合うキューブの向き（24 通り）で照らし、合わない読みの割合。
+// 読みが 6 つ未満・いちばん合う向きでも 6 割合わない（答えが外れている・持ち替え中）フレームは数えない。答えの手の時刻のずれ・
+// 答えの間違いも入るので、誤読の上限の目安
+export interface Truth {
+  state: ArrayLike<number>; // 範囲の始まりの状態（色）
+  moves: { move: number; start: number; end: number }[];
+}
+export function misreadOf(frames: StatFrame[], truth: Truth, range: [number, number]): { rate: number; reads: number; frames: number } {
+  const moves = [...truth.moves].sort((a, b) => a.end - b.end);
+  let state: CubeState = Uint8Array.from(truth.state);
+  let k = 0;
+  let ids = stickerIds(state);
+  let bad = 0;
+  let total = 0;
+  let used = 0;
+  for (const f of [...frames].sort((a, b) => a.t - b.t)) {
+    if (f.t < range[0] - 1000 || f.t > range[1] + 1000 || !f.reads || f.reads.length < 12) continue;
+    let moved = false;
+    while (k < moves.length && moves[k].end < f.t) {
+      state = applyMoves(state, [moves[k++].move]);
+      moved = true;
     }
-  return { t, cells, pieces: seen.size };
+    if (moved) ids = stickerIds(state);
+    if (moves.some((m) => f.t >= m.start - 80 && f.t <= m.end + 80)) continue;
+    const n = f.reads.length / 2;
+    let best = 0;
+    for (let o = 0; o < 24; o++) {
+      let ok = 0;
+      for (let i = 0; i < f.reads.length; i += 2) if (ids[VIEW[o * 54 + f.reads[i]]] === f.reads[i + 1]) ok++;
+      if (ok > best) best = ok;
+    }
+    if (best < n * 0.6) continue;
+    bad += n - best;
+    total += n;
+    used++;
+  }
+  return { rate: total ? bad / total : 0, reads: total, frames: used };
 }
 
 // 確かな読み（src/track/pieces/solve.ts の strongOf と同じ決め方: 置き方が推測に頼らないまとまりで、続いた読みの重みが bitsOf(0.02) 以上。
@@ -230,9 +281,13 @@ export interface ReadStats {
   gapSec: number; // 0.5 秒より長い区間の合計（秒）
   sure1Sec: number; // 置き方の決まった面の確かな読みだけで数えた 1 秒より長い区間の合計（秒。センター 1 つの面を数えない）
   sureLongest: number;
+  faceless: number; // 精密に処理したフレームのうち面が 1 つも組めなかった割合
+  masked: number; // 組めた面のマスのうち指で隠れた割合
+  misread?: number; // 誤読の割合（misreadOf。truth を渡したときだけ）
+  misreadReads?: number; // 照らした読みの数
 }
 
-export function readStats(range: [number, number], timesMs: number[], frames: StatFrame[], sights: SightFrame[]): ReadStats {
+export function readStats(range: [number, number], timesMs: number[], frames: StatFrame[], sights: SightFrame[], truth?: Truth): ReadStats {
   const [r0, r1] = range;
   const ts = timesMs.filter((t) => t >= r0 && t <= r1);
   const dts: number[] = [];
@@ -281,5 +336,13 @@ export function readStats(range: [number, number], timesMs: number[], frames: St
     gapSec: sec(g05.reduce((a, b) => a + b, 0)),
     sure1Sec: sec(sureGaps.filter((g) => g > 1000).reduce((a, b) => a + b, 0)),
     sureLongest: sec(Math.max(0, ...sureGaps)),
+    faceless: fr.length ? Math.round((fr.filter((f) => f.faceless).length / fr.length) * 1000) / 1000 : 0,
+    masked: Math.round((fr.reduce((n, f) => n + (f.masked ?? 0), 0) / Math.max(1, fr.reduce((n, f) => n + (f.faceCells ?? 0), 0))) * 1000) / 1000,
+    ...(truth ? (({ rate, reads }) => ({ misread: Math.round(rate * 10000) / 10000, misreadReads: reads }))(misreadOf(fr, truth, range)) : {}),
   };
+}
+
+// 書き出しを撮ったときのステッカーのマーカーの配置（?stickers=）。古い書き出しは精密解析の入力の pipeline から、それもなければ既定
+export function exportLayout(meta: { stickers?: string; analysis?: { input?: { pipeline?: { arucoDesign?: string } } } }): string {
+  return meta.stickers ?? meta.analysis?.input?.pipeline?.arucoDesign ?? "quad-half";
 }

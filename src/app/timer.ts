@@ -6,6 +6,7 @@
 import { cfopSplits } from "../cube/analysis";
 import { type CubeState, MOVE_NAMES, applyMoves, invertMoves, isSolved, moveFace, movesToString, parseMoves, relativeMove, rotateOrientation, solvedState, statesEqual } from "../cube/model";
 import { randomScramble, solveBetween, solveState } from "../cube/solver";
+import { STICKERS } from "../aruco/design";
 import { StartDetector } from "./startDetect";
 import { StopDetector } from "./stopDetect";
 import { PadState, onPadEvent, padConnected } from "./ganTimer";
@@ -317,6 +318,7 @@ function finish(u: TrackUpdate | null, how: StopReason, lookT?: number, pad?: Pa
     poses: posesOf(s.startT, endT),
     edges: { ...(startWhy ? { start: startWhy } : {}), stop: how === "look" || how === "tracked" ? (stopDetector.why ?? { how: how === "look" ? "ids" : "tracked" }) : { how } },
     ...(analyze ? { analysis: "pending" as const, provisionalMs: timeMs } : {}),
+    stickers: STICKERS.arucoDesign,
   };
   const solves = [solve, ...s.solves];
   saveSolves(solves);
@@ -493,6 +495,7 @@ export function addVideoSolve(result: RefineResult, scramble: number[]): { solve
     analysis: "done",
     video: true,
     ...(result.method ? { refineMethod: result.method } : {}),
+    stickers: STICKERS.arucoDesign,
   };
   const solves = [solve, ...timerStore.get().solves];
   saveSolves(solves);

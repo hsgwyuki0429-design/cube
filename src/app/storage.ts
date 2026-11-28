@@ -34,6 +34,8 @@ export interface Solve {
   // 回し終わり）・lead = 手を離してから回し始めるまで・tail = 回し終えてから手を置くまで（解析で両端が決まったときだけ）
   pad?: { ms: number; visionMs?: number; lead?: number; tail?: number };
   refineMethod?: string; // 精密解析の解き直しの方法（pieces = ピースの時刻表。試験中の比較用）
+  // 撮ったときのステッカーのマーカーの配置（src/aruco/design.ts の STICKERS。URL の ?stickers=）。ないのは配置を残す前の記録で quad-half
+  stickers?: "quad-half" | "standard";
   // リアルタイムのタイマーが始めた・止めた理由（src/app/startDetect.ts・stopDetect.ts）。調べるとき用で、画面には出さない
   edges?: { start?: StartWhy; stop?: StopWhy };
 }
