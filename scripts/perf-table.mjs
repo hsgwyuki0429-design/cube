@@ -7,7 +7,7 @@ import { readFileSync } from "node:fs";
 const rows = readFileSync(process.argv[2], "utf8").trim().split("\n").map((l) => JSON.parse(l));
 const groups = new Map();
 for (const r of rows) {
-  const key = (r.query.match(/solveload=([^&]*)/)?.[1] ?? "full") || "full";
+  const key = (r.query.match(/solveload=([^&]*)/)?.[1] ?? "") || "既定";
   if (!groups.has(key)) groups.set(key, []);
   groups.get(key).push(r);
 }

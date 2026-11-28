@@ -13,7 +13,8 @@ export interface PerfRow {
   msgMs: number; // 認識の結果を受けた処理（ストア・3D・画面）の合計（ms）
   sent: number; // ライブの主の Worker に送った
   sentHelper: number; // 補助の Worker に送った
-  full: number; // 結果待ちが上限で送れなかった（または休んでいた）
+  full: number; // 結果待ちが上限で送れなかった
+  rest: number; // 止めた後の精密解析の間、ライブが休んでいて送らなかった（src/app/liveRest.ts）
   live: number; // 主の Worker が認識した
   helper: number; // 補助の Worker が認識した
   skipped: number; // Worker が待っている中から選ばずに捨てた
@@ -39,10 +40,12 @@ export interface WorkerPerf {
 const KEEP_ROWS = 360;
 
 type Counters = Omit<PerfRow, "t" | "phase" | "liveBusy" | "helperBusy" | "refineBusy" | "behind" | "refine" | "decoded" | "live" | "helper">;
-const zero = (): Counters => ({ cam: 0, raf: 0, lag: 0, mainMs: 0, msgMs: 0, sent: 0, sentHelper: 0, full: 0, skipped: 0, rec: 0, recDropped: 0, recMs: 0, recQueue: 0 });
+const zero = (): Counters => ({ cam: 0, raf: 0, lag: 0, mainMs: 0, msgMs: 0, sent: 0, sentHelper: 0, full: 0, rest: 0, skipped: 0, rec: 0, recDropped: 0, recMs: 0, recQueue: 0 });
 
 export class PerfLog {
   rows: PerfRow[] = [];
+  // 止めた後にライブが休んだ区間（src/app/liveRest.ts の spans を指す）
+  rests: import("./liveRest").RestSpan[] = [];
   private c: Counters = zero();
   private t0 = 0;
   private lastTick = 0;
@@ -78,7 +81,7 @@ export class PerfLog {
     this.timer = 0;
   }
 
-  count(key: "cam" | "sent" | "sentHelper" | "full" | "skipped" | "rec" | "recDropped", n = 1): void {
+  count(key: "cam" | "sent" | "sentHelper" | "full" | "rest" | "skipped" | "rec" | "recDropped", n = 1): void {
     this.c[key] += n;
   }
   addMs(key: "mainMs" | "msgMs" | "recMs", ms: number): void {
@@ -149,7 +152,7 @@ export function summarizePerf(rows: PerfRow[]): string {
   const f = (x: number, d = 1) => x.toFixed(d);
   return (
     `${n} 秒: カメラ ${f(avg("cam"))}fps・画面 ${f(avg("raf"))}・メインの遅れ 最大 ${f(max("lag"), 0)}ms・メイン 送る+録画 ${f(avg("mainMs"), 0)}ms/秒（うち録画 ${f(avg("recMs"), 0)}）・結果の処理 ${f(avg("msgMs"), 0)}ms/秒` +
-    ` | ライブ 送った ${f(avg("sent"))}+補助 ${f(avg("sentHelper"))}・送れない ${f(avg("full"))}・認識 主 ${f(avg("live"))} 補助 ${f(avg("helper"))}・捨てた ${f(avg("skipped"))}・忙しさ 主 ${f(avg("liveBusy") * 100, 0)}% 補助 ${f(avg("helperBusy") * 100, 0)}%` +
+    ` | ライブ 送った ${f(avg("sent"))}+補助 ${f(avg("sentHelper"))}・送れない ${f(avg("full"))}・休み ${f(avg("rest"))}・認識 主 ${f(avg("live"))} 補助 ${f(avg("helper"))}・捨てた ${f(avg("skipped"))}・忙しさ 主 ${f(avg("liveBusy") * 100, 0)}% 補助 ${f(avg("helperBusy") * 100, 0)}%` +
     ` | 録画 ${f(avg("rec"))}・間引き ${f(avg("recDropped"))}・待ち 最大 ${f(max("recQueue"), 0)}` +
     ` | 精密解析 処理 ${f(avg("refine"))}・復号 ${f(avg("decoded"))}・忙しさ ${f(avg("refineBusy") * 100, 0)}%・遅れ 最大 ${f(max("behind") / 1000, 1)} 秒`
   );

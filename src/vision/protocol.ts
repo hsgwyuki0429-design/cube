@@ -92,6 +92,8 @@ export type FromWorker =
   | { type: "track-snapshot"; id: number; track: TrackUpdate | null }
   | { type: "live-log"; id: number; log: unknown }
   | { type: "perf"; id: number; perf: import("../app/perfLog").WorkerPerf }
+  // 受け取った VideoFrame を描けなかった（そのフレームは frame-skipped も送る。本体は以後 VideoFrame を使わない）
+  | { type: "vframe-failed"; message: string }
   | { type: "refine-progress"; id: number; done: number; total: number }
   | { type: "refine-phase"; id: number; phase: "flush" | "decode" | "timing" }
   | { type: "refine-result"; id: number; result: RefineResult }

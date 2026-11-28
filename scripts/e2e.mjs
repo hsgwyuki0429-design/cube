@@ -10,6 +10,8 @@
 //   E2E_MODE=timer E2E_FAKECAM=動画.y4m E2E_SCRAMBLE='R2 B2 …'（デモの合成カメラの代わりに、偽のカメラ（Chromium の
 //   --use-file-for-fake-video-capture）で 60fps の合成動画を流す: tests/debug/fakeCamVideo.debug.test.ts。E2E_CORES=4 で Chromium を CPU 4 つに絞る。
 //   E2E_PERF=rows.jsonl で 1 秒ごとの処理の様子を足す。ソルブ中の重さの配り方は E2E_QUERY='&solveload=pause' など）
+//   E2E_MODE=timer E2E_NEXT=1（止めた後、精密解析の間にライブが休み始めたら「次のソルブ」を押し、合成キューブで案内どおりに崩す。
+//   休みが「次のソルブ」で解け、案内が最後まで進んでインスペクションになれば OK: src/app/liveRest.ts。デモの合成カメラのときだけ）
 //   E2E_MODE=timer E2E_LIVELOG=フォルダ（「ライブの記録を書き出す」を押して保存する。手元の tests/debug/liveLog.debug.test.ts で通し直す）
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync } from "node:fs";
@@ -169,6 +171,37 @@ try {
       }
       await page.screenshot({ path: `${OUT}/seed${seed}-timer-done.png` });
       const live = await page.evaluate(() => window.__cubevisionTimer.get().result);
+      // E2E_NEXT=1: 休み中に「次のソルブ」を押して崩す（解析の結果は待たない）
+      if (process.env.E2E_NEXT && !FAKECAM) {
+        const rested = await page.waitForFunction(() => window.__cubevision.liveRest.resting, null, { timeout: 15000, polling: 50 }).then(() => true).catch(() => false);
+        const pendingAtNext = await page.evaluate(() => window.__cubevisionTimer.get().result?.analysis === "pending");
+        await page.evaluate(() => window.__cubevisionNewScramble());
+        const t1 = Date.now();
+        let turns = 0;
+        while (Date.now() - t1 < 90000) {
+          const st = await page.evaluate(() => window.__cubevisionTimer.get().phase);
+          if (st === "inspection") break;
+          const m = await page.evaluate(() => (window.__cubevisionTimer.get().recomputing ? null : window.__cubevisionNextGuideMove()));
+          if (m === null || m === undefined) {
+            await page.waitForTimeout(200);
+            continue;
+          }
+          const before = await page.evaluate(() => { const t = window.__cubevisionTimer.get(); return `${t.guideDone}:${t.guideHalf}:${t.guideFix?.join(",")}`; });
+          await page.evaluate((mv) => window.__cubevision.synthetic.move(mv, 250), m);
+          turns++;
+          await page.waitForFunction((b) => { const t = window.__cubevisionTimer.get(); return t.phase !== "scrambling" || `${t.guideDone}:${t.guideHalf}:${t.guideFix?.join(",")}` !== b; }, before, { timeout: 3000, polling: 50 }).catch(() => undefined);
+          await page.waitForTimeout(250);
+        }
+        const nx = await page.evaluate(() => ({ phase: window.__cubevisionTimer.get().phase, guide: window.__cubevisionTimer.get().guide.length, done: window.__cubevisionTimer.get().guideDone, rests: window.__cubevision.perf.rests.map((r) => ({ ...r })) }));
+        const last = nx.rests[nx.rests.length - 1];
+        const okNext = rested && last?.why === "next" && nx.phase === "inspection";
+        console.log(`  次のソルブ（休み中）: ${okNext ? "OK" : "NG"} 休み ${rested ? "あり" : "なし"}・押したとき解析 ${pendingAtNext ? "中" : "済み"}・休みの終わり ${last ? `${last.why}（${((last.t1 - last.t0) / 1000).toFixed(1)} 秒）` : "-"}・案内 ${nx.done}/${nx.guide}・${turns} 手回して ${nx.phase}`);
+        if (!okNext) failures++;
+        await page.waitForFunction((id) => window.__cubevisionTimer.get().solves.find((x) => x.id === id)?.analysis !== "pending", live?.id, { timeout: 240000, polling: 500 }).catch(() => undefined);
+        console.log(`  前のソルブの解析: ${await page.evaluate((id) => window.__cubevisionTimer.get().solves.find((x) => x.id === id)?.analysis, live?.id)}（live ${(live?.timeMs / 1000).toFixed(3)}s）`);
+        await page.close();
+        continue;
+      }
       // 録画の精密解析が終わるまで待つ（止めてから確定するまでの時間も出す）
       const waitFrom = Date.now();
       await page.waitForFunction(() => window.__cubevisionTimer.get().result?.analysis !== "pending", null, { timeout: 240000, polling: 500 }).catch(() => undefined);
@@ -193,12 +226,12 @@ try {
         const t = window.__cubevisionTimer.get();
         const end = t.startT + (t.result?.provisionalMs ?? t.result?.timeMs ?? 0);
         const now = performance.now();
-        return { inspect: c.perfSummary(t.inspectionStart, t.startT), solve: c.perfSummary(t.startT, end), after: c.perfSummary(end, now), rows: c.perf.rows.filter((r) => r.t >= t.inspectionStart - 2000) };
+        return { inspect: c.perfSummary(t.inspectionStart, t.startT), solve: c.perfSummary(t.startT, end), after: c.perfSummary(end, now), rows: c.perf.rows.filter((r) => r.t >= t.inspectionStart - 2000), rests: c.perf.rests.map((r) => ({ ...r })), framePath: c.framePath() };
       });
-      console.log(`  perf インスペクション: ${perf.inspect}\n  perf ソルブ: ${perf.solve}\n  perf 止めた後〜解析: ${perf.after}`);
+      console.log(`  perf インスペクション: ${perf.inspect}\n  perf ソルブ: ${perf.solve}\n  perf 止めた後〜解析: ${perf.after}\n  フレームの渡し方 ${JSON.stringify(perf.framePath)}・ライブの休み ${perf.rests.map((r) => `${r.t1 !== undefined ? ((r.t1 - r.t0) / 1000).toFixed(1) : "?"} 秒（${r.why ?? "続いている"}）`).join("・") || "なし"}`);
       if (process.env.E2E_PERF) {
         const { appendFileSync } = await import("node:fs");
-        appendFileSync(process.env.E2E_PERF, `${JSON.stringify({ seed, query: process.env.E2E_QUERY ?? "", waitMs: Date.now() - waitFrom, analysis: r.result?.analysis, method: r.result?.refineMethod, inferred: r.result?.moves.filter((m) => m.inferred).length, moves: n, processed: r.processed, rec: r.rec, rows: perf.rows, startT: r.startT, inspectionStart: r.inspectionStart, live: live?.timeMs })}\n`);
+        appendFileSync(process.env.E2E_PERF, `${JSON.stringify({ seed, query: process.env.E2E_QUERY ?? "", waitMs: Date.now() - waitFrom, analysis: r.result?.analysis, method: r.result?.refineMethod, inferred: r.result?.moves.filter((m) => m.inferred).length, moves: n, processed: r.processed, rec: r.rec, rows: perf.rows, rests: perf.rests, framePath: perf.framePath, startT: r.startT, inspectionStart: r.inspectionStart, live: live?.timeMs })}\n`);
       }
       const advice = await page.evaluate(() => window.__adviceLog ?? []);
       const byPhase = {};

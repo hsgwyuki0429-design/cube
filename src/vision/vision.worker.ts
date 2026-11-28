@@ -227,7 +227,11 @@ function runFrames(): void {
 function motionOf(bitmap: ImageBitmap | VideoFrame): number {
   if (!thumbCtx) thumbCtx = new OffscreenCanvas(THUMB_W, THUMB_H).getContext("2d", { willReadFrequently: true });
   if (!thumbCtx) return 0;
-  thumbCtx.drawImage(bitmap, 0, 0, THUMB_W, THUMB_H);
+  try {
+    thumbCtx.drawImage(bitmap, 0, 0, THUMB_W, THUMB_H);
+  } catch {
+    return 0; // 描けない VideoFrame（processLiveFrame が本体に知らせる）
+  }
   const d = thumbCtx.getImageData(0, 0, THUMB_W, THUMB_H).data;
   const prev = lastThumb;
   lastThumb = d;
@@ -321,7 +325,19 @@ function processLiveFrame(msg: QueuedFrame): void {
   const w = msg.w ?? (bitmap as ImageBitmap).width;
   const h = msg.h ?? (bitmap as ImageBitmap).height;
   if (!ctx || ctx.canvas.width !== w || ctx.canvas.height !== h) ctx = new OffscreenCanvas(w, h).getContext("2d", { willReadFrequently: true });
-  ctx!.drawImage(bitmap, 0, 0, w, h);
+  try {
+    ctx!.drawImage(bitmap, 0, 0, w, h);
+  } catch (e) {
+    // VideoFrame を描けない端末: 本体に知らせて今までのやり方に戻してもらう（このフレームは処理しなかったとして返す）
+    bitmap.close();
+    if (typeof VideoFrame !== "undefined" && bitmap instanceof VideoFrame) {
+      post({ type: "vframe-failed", message: String(e) });
+      post({ type: "frame-skipped", id: msg.id, seq: msg.seq });
+      if (!msg.helper && msg.seq !== undefined) skipSeq(msg.seq);
+      return;
+    }
+    throw e;
+  }
   bitmap.close();
   const img = ctx!.getImageData(0, 0, w, h);
   const result: FrameResult = cv || !wantCv ? processFrame(cv as CV, img, msg.t, focus?.length ? { ...config, focus } : config, memory) : { faces: [], quads: [] };

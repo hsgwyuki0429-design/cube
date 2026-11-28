@@ -74,6 +74,8 @@ window.__cubevisionTimer = timerStore;
 import("./app/captureGuide").then((m) => ((window as unknown as { __cubevisionAdvice?: unknown }).__cubevisionAdvice = m.adviceStore));
 // E2E（偽のカメラの動画: scripts/e2e.mjs の E2E_FAKECAM）から次のスクランブルを出す
 (window as unknown as { __cubevisionNewScramble?: () => Promise<void> }).__cubevisionNewScramble = () => import("./app/timer").then((m) => m.newScramble());
+// E2E（休み中の次のソルブ: scripts/e2e.mjs の E2E_NEXT）が案内どおりに崩すため
+(window as unknown as { __cubevisionNextGuideMove?: () => Promise<number | null> }).__cubevisionNextGuideMove = () => import("./app/timer").then((m) => m.nextGuideMove(m.timerStore.get()));
 
 const params = new URLSearchParams(location.search);
 if (params.has("demo")) {

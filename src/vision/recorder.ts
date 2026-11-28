@@ -102,7 +102,8 @@ export class FrameRecorder {
   recording = false;
   dropped = 0;
   onQueue: ((n: number) => void) | null = null;
-  videoFrames = false; // カメラのフレームをそのまま圧縮に渡す（?solveload=vframe） // 調査用（src/app/perfLog.ts）: 足すときの圧縮の待ち
+  videoFrames = false; // カメラのフレームをそのまま圧縮に渡す（既定。?solveload=default で使わない。作れなければ自動で戻す）
+  videoFrameNote: string | null = null; // VideoFrame をやめた理由（調査用） // 調査用（src/app/perfLog.ts）: 足すときの圧縮の待ち
   frames = 0;
   bitrate = 0; // いまの録画の圧縮の強さ（調査用）
   private lastDrop = -Infinity;
@@ -217,9 +218,21 @@ export class FrameRecorder {
     }
     if (this.encoder.encodeQueueSize > 3) this.lastDrop = t; // 詰まり始めた
     // ?solveload=vframe: 大きさが同じなら、カメラのフレームをそのまま圧縮に渡す（canvas に描かない）
-    const direct = this.videoFrames && video.videoWidth === this.width && video.videoHeight === this.height;
-    if (!direct) this.ctx.drawImage(video, 0, 0, this.width, this.height);
-    const frame = direct ? new VideoFrame(video, { timestamp: Math.round(t * 1000) }) : new VideoFrame(this.canvas!, { timestamp: Math.round(t * 1000) });
+    let frame: VideoFrame | null = null;
+    if (this.videoFrames && video.videoWidth === this.width && video.videoHeight === this.height) {
+      try {
+        frame = new VideoFrame(video, { timestamp: Math.round(t * 1000) });
+      } catch (e) {
+        // 作れない端末: 今までのやり方（canvas に描く）に戻す
+        this.videoFrames = false;
+        this.videoFrameNote = `作れない: ${String(e)}`;
+        console.warn("録画: VideoFrame を使わずに描きます:", e);
+      }
+    }
+    if (!frame) {
+      this.ctx.drawImage(video, 0, 0, this.width, this.height);
+      frame = new VideoFrame(this.canvas!, { timestamp: Math.round(t * 1000) });
+    }
     const keyFrame = t - this.lastKey > 1000;
     if (keyFrame) this.lastKey = t;
     this.encoder.encode(frame, { keyFrame });
