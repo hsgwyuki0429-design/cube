@@ -26,12 +26,12 @@
 **認識は ArUco マーカー専用。** マーカーの ID から色（センターの面）が決まるので、揃ったキューブならスキャンなしで始められる。
 普通の色のステッカー・ステッカーレス・手の検出（MediaPipe）は削除した。
 
-- **ステッカーは既定で 1 種類**（`STICKERS`、`src/aruco/design.ts`。設定の画面では選ばない）: 自作 3×3 の 54 種類 `unique54`（マスごとに違う。
+- **ステッカーは既定で 4 個の配置**（`STICKERS`、`src/aruco/design.ts`）: 自作 3×3 の 54 種類 `unique54`（マスごとに違う。
   ID = facelet 番号で向きも決めて貼る。1 枚の ID と向きから面の真ん中が分かる `centerOffset`）のマーカーを、幅 1/2 で 2×2 に 4 個
   （`quad-half`。同じ ID・同じ向き）。印刷用 PDF は `docs/stickers/cubevision_unique54_designs.pdf` の 5 ページ目
   （`node scripts/aruco-stickers.mjs designs`）。4 個は指に強く、ぶれ・遠さに弱い。デモ・E2E の合成キューブもこれを描く
-- **比べる用に 1 個の配置**（`standard`。1 枚に大きいマーカー 1 個・PDF の 2 ページ目 16mm）を URL の **`?stickers=standard`** で選べる
-  （`stickersFromQuery`。下の「認識」の「配置の切り替え」）。**既定は変えない**（実機で比べてから決める: `docs/roadmap.md` の「マーカーの配置」）
+- **1 個の配置**（`standard`。1 枚に大きいマーカー 1 個・PDF の 2 ページ目 16mm）を**設定の画面の「ステッカー」**か URL の **`?stickers=standard`**
+  で選べる（下の「認識」の「配置の切り替え」）。**既定は 4 個のまま**（実機で比べてから決める: `docs/roadmap.md` の「マーカーの配置」）
 - 認識の部品（`src/aruco/`）はほかの符号（`aruco12`・`aruco`）と配置（1 個 `standard` など）も扱える（`PipelineConfig.stickers`・
   `arucoDesign`。テスト・ArUco の画面のテストモード・比較用）
 - **検出は専用の検出器**（`src/aruco/quadDetect.ts`。二値化は WASM SIMD `src/aruco/threshWasm.ts`、同じ結果の JS もある）。認識の Worker は
@@ -205,7 +205,9 @@ facelet の直接置換テーブルを手書きすると必ず間違える。**3
   決まる置き方に合わないフレームは、ライブの追跡に「何も見えなかった」として渡す。見え方は `src/track/sight.ts`）
 - 読み直し（`src/aruco/reread.ts`、`arucoReread`）はライブ・精密解析とも使わない
 
-**配置の切り替え**（`?stickers=standard`。既定は `quad-half`）: `STICKERS`（URL から。Worker は受け取った `PipelineConfig.arucoDesign` を使う）→
+**配置の切り替え**（設定の「ステッカー」= `Settings.stickerLayout`、または `?stickers=standard`。既定は `quad-half`）: `STICKERS` は起動したときに
+決まる（`stickersAtStart`: URL が優先、なければ設定。設定の画面で変えたら保存して `?stickers=` を外して読み込み直す。解析中のソルブがあれば
+確かめてから。Worker は受け取った `PipelineConfig.arucoDesign` を使う）→
 `stickerPipeline`（認識の設定。1 個の配置も専用の検出: `arucoQuad: true`。`arucoQuad` を省いたときの既定 `usesQuad` は変えないので、配置だけを
 指定したテスト・比較は今まで通り OpenCV）→ `controller.pipelineConfig` を通るので、ライブ・精密解析・スキャン・開始と停止の判定・動画ファイルの
 解析が同じ配置。デモの合成キューブも `STICKERS` を描く（E2E は `E2E_QUERY='&stickers=standard'`、偽のカメラの動画は `FAKE_DESIGN=standard`）。
@@ -423,7 +425,7 @@ facelet の直接置換テーブルを手書きすると必ず間違える。**3
 - **データ**（`DataScreen.tsx`・`charts.tsx`）・**記録の詳しい画面**（`SolveDetail.tsx`。リプレイは実際と同じ速さ・見え方 3 通り・
   次の F2L を光らせる: `src/cube/f2l.ts`。X クロスの最短: `src/cube/xcross.ts`）
 - **解析**（`AnalyzeScreen.tsx`）は下のバーから外した。開発用に `#aruco`・`aruco.html`・`store` の `screen: "analyze"` から開く
-- **設定**（`SettingsPage.tsx`）はカメラ・表示・タイマーの好みだけ。性能に関わる値（鏡像・持ち方基準の向き・解像度・fps・精密解析・
+- **設定**（`SettingsPage.tsx`）はカメラ（使うカメラ・貼ったステッカーの配置）・表示・タイマーの好みだけ。性能に関わる値（鏡像・持ち方基準の向き・解像度・fps・精密解析・
   認識の調整）は選ばせず既定の値で動かす（`src/app/settings.ts` の `FIXED`）。鏡像と表記の向きはカメラの向きから自動（`facingOf`）
 
 ---

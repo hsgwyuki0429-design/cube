@@ -1,4 +1,5 @@
 // 設定（localStorage に保存）
+import { DEFAULT_LAYOUT, SETTINGS_KEY, STICKER_LAYOUTS, type StickerLayout } from "../aruco/design";
 import { createStore } from "./store";
 
 export interface Settings {
@@ -21,6 +22,8 @@ export interface Settings {
   rotationCost: number;
   showReadings: boolean; // 読み取りを表示（カメラの映像の上に面の格子・マス・面の札。既定はオフ: src/ui/CameraView.tsx）
   captureAdvice: boolean; // 撮り方の案内（近づける・明るく・真ん中に…）を出す（src/app/captureAdvice.ts）
+  // ステッカーのマーカーの配置（src/aruco/design.ts の STICKERS。起動したときに読むので、変えたらページを読み込み直す。URL の ?stickers= が優先）
+  stickerLayout: StickerLayout;
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -43,9 +46,10 @@ export const DEFAULT_SETTINGS: Settings = {
   rotationCost: 1.5,
   showReadings: false,
   captureAdvice: true,
+  stickerLayout: DEFAULT_LAYOUT,
 };
 
-const KEY = "cubevision.settings.v1";
+const KEY = SETTINGS_KEY;
 
 // 画面では選ばない（常に既定の値・カメラから決める）: 鏡像・持ち方基準の向き（使っているカメラの向きから: facingOf）・カメラの解像度・fps、精密解析、認識の調整、デバッグ表示
 const FIXED: (keyof Settings)[] = ["mirror", "resolution", "cameraFps", "analyzeSolves", "workWidth", "beamWidth", "maxMovesPerStep", "stableMs", "rotationCost", "viewpoint", "debug"];
@@ -72,6 +76,7 @@ function load(): Settings {
       for (const k of FIXED) delete saved[k];
       // 3D の向きは「追従 / 固定」の 2 つにした
       if (saved.cube3dView === "user") saved.cube3dView = "camera";
+      if (!STICKER_LAYOUTS.includes(saved.stickerLayout)) delete saved.stickerLayout;
       return { ...DEFAULT_SETTINGS, ...saved, ...urlFlags() };
     }
   } catch {
