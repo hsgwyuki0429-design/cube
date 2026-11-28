@@ -42,3 +42,13 @@
 - 今の方式だけ: 同じ材料を `piecesBench` の `PB_METHOD=old PB_OUT=old.jsonl` で 1 本ずつ
 - まとめ: `python3 islandsum.py rows.jsonl`（本ごと・ビットレートごと・隙間）、`python3 islandfb.py rows.jsonl`（今の方式に戻った本だけ）、
   `python3 islandold.py rows.jsonl old.jsonl`（今の方式だけとの比べ）
+
+## 既定の切り替えの判断（精密解析 4）
+
+- 材料: 上の「島に分けて解く案の上限」と同じ（`mat/` の原画質と `cropenc/` の full 63 本）。止めた時刻は原画質のライブの読み（`realVideo` の
+  `REAL_FPS=15 REAL_REFINE=0 REAL_REF=$BENCH/bm/<名前>.ref.json REAL_READINGS=$BENCH/rv/read-<名前>-15.json`）を `timerEdges` の `TE_STOPS_OUT=$BENCH/rv/stops.jsonl` に通す
+- `refiner.sh <出力フォルダ>`: 本体の流れ（`Refiner.result`）を old・and で 1 本ずつ（`REAL_METHODS`・`REAL_METHODS_STOP`。読み・観測も書き出すので
+  sha256 で材料と同じか確かめられる）→ `refinerCompare` → `python3 refinersum.py rc.jsonl`
+- `real.sh`: 実機の録画（`$BENCH/real/*.mp4`）を書き出しの条件のまま old・and で。正解の代わり（本体の結果）は録画ごとに別のフォルダへ
+  （`truthOf` は名前の先頭 8 文字で探すので: `$BENCH/realm/t<時刻>/`）、読み・観測は `$BENCH/m1/rr` にリンクする
+- `cutoff.sh <ラベル> '<PB_SOLVE>'`: 打ち切りの設定を変えて piecesBench（and）を 1 本ずつ（`PB_TIMELINE` も）→ `python3 cutoffsum.py base <ラベル>…`
