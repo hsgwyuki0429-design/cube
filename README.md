@@ -133,7 +133,7 @@ R と R' が見分けられない場面で効きます。露光中に層が大�
 
 カメラなしで同じ処理経路を検証できるようにしてあります（合成画像を Node の OpenCV.js で処理）。
 
-- `npm test` — 状態モデル（CLAUDE.md の必須テスト）、cubing.js との整合、ソルバー、復号器のシミュレーション、
+- `npm run test:all`（`npm test` は重いもの以外、`npm run test:slow` は重いものだけ）— 状態モデル（CLAUDE.md の必須テスト）、cubing.js との整合、ソルバー、復号器のシミュレーション、
   合成画像からのマーカーの検出・面の組み立て（4 個の配置も）・再認識・色で補う・ID なし追跡・回転途中の形、
   ライブの追跡と精密解析（30fps・指が動いてマーカーを隠す）、前後両方向からの再構成
 - `npm run build && npm run e2e` — ビルド済みアプリをヘッドレス Chromium で開き、デモモード（three.js の合成カメラ）で
@@ -171,7 +171,9 @@ R と R' が見分けられない場面で効きます。露光中に層が大�
 |---|---|
 | `npm run dev` | 開発サーバー |
 | `npm run dev:lan` | LAN 公開 + 自己署名 HTTPS（スマホ実機用） |
-| `npm test` | ユニット・結合テスト |
+| `npm test` | ユニット・結合テストのうち重いもの以外（ふだん） |
+| `npm run test:slow` | 合成画像を描いて認識から精密解析まで通す重いテストだけ |
+| `npm run test:all` | 全部（PR の前・CI） |
 | `npm run e2e` | E2E（要 `npm run build`。`E2E_VIEW=top/corner/front` `E2E_TPS` `E2E_SEEDS` `E2E_MODE=timer`） |
 | `npm run typecheck` | 型チェック |
 | `npm run build` | 本番ビルド（`dist/`。静的ホスティングにそのまま置けます） |

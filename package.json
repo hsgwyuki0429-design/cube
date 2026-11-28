@@ -9,7 +9,9 @@
     "dev:lan": "vite --mode lan",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "vitest run",
+    "test": "vitest run --project fast",
+    "test:slow": "vitest run --project slow",
+    "test:all": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
     "e2e": "node scripts/e2e.mjs"
