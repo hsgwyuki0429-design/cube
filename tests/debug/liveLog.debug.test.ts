@@ -1,7 +1,8 @@
 // 実機の「ライブの記録」（設定画面の「ライブの記録を書き出す」: src/ui/liveLogExport.ts・src/track/liveLog.ts）を通し直す。
 // 追跡は読みだけで決まるので、記録した読みを同じ設定の TrackerEngine に入れれば、実機と同じ結果になる（なるかを確かめる）。
 // 直前のソルブ（精密解析の手順と時刻）があれば、ライブの 3D がそれと同じだった時間の割合も出す（liveReplay と同じ物差し）。
-//   LIVE_LOG=ファイル（.json か .json.gz）・LIVE_LOG_ENGINE='{"decoder":{...}}'（設定を上書きして比べる）・LIVE_LOG_DUMP=1（観測ごと）
+//   LIVE_LOG=ファイル（.json か .json.gz。開発用の「書き出す」でまとめたファイル（cubevision-….mp4）なら、中のライブの記録を読み、正解は同じファイルの
+//     精密解析の結果（LIVE_LOG_REC を省ける））・LIVE_LOG_OUT=ファイル（区切りごとに 1 行の JSON: 実機と同じ・違う・3D の一致。scripts/real-table.mjs が読む）・LIVE_LOG_ENGINE='{"decoder":{...}}'（設定を上書きして比べる）・LIVE_LOG_DUMP=1（観測ごと）
 //   LIVE_LOG_PIECES='{}'（ソルブ中のライブの状態の推定を、本体と同じくタイマーの開始の判定で始めたと決めたフレームから使う。'{"agreeWait":true}'
 //     など設定つき。記録した版が推定を使っていなければ、記録の「設定の変更」の pieces は無視する）。直前のソルブがあれば、3D の見せ方
 //     （src/ui/liveShow.ts を模擬の 3D に通す）の回して見せた手・本当の手と結びつかない手・本当の手を回した数・3D の一致と、追跡が数えた手の
@@ -18,14 +19,13 @@
 //     正解の位置・! 読みが正解と違う位置・? 決まらない・∋/∌ 取り得る位置に正解があるか）、出来事（深・復帰・見失い・置き直し・まとめ）、
 //     「証拠 a/b」（読みと食い違う数: 正解 / 一番よい仮説。正解だけが合うフレームは戻れたはずの読み）。LIVE_LOG_READS=1 で読みのまとまりごとも
 //   ソルブ中の追跡の 1 フレームの時間（平均・99%・最大・3ms を超えた割合。推定に切り替えた後だけも）も出す
-import { readFileSync } from "node:fs";
-import { gunzipSync } from "node:zlib";
+import { appendFileSync, readFileSync } from "node:fs";
 import { it } from "vitest";
 import { ARUCO_REFS } from "../../src/aruco/palette";
 import { MOVE_NAMES, applyMove, applyMoves, parseMoves, solvedState, statesEqual } from "../../src/cube/model";
 import { type EngineOptions, TrackerEngine } from "../../src/track/engine";
 import { LiveLog, type LiveLogSegment, type LoggedReading, mergeOptions } from "../../src/track/liveLog";
-import { loadExport } from "./lib/recording";
+import { loadExport, loadLiveLog } from "./lib/recording";
 import { StartDetector } from "../../src/app/startDetect";
 import { LiveShow, seenMoves } from "../../src/ui/liveShow";
 import { SimScene } from "../liveShowSim";
@@ -200,8 +200,14 @@ const pct = (xs: number[], q: number) => {
 it("実機のライブの記録", () => {
   const path = process.env.LIVE_LOG;
   if (!path) return;
-  const raw = readFileSync(path);
-  const data = JSON.parse((path.endsWith(".gz") ? gunzipSync(raw) : raw).toString("utf8"));
+  const data = loadLiveLog(path);
+  const bundle = /\.(mp4|mov)$/i.test(path);
+  const recFile = process.env.LIVE_LOG_REC ?? (bundle && !process.env.LIVE_LOG_TRUTH ? path : undefined);
+  if (bundle) {
+    const m = loadExport(path);
+    const p = data.pair as { solveId?: string } | undefined;
+    console.log(`まとめたファイル: ライブの記録と録画の組 ${p?.solveId && p.solveId === m?.pair?.solveId ? "同じソルブ" : "印が合わない"}（${p?.solveId ?? "-"}）${data.log?.from !== undefined ? `・${((data.log.from as number) / 1000).toFixed(2)}s から通し直せる分` : ""}`);
+  }
   const over = JSON.parse(process.env.LIVE_LOG_ENGINE ?? "{}") as Partial<EngineOptions>;
   console.log(`端末 ${data.device?.ua}\nコア ${data.device?.cores}・カメラ ${data.camera?.width}×${data.camera?.height} ${data.camera?.frameRate ?? "?"}fps・補助で認識 ${data.helperFrames}`);
   // 直前のソルブ: 計測開始（timer.startT）からの時刻の手を、フレームの時間軸に直す
@@ -215,8 +221,8 @@ it("実機のライブの記録", () => {
   const scrambleState: Uint8Array | null = Array.isArray(data.timer?.scramble) && data.timer.scramble.length ? applyMoves(solvedState(), data.timer.scramble) : null;
   // LIVE_LOG_TRUTH=ファイル（{start, moves: [{move, start, end}]}）: 直前のソルブの記録がないとき、正解の代わりに使う手順（記録の読みを精密解析の
   // 解き直しに通したものなど）
-  if (process.env.LIVE_LOG_REC) {
-    const m = loadExport(process.env.LIVE_LOG_REC);
+  if (recFile) {
+    const m = loadExport(recFile);
     const res = m?.analysis.result;
     if (!m || !res) throw new Error("LIVE_LOG_REC に精密解析の結果がない");
     const end = res.moves[res.moves.length - 1]?.end ?? data.timer.startT;
@@ -419,6 +425,8 @@ it("実機のライブの記録", () => {
     const skips = seg.events.filter((e) => e.kind === "skip").reduce((n, e) => n + (e.data as number), 0);
     const proc = rs.map((r) => r.procMs);
     const gaps = rs.slice(1).map((r, k) => r.t - rs[k].t);
+    if (process.env.LIVE_LOG_OUT)
+      appendFileSync(process.env.LIVE_LOG_OUT, `${JSON.stringify({ file: path, segment: si, frames: rs.length, same, differ, match3d: truth && acc.counted ? Math.round((acc.same / acc.counted) * 1000) / 10 : null, anim3d: truth && anim.counted ? Math.round((anim.same / anim.counted) * 1000) / 10 : null, truth: truth ? truth.moves.length : null, status: engine.decoder.status })}\n`);
     console.log(
       `区切り ${si}: ${span.toFixed(1)} 秒・処理 ${rs.length} 枚（1 秒 ${(rs.length / Math.max(0.001, span)).toFixed(1)} 枚・捨てた ${skips} 枚・補助 ${rs.filter((r) => r.helper).length}）` +
         `・フレームの間 中央 ${pct(gaps, 0.5).toFixed(0)}ms 90% ${pct(gaps, 0.9).toFixed(0)}ms 最大 ${pct(gaps, 1).toFixed(0)}ms` +

@@ -6,7 +6,7 @@ import { controller } from "../app/controller";
 import { settingsStore } from "../app/settings";
 import { timerStore } from "../app/timer";
 
-async function gzip(text: string): Promise<Blob | null> {
+export async function gzip(text: string): Promise<Blob | null> {
   if (typeof CompressionStream === "undefined") return null;
   try {
     const stream = new Blob([text]).stream().pipeThrough(new CompressionStream("gzip"));
@@ -30,30 +30,21 @@ function analysisOf() {
   };
 }
 
-export async function exportLiveLog(): Promise<void> {
-  const vision = controller.vision;
-  if (!vision) {
-    controller.toast("カメラを開始してから書き出してください");
-    return;
-  }
-  const log = (await vision.liveLog()) as { segments?: { readings: unknown[] }[] } | null;
-  const frames = log?.segments?.reduce((n, s) => n + s.readings.length, 0) ?? 0;
-  if (!log || !frames) {
-    controller.toast("書き出すライブの記録がありません（キューブを追跡している間の記録を残します）");
-    return;
-  }
+// 書き出すライブの記録（log: 認識の Worker の LiveLog.toJSON）。timer: タイマーの場面（開発用の「書き出す」は止めたときのものを渡す:
+// 休み中に「次のソルブ」を押すとスクランブルが替わる）
+export function liveLogData(log: unknown, timer?: { phase: string; startT: number; startIndex: number; scramble: number[] }): Record<string, unknown> {
   const st = controller.store.get();
   const t = timerStore.get();
   const s = settingsStore.get();
-  const data = {
+  return {
     kind: "cubevision-live-log",
     date: new Date().toISOString(),
     device: { ua: navigator.userAgent, cores: navigator.hardwareConcurrency ?? 0, dpr: window.devicePixelRatio, screen: [screen.width, screen.height] },
     camera: st.cameraInfo,
     stats: st.stats,
     settings: { viewpoint: s.viewpoint, notation: s.notation, workWidth: s.workWidth, cameraFps: s.cameraFps, resolution: s.resolution },
-    helperFrames: vision.helperFrames,
-    timer: { phase: t.phase, startT: t.startT, startIndex: t.startIndex, scramble: t.scramble },
+    helperFrames: controller.vision?.helperFrames,
+    timer: timer ?? { phase: t.phase, startT: t.startT, startIndex: t.startIndex, scramble: t.scramble },
     // 直前のソルブ（精密解析の手順と時刻: 本当の動きとして比べる）
     solves: t.solves.slice(0, 3), // 新しい順（先頭が直前のソルブ）
     // 直前のソルブの精密解析（手の時刻はフレームの時間軸。Solve.moves の時刻は解析の回し始めからで、timer.startT からではない）
@@ -68,6 +59,21 @@ export async function exportLiveLog(): Promise<void> {
     stickers: STICKERS.arucoDesign,
     log,
   };
+}
+
+export async function exportLiveLog(): Promise<void> {
+  const vision = controller.vision;
+  if (!vision) {
+    controller.toast("カメラを開始してから書き出してください");
+    return;
+  }
+  const log = (await vision.liveLog()) as { segments?: { readings: unknown[] }[] } | null;
+  const frames = log?.segments?.reduce((n, s) => n + s.readings.length, 0) ?? 0;
+  if (!log || !frames) {
+    controller.toast("書き出すライブの記録がありません（キューブを追跡している間の記録を残します）");
+    return;
+  }
+  const data = liveLogData(log);
   const text = JSON.stringify(data);
   const gz = await gzip(text);
   const stamp = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "");

@@ -8,9 +8,17 @@
 //   「決まった面だけ」はセンター 1 つの面の読みを数えないもの
 // 配置ごと（ステッカーのマーカーの配置: 書き出しの stickers。?stickers=standard で撮ったもの）の表も出す: 1 フレームに読めたマス・誤読
 //   （精密解析の答えを正解の代わりにして照らした、合わない読みの割合: lib/recording.ts の misreadOf）・面が組めなかったフレームの割合・
-//   指で隠れたマスの割合・精密解析の完成と推定（本体の結果。書き出しになければこの解析の結果）・止めた後の待ち（本体。書き出しの waitMs）
-import { readFileSync } from "node:fs";
+//   指で隠れたマスの割合・精密解析の完成と推定（本体の結果。書き出しになければこの解析の結果）・止めた後の待ち（本体。書き出しの waitMs）。
+//   配置ごとに平均と中央の 2 行（tests/debug/lib/layoutTable.ts。scripts/real-table.mjs の --group stickers も同じ）
+//   RS_FILES=フォルダかファイル（, 区切り）: 書き出し（開発用の「書き出す」でまとめたファイル・「録画を書き出す」の録画）をそのまま読む
+//   （1 本ずつ realVideo を REAL_STATS_OUT 付きで通してから並べる。RS_LABEL=条件の名前、既定は「実機」）
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { it } from "vitest";
+import { loadExport } from "./lib/recording";
+import { layoutTable } from "./lib/layoutTable";
 
 interface Row {
   name: string;
@@ -43,7 +51,19 @@ interface Row {
 }
 
 it("読める量のまとめ", () => {
-  const file = process.env.RS_ROWS;
+  let file = process.env.RS_ROWS;
+  if (!file && process.env.RS_FILES) {
+    const list = process.env.RS_FILES.split(",").flatMap((f) => (statSync(f).isDirectory() ? readdirSync(f).filter((n) => /\.(mp4|mov)$/i.test(n)).sort().map((n) => join(f, n)) : [f]));
+    file = join(mkdtempSync(join(tmpdir(), "rs-")), "rows.jsonl");
+    for (const v of list) {
+      if (!loadExport(v)) {
+        console.log(`書き出しではない（飛ばす）: ${v}`);
+        continue;
+      }
+      const r = spawnSync("npx", ["vitest", "run", "-c", "vitest.debug.config.ts", "tests/debug/realVideo.debug.test.ts", "--silent=false"], { env: { ...process.env, REAL_VIDEO: v, REAL_STATS_OUT: file, REAL_STATS_LABEL: process.env.RS_LABEL ?? "実機", REAL_NAME: v.split("/").pop() }, encoding: "utf8", maxBuffer: 1 << 28 });
+      if (r.status !== 0) console.log(`realVideo が失敗: ${v}\n${(r.stdout + r.stderr).slice(-2000)}`);
+    }
+  }
   if (!file) return;
   const rows = readFileSync(file, "utf8")
     .split("\n")
@@ -65,22 +85,8 @@ it("読める量のまとめ", () => {
     const avg = (f: (r: Row) => number) => g.reduce((n, r) => n + f(r), 0) / g.length;
     out.push(`| ${l} | ${g.length} | ${avg((r) => r.fps).toFixed(1)} | ${avg((r) => r.cells).toFixed(2)} | ${avg((r) => r.pieces).toFixed(2)} | ${avg((r) => r.gaps1Sec).toFixed(1)} 秒 | ${avg((r) => r.longest).toFixed(2)} 秒 | ${avg((r) => r.sure1Sec ?? Number.NaN).toFixed(1)} 秒 | ${g.filter((r) => r.solved).length}/${g.length} |`);
   }
-  // 配置ごと
+  // 配置ごと（平均と中央。scripts/real-table.mjs の --group stickers と同じ: lib/layoutTable.ts）
   out.push("");
-  out.push("| 配置 | 本数 | 1 フレームに読めたマス | ピース | 誤読 | 面が組めない | 指で隠れた | 確かな読みのない 1 秒より長い区間 | 完成 | 推定（1 本あたり） | 止めた後の待ち（平均・最大） |");
-  out.push("|---|---|---|---|---|---|---|---|---|---|---|");
-  const pc = (x: number) => `${(x * 100).toFixed(1)}%`;
-  for (const lay of [...new Set(rows.map((r) => r.layout ?? "quad-half"))]) {
-    const g = rows.filter((r) => (r.layout ?? "quad-half") === lay);
-    const avg = (f: (r: Row) => number | undefined) => {
-      const xs = g.map(f).filter((x): x is number => x !== undefined && Number.isFinite(x));
-      return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : Number.NaN;
-    };
-    const reads = g.reduce((n, r) => n + (r.misreadReads ?? 0), 0);
-    const mis = reads ? g.reduce((n, r) => n + (r.misread ?? 0) * (r.misreadReads ?? 0), 0) / reads : Number.NaN;
-    const solved = g.filter((r) => (r.app ? r.app.solved : r.solved)).length;
-    const waits = g.map((r) => r.waitMs).filter((x): x is number => x !== undefined);
-    out.push(`| ${lay} | ${g.length} | ${avg((r) => r.cells).toFixed(2)} | ${avg((r) => r.pieces).toFixed(2)} | ${Number.isNaN(mis) ? "-" : `${(mis * 100).toFixed(2)}%（${reads}）`} | ${pc(avg((r) => r.faceless))} | ${pc(avg((r) => r.masked))} | ${avg((r) => r.gaps1Sec).toFixed(1)} 秒 | ${solved}/${g.length} | ${avg((r) => (r.app ? r.app.inferred : r.inferred)).toFixed(1)} | ${waits.length ? `${(waits.reduce((a, b) => a + b, 0) / waits.length / 1000).toFixed(1)}・${(Math.max(...waits) / 1000).toFixed(1)} 秒` : "-"} |`);
-  }
+  out.push(...layoutTable(rows));
   console.log(out.join("\n"));
-});
+}, 3600000);

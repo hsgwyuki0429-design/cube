@@ -24,6 +24,7 @@ export interface Settings {
   captureAdvice: boolean; // 撮り方の案内（近づける・明るく・真ん中に…）を出す（src/app/captureAdvice.ts）
   // ステッカーのマーカーの配置（src/aruco/design.ts の STICKERS。起動したときに読むので、変えたらページを読み込み直す。URL の ?stickers= が優先）
   stickerLayout: StickerLayout;
+  devExport: boolean; // 開発用の書き出し: 止めた後の画面に「書き出す」と最後のソルブの様子を出す（?debug でも出る: src/ui/DevExport.tsx）
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -47,6 +48,7 @@ export const DEFAULT_SETTINGS: Settings = {
   showReadings: false,
   captureAdvice: true,
   stickerLayout: DEFAULT_LAYOUT,
+  devExport: false,
 };
 
 const KEY = SETTINGS_KEY;

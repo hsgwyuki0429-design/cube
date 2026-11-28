@@ -166,6 +166,9 @@ export interface RefineResult {
   // stream: ソルブ中から進めた解析のとき、回し始めの知らせ（solvingAt）・止めた知らせ（endAt）が届いたときに最後に来ていたフレームの時刻と、
   // 最後の間引きの境（fullFrom）。手元で同じフレームを同じように処理し直すため（tests/debug/realVideo.debug.test.ts）
   decodeInfo?: DecodeInfo & { refined: number; gated: number; stream?: { solvingAt: number | null; endAt: number | null; fullFrom: number } };
+  // 解き直しの段（調査用。開発用の書き出しの要約）: first = 1 回目の答え / deep-tried = 深い解き直しもしたが 1 回目を使った /
+  // deep = 深い解き直し（DEEP_DECODER）の答え / pieces = ステッカーの動きの方程式（RefineInput.pieces）の答え
+  decodeStage?: "first" | "deep-tried" | "deep" | "pieces";
 }
 
 const EDGE_NOISE_MAX = 8; // 最初・最後の「それだけで打ち消し合う手の並び」として除く長さの上限
@@ -504,6 +507,7 @@ export class Refiner {
     // 前向き（スクランブル後から）と後ろ向き（完成から）の両方で解き直し、辻褄の合う所でつなぐ
     // ステッカーの動きの方程式（RefineInput.pieces）: 完成までつながらなければ、これまでの解き直しに戻す
     const pieces = target && this.input.pieces ? this.decodeByPieces(target, tick) : null;
+    let stage: RefineResult["decodeStage"] = pieces ? "pieces" : "first";
     let off: OfflineResult = pieces ?? decodeOffline(this.engine.observationLog, Uint8Array.from(this.input.state), target, this.lastT, { ...this.offlineOptions(), tick }, this.forward ?? undefined);
     if (!pieces && target && off.method !== "meet" && off.method !== "backward") {
       const base = this.offlineOptions();
@@ -514,6 +518,7 @@ export class Refiner {
       const guessed = (r: typeof off) => r.moves.filter((m) => m.inferred).length;
       if (deep.reachedEnd && (!off.reachedEnd || guessed(deep) < guessed(off) || (guessed(deep) === guessed(off) && deep.method === "meet"))) off = deep;
       this.deepUsed = off === deep;
+      stage = off === deep ? "deep" : "deep-tried";
     }
     let moves = off.moves;
     let solved = target ? off.reachedEnd && isSolved(target) : isSolved(dec.best().state);
@@ -756,6 +761,7 @@ export class Refiner {
       inferred: merged.filter((m) => m.inferred).length,
       forced,
       method: this.method,
+      decodeStage: stage,
       // 端の手の層が見えず、時刻をフレームから決められなかった（観測の時刻のまま）ときも不確か。見えない層（低く構えて U・B が
       // 写らないなど）の手は、観測の時刻が数百 ms ずれることがある
       startUncertain: (!!first?.inferred && !startByLayer) || beforeWindow || !first?.exact || rawStartUnsure,

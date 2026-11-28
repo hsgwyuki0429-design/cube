@@ -105,6 +105,15 @@ src/vision Vision             ← 映像 → マーカー → 見えている面
   認識・追跡・精密解析を Node で試験する。場面の集まりは `tests/arucoScenes.ts`
 - `src/synthetic/`（three.js の合成カメラ）でアプリ全体をヘッドレス Chromium で動かす（`npm run e2e`）
 - 重い計測は `tests/debug/*.debug.test.ts`（`npx vitest run -c vitest.debug.config.ts …`）。使い方は各ファイルの先頭
+- **実機の書き出しは 1 つのファイル**（開発用の「書き出す」: `src/ui/bundleExport.ts`）: `?debug` か設定の「開発用の書き出し」がオンなら、止めた後の画面に
+  「書き出す」と最後のソルブの様子（要約: `src/app/solveSummary.ts`。止めた後の待ち・解析の結果と段・フレームの渡し方・休み・ソルブ中のカメラ fps・
+  ライブの枚数・読めたマスの中央・面なしの割合・録画の抜け）を出す（`src/ui/DevExport.tsx`）。押せるのは精密解析が終わってから（「解析中」）。
+  ファイルは今の録画の MP4（`cubevision-日時-タイム-配置.mp4`: 配置は `quad`（4 個）・`std`（1 個）。iPhone は共有シートの「ファイルに保存」）に、そのソルブを通し直せる分のライブの記録
+  （`LiveLog.toJSON(from)`: 録画の始まりの 2 秒前より前でいちばん新しい始まりの候補から。gzip した JSON を uuid ボックス `LIVE_LOG_UUID`）と、
+  メタデータに要約（`summary`）・組の印（`pair`: 記録の番号）を入れたもの。材料は解析が終わったときに作る（押したらすぐ共有シート）。
+  手元の道具はこの 1 つをそのまま読む: `REAL_VIDEO=`・`LIVE_LOG=`（`LIVE_LOG_REC` を省ける）・`FPS_REC=`・`RS_FILES=`。まとめて表にするのは
+  `node scripts/real-table.mjs フォルダ`（今までの録画とライブの記録の組も読む。配置の列・`--group stickers` で配置ごとの中央の行と
+  recordingStats の「配置ごと」と同じ表: `tests/debug/lib/layoutTable.ts`）。E2E は `E2E_MODE=timer E2E_BUNDLE=フォルダ E2E_EXPORT_CHECK=1`
 - 実機のライブの記録: 設定画面の「ライブの記録を書き出す」（`src/track/liveLog.ts`）→ 手元で `LIVE_LOG=ファイル` で
   `tests/debug/liveLog.debug.test.ts` に通し直す（追跡は読みだけで決まる）。古い読みを捨てるときは区切りの始まりを追跡が落ち着いていた時点
   （`TrackerEngine.checkpoint`）に進めるので、捨てた後も通し直せる（版 2。版 1 は `LIVE_LOG_FROM=inspect`）。正解は `LIVE_LOG_REC=同じソルブの録画の書き出し`
@@ -461,16 +470,19 @@ facelet の直接置換テーブルを手書きすると必ず間違える。**3
   2026-11-20 の値（`REAL_FROM`・`REAL_SOLVE_FROM`）: 5046 は 10.10・12.88、5047 は 10.33・14.62、5048 は 14.35・21.04、5049 は 4.21・12.79 秒
 - **本体の録画の画質でも確かめる**（`ffmpeg -vf scale=1280:-2 -r 60 -c:v libx264 -profile:v baseline -preset veryfast -tune zerolatency -b:v 5000k -maxrate 5000k -bufsize 2500k -g 60`）。
   元の画質だけでは実機で起きる問題が出ない
-- **実機の録画で確かめる**（`docs/history.md` の「実機の録画を書き出して比べる道具」）: 実機でタイマーのソルブをしたら、設定画面の「録画を書き出す」
-  （`src/ui/recordingExport.ts`。iPhone は共有シートの「ファイルに保存」）。中身は精密解析に渡した録画そのもの（圧縮したままの H.264 を MP4 に:
+- **実機の録画で確かめる**（`docs/history.md` の「実機の録画を書き出して比べる道具」「1 つにまとめた書き出し」）: 実機でタイマーのソルブをしたら、
+  止めた後の画面の開発用の「書き出す」（録画・ライブの記録・要約が 1 つ。上の「カメラなしで検証できる状態を保つ」）。設定画面の「録画を書き出す」
+  （`src/ui/recordingExport.ts`）・「ライブの記録を書き出す」も残してある。録画の中身は精密解析に渡した録画そのもの（圧縮したままの H.264 を MP4 に:
   `src/vision/mp4Mux.ts`）と、録画の設定（コーデック・ハードウェア・ビットレート・大きさ）・間引いたフレーム・`Solve`（`edges` など）・
   精密解析の入力と結果（`RefineResult.decodeInfo` に復号の様子と、回し始め・止めた知らせが届いた所）。手元では
   `REAL_VIDEO=書き出したファイル` だけで realVideo が本体と同じ条件になる（YUV のまま読み・縮めない・本体の時間軸・始まりの状態・範囲・間引き・
   止めた時刻・設定は書き出しから。ライブは省く）。「アプリの結果と同じ」を出す（`REAL_EXPECT_SAME=1` で違えば失敗）。`REAL_RREADINGS`・`REAL_OBS`・
   `REAL_APP_TRUTH`（本体の結果を正解の形で）を付ければ `piecesBench` にも通せる。読める量は `REAL_STATS_OUT=rows.jsonl`（1 フレームに読めた
   マス・ピース、確かな読みのない区間、実際の fps・抜け）→ `RS_ROWS=rows.jsonl` で `recordingStats.debug.test.ts`。比べる相手は同じ物差しの
-  x264 の 5・2.5Mbps（bench-2 の圧縮。表は `docs/history.md`）。E2E: `E2E_MODE=timer E2E_EXPORT=フォルダ E2E_EXPORT_CHECK=1`（書き出し → 手元で
-  解析し直してアプリの結果と比べる）
+  x264 の 5・2.5Mbps（bench-2 の圧縮。表は `docs/history.md`）。書き出しのフォルダは `RS_FILES=フォルダ` でそのまま並べられる。
+  ソルブごとの表（配置・要約・アプリの結果と同じか・ライブの通し直しと 3D の一致・読める量）は `node scripts/real-table.mjs フォルダ [--group stickers]`（GitHub のリリースに置いた
+  実機の材料は毎回これで通す）。E2E: `E2E_MODE=timer E2E_BUNDLE=フォルダ E2E_EXPORT_CHECK=1`（まとめた書き出し → 手元で realVideo と liveLog）・
+  `E2E_EXPORT=フォルダ`（録画だけ）
 - ライブの良し悪しは「3D に出した状態が本当の状態（精密解析の手順と時刻）と同じだった時間の割合」（遅れ 300ms まで）。追跡だけ・解き直し
   だけを直すときは認識の結果を書き出して再生する: `REAL_READINGS=` → `liveReplay.debug.test.ts`、`REAL_OBS=` → `obsReplay.debug.test.ts`。
   3D の見せ方（回して見せた手のうち本当の手と結びつかないもの・本当の手を回した割合）は `liveReplay` の `LIVE_ANIM=1`、E2E は「3D:」の行

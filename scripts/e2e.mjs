@@ -13,6 +13,9 @@
 //   E2E_MODE=timer E2E_NEXT=1（止めた後、精密解析の間にライブが休み始めたら「次のソルブ」を押し、合成キューブで案内どおりに崩す。
 //   休みが「次のソルブ」で解け、案内が最後まで進んでインスペクションになれば OK: src/app/liveRest.ts。デモの合成カメラのときだけ）
 //   E2E_MODE=timer E2E_LIVELOG=フォルダ（「ライブの記録を書き出す」を押して保存する。手元の tests/debug/liveLog.debug.test.ts で通し直す）
+//   E2E_MODE=timer E2E_BUNDLE=フォルダ（設定の「開発用の書き出し」をオンにして始め、止めた後の画面の「書き出す」で録画・ライブの記録・要約を
+//   1 つにしたファイルを保存する: src/ui/bundleExport.ts。中身と組の印を確かめ、止めた後の画面の画像も残す。E2E_EXPORT_CHECK=1 なら、そのファイル
+//   だけで realVideo（アプリの結果と同じか）と liveLog（実機と同じか・3D の一致）を通す）
 //   E2E_MODE=timer E2E_VFRAME_FAIL=5（カメラの映像からの new VideoFrame を最初の 5 回 InvalidStateError で失敗させる: 実機の iPhone で、映像が
 //   届く前の 1 回の失敗でずっと bitmap に戻っていた件。src/vision/frameGate.ts）。タイマーでは、VideoFrame を頼んだのにフレームの渡し方が
 //   vframe でなければ NG（書き出しを保存したときは、書き出しの framePath も見る）
@@ -153,16 +156,16 @@ try {
           },
         });
       }, Number(process.env.E2E_VFRAME_FAIL));
-    // E2E_READINGS=1: 設定の「読み取りを表示」をオンにして始める（src/ui/CameraView.tsx）
-    if (process.env.E2E_READINGS)
-      await page.addInitScript(() => {
+    // E2E_READINGS=1: 設定の「読み取りを表示」をオンにして始める（src/ui/CameraView.tsx）。E2E_BUNDLE: 「開発用の書き出し」をオンに
+    if (process.env.E2E_READINGS || process.env.E2E_BUNDLE)
+      await page.addInitScript((on) => {
         const k = "cubevision.settings.v1";
         let cur = {};
         try {
           cur = JSON.parse(localStorage.getItem(k) ?? "{}");
         } catch {}
-        localStorage.setItem(k, JSON.stringify({ ...cur, showReadings: true }));
-      });
+        localStorage.setItem(k, JSON.stringify({ ...cur, ...on }));
+      }, { ...(process.env.E2E_READINGS ? { showReadings: true } : {}), ...(process.env.E2E_BUNDLE ? { devExport: true } : {}) });
     if (FAKECAM) {
       // 偽のカメラ: カメラを開始し（動画は開いたときから流れる。最初の 6 秒は揃った状態）、揃った状態から始めて、動画と同じスクランブルを出す
       await page.context().grantPermissions(["camera"]);
@@ -252,6 +255,17 @@ try {
         await page.close();
         continue;
       }
+      // E2E_BUNDLE: 解析中の止めた後の画面（「書き出す」は押せず「解析中」）
+      if (process.env.E2E_BUNDLE) {
+        await page.waitForSelector(".dev-export button", { timeout: 10000 }).catch(() => undefined);
+        const label = await page.locator(".dev-export button").textContent().catch(() => null);
+        const disabled = await page.evaluate(() => document.querySelector(".dev-export button")?.disabled ?? null);
+        await page.screenshot({ path: `${OUT}/seed${seed}-done-analyzing.png` });
+        const pendingNow = await page.evaluate(() => window.__cubevisionTimer.get().result?.analysis === "pending");
+        const ok = !pendingNow || (disabled === true && label === "解析中");
+        console.log(`  解析中の書き出しのボタン: ${ok ? "OK" : "NG"}（${label ?? "なし"}・${disabled ? "押せない" : "押せる"}・解析 ${pendingNow ? "中" : "済み"}）`);
+        if (!ok) failures++;
+      }
       // 録画の精密解析が終わるまで待つ（止めてから確定するまでの時間も出す）
       const waitFrom = Date.now();
       await page.waitForFunction(() => window.__cubevisionTimer.get().result?.analysis !== "pending", null, { timeout: 240000, polling: 500 }).catch(() => undefined);
@@ -304,6 +318,62 @@ try {
       for (const l of logs.filter((l) => l.includes("[start]") || l.includes("[stop]"))) console.log(`  ${l}`);
       // E2E_EXPORT=フォルダ: 設定画面の「録画を書き出す」を押して、書き出した録画を保存する。E2E_EXPORT_CHECK=1 なら手元の
       // realVideo（tests/debug/realVideo.debug.test.ts）で精密解析し直し、アプリの結果と同じかを確かめる（違えば NG）
+      // E2E_BUNDLE=フォルダ: 止めた後の画面の開発用の「書き出す」（録画・ライブの記録・要約を 1 つに）
+      if (process.env.E2E_BUNDLE) {
+        const dir = process.env.E2E_BUNDLE;
+        mkdirSync(dir, { recursive: true });
+        const btn = page.locator(".dev-export button");
+        const before = await btn.textContent().catch(() => null);
+        await page.waitForFunction(() => document.querySelector(".dev-export button")?.disabled === false, null, { timeout: 60000, polling: 200 }).catch(() => undefined);
+        await page.screenshot({ path: `${OUT}/seed${seed}-done-export.png` });
+        const summaryText = await page.locator(".dev-summary").textContent().catch(() => null);
+        console.log(`  書き出しのボタン: 解析の後 ${before ?? "-"} → ${await btn.textContent().catch(() => "-")}\n  要約（画面）:\n    ${(summaryText ?? "（なし）").split("\n").join("\n    ")}`);
+        const [dl] = await Promise.all([page.waitForEvent("download", { timeout: 30000 }), btn.click()]);
+        const file = `${dir}/seed${seed}-${dl.suggestedFilename()}`;
+        await dl.saveAs(file);
+        const { readFileSync } = await import("node:fs");
+        const { gunzipSync } = await import("node:zlib");
+        const { LIVE_LOG_UUID, readRecordingMeta, readUuidBox } = await import("../src/vision/mp4Mux.ts");
+        const buf = new Uint8Array(readFileSync(file));
+        const meta = readRecordingMeta(buf);
+        const box = readUuidBox(buf, LIVE_LOG_UUID);
+        const live = box ? JSON.parse((box[0] === 0x1f ? gunzipSync(box) : Buffer.from(box)).toString("utf8")) : null;
+        const frames = live?.log?.segments?.reduce((n, s) => n + s.readings.length, 0) ?? 0;
+        const sameSolve = !!meta?.pair?.solveId && meta.pair.solveId === live?.pair?.solveId && meta.pair.solveId === meta.analysis?.live?.solveId && meta.solve?.id === meta.pair.solveId;
+        // 配置: URL の ?stickers= と、記録・要約・ファイル名が同じか
+        const wantLayout = new URLSearchParams(process.env.E2E_QUERY ?? "").get("stickers") === "standard" ? "standard" : "quad-half";
+        const nameOk = new RegExp(`^cubevision-\\d{8}-\\d{6}-(\\d+\\.\\d{2}s|DNF)-${wantLayout === "standard" ? "std" : "quad"}(-partial|-failed)?\\.mp4$`).test(dl.suggestedFilename());
+        const layoutOk = meta?.summary?.stickers === wantLayout && meta?.solve?.stickers === wantLayout && meta?.stickers === wantLayout;
+        const bOk = !!meta?.summary && !!meta?.analysis?.result && frames > 0 && sameSolve && nameOk && layoutOk && !pathNg(meta.framePath);
+        console.log(`  bundle: ${file}（${(buf.byteLength / 1e6).toFixed(1)}MB）${bOk ? "OK" : "NG"}・要約 ${meta?.summary ? "あり" : "なし"}・解析の結果 ${meta?.analysis?.result ? "あり" : "なし"}・ライブの記録 ${frames} 枚（区切り ${live?.log?.segments?.length ?? 0}・${live?.log?.from !== undefined ? `${(live.log.from / 1000).toFixed(1)}s から` : "-"}）・同じソルブの組 ${sameSolve ? "はい" : "いいえ"}・名前 ${nameOk ? "OK" : "NG"}・配置 ${meta?.summary?.stickers ?? "-"}（${layoutOk ? "OK" : `NG: ${wantLayout} のはず`}）`);
+        if (!bOk) failures++;
+        if (process.env.E2E_EXPORT_CHECK) {
+          const run = (test, env, pick) =>
+            new Promise((resolve) => {
+              const p = spawn("npx", ["vitest", "run", "-c", "vitest.debug.config.ts", test, "--silent=false"], { env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+              let text = "";
+              p.stdout.on("data", (d) => (text += d));
+              p.stderr.on("data", (d) => (text += d));
+              p.on("close", (c) => {
+                for (const l of text.split("\n").filter((l) => pick.test(l))) console.log(`  ${l.trim()}`);
+                resolve(c);
+              });
+            });
+          const c1 = await run("tests/debug/realVideo.debug.test.ts", { REAL_VIDEO: file, REAL_EXPECT_SAME: "1" }, /書き出した録画|アプリの結果|^  (手順|stopCut|start|end|method|solved|inferred|手の時刻)/);
+          console.log(`  bundle check realVideo: ${c1 === 0 ? "OK" : `NG（終了コード ${c1}）`}`);
+          const outFile = `${dir}/seed${seed}-livelog.jsonl`;
+          const { rmSync } = await import("node:fs");
+          rmSync(outFile, { force: true });
+          const c2 = await run("tests/debug/liveLog.debug.test.ts", { LIVE_LOG: file, LIVE_LOG_OUT: outFile }, /まとめたファイル|正解|再生: |3D が精密解析と同じ|区切り \d/);
+          const segs = readFileSync(outFile, "utf8").split("\n").filter(Boolean).map((l) => JSON.parse(l));
+          const same = segs.reduce((n, s) => n + s.same, 0);
+          const differ = segs.reduce((n, s) => n + s.differ, 0);
+          const m3 = segs.find((s) => s.match3d !== null)?.match3d;
+          const lOk = c2 === 0 && same > 0 && differ === 0 && m3 !== undefined;
+          console.log(`  bundle check liveLog: ${lOk ? "OK" : "NG"}（実機と同じ ${same}・違う ${differ}・3D の一致 ${m3 ?? "-"}%）`);
+          if (c1 !== 0 || !lOk) failures++;
+        }
+      }
       if (process.env.E2E_LIVELOG) {
         const dir = process.env.E2E_LIVELOG;
         mkdirSync(dir, { recursive: true });
