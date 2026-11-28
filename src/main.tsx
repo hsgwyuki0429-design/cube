@@ -72,6 +72,9 @@ window.__cubevision = controller;
 window.__cubevisionTimer = timerStore;
 // E2E（撮り方の案内: scripts/e2e.mjs の E2E_ADVICE）が読む
 import("./app/captureGuide").then((m) => ((window as unknown as { __cubevisionAdvice?: unknown }).__cubevisionAdvice = m.adviceStore));
+// E2E（止めた後の画面: scripts/e2e.mjs の E2E_STOP_SHOTS）が読む: 精密解析の知らせと、描画の時間
+import("./app/stopShow").then((m) => ((window as unknown as { __cubevisionShow?: unknown }).__cubevisionShow = m.showStore));
+import("./ui/stopDraw").then((m) => ((window as unknown as { __cubevisionShowDraw?: unknown }).__cubevisionShowDraw = m.drawStats));
 // E2E（偽のカメラの動画: scripts/e2e.mjs の E2E_FAKECAM）から次のスクランブルを出す
 (window as unknown as { __cubevisionNewScramble?: () => Promise<void> }).__cubevisionNewScramble = () => import("./app/timer").then((m) => m.newScramble());
 // E2E（休み中の次のソルブ: scripts/e2e.mjs の E2E_NEXT）が案内どおりに崩すため

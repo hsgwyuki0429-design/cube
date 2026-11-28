@@ -218,7 +218,7 @@ function ReplayStage({ r, data, onEnd, playKey }: { r: Solve; data: NonNullable<
   const inferred = r.moves.filter((m) => m.inferred).length;
   return (
     <>
-      <div class="sp-stage replay">
+      <div class="sp-stage sp-at-replay">
         <div class="sp-replay">
           <ReplayCube
             bare
@@ -329,7 +329,7 @@ function ResultCard({ r, data, solves, onAgain }: { r: Solve; data: ReturnType<t
             : "リアルタイムの結果です";
   return (
     <>
-      <div class="sp-stage card">
+      <div class="sp-stage sp-at-card">
         <IsoCanvas cls="sp-iso tiny" colors={stateColors(data ? applyMoves(data.start, data.moves) : solvedState())} mirrors={false} />
       </div>
       <section class="sp-card result" aria-label="結果">
@@ -461,7 +461,7 @@ function Stopped() {
     (window as unknown as { __cubevisionStopStage?: Stage }).__cubevisionStopStage = stage;
   }, [stage]);
   return (
-    <div class={`stopped stage-${stage}`}>
+    <div class={`stop-screen sp-is-${stage}`}>
       <StoppedTop r={r} stage={stage} solves={solves} />
       {stage === "read" && <ReadStage startT={startT} endT={endT} />}
       {stage === "search" && <SearchStage startT={startT} endT={endT} stopColors={stopColors} />}

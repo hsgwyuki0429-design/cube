@@ -2820,3 +2820,570 @@ button.mv {
     opacity: 0.35;
   }
 }
+
+/* ===================== 止めた後の画面（src/ui/StoppedScreen.tsx）: カメラの映像を隠し、真ん中にキューブ ===================== */
+/* カメラは止めない（隠すだけ）。ライブの 3D も外さずに隠す */
+.stage.stopped .stage-cam,
+.stage.stopped .stage-scrim,
+.stage.stopped .stage-bottom {
+  visibility: hidden;
+  pointer-events: none;
+}
+.stage.stopped {
+  background: radial-gradient(120% 70% at 50% 38%, #17171b 0%, #0a0a0c 62%, #050506 100%);
+}
+.stop-screen {
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  top: calc(max(12px, env(safe-area-inset-top)) + 34px);
+  bottom: calc(92px + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  min-height: 0;
+}
+.sp-top {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  flex: none;
+}
+.sp-top .time-value {
+  font-size: clamp(56px, min(22vw, 11dvh), 112px);
+  font-weight: 200;
+}
+.sp-top .time-value small {
+  font-size: 0.32em;
+  font-weight: 500;
+}
+.sp-top.pb .time-value {
+  animation: thump 0.7s var(--ease-spring) both;
+  text-shadow:
+    0 0 28px rgba(255, 214, 10, 0.35),
+    0 2px 24px rgba(0, 0, 0, 0.35);
+}
+.sp-chips {
+  min-height: 30px;
+  display: flex;
+  justify-content: center;
+  margin-top: 2px;
+  animation: rise 0.4s var(--ease-out) both;
+}
+.sp-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 28px;
+  padding: 0 13px;
+  border-radius: 999px;
+  background: rgba(60, 60, 67, 0.45);
+  border: 0.5px solid rgba(255, 255, 255, 0.12);
+  font-size: 13px;
+  color: rgba(235, 235, 245, 0.9);
+}
+.sp-chip::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: rgba(235, 235, 245, 0.5);
+}
+.sp-chip.live::before {
+  background: #4f8cff;
+  animation: breathe 1.6s ease-in-out infinite;
+}
+.sp-chip.ok::before {
+  background: #34c759;
+}
+.sp-chip.warn::before {
+  background: #ff9f0a;
+}
+.sp-chip.bad::before {
+  background: #ff453a;
+}
+.sp-stage {
+  flex: 1;
+  min-height: 120px;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+.sp-iso {
+  width: 100%;
+  height: 100%;
+  max-width: 420px;
+}
+.sp-iso.small {
+  height: 68%;
+  max-width: 260px;
+}
+.sp-iso.tiny {
+  height: 100%;
+  max-height: 140px;
+  max-width: 160px;
+}
+.sp-stage.sp-at-card {
+  flex: 0 1 140px;
+  min-height: 70px;
+}
+.sp-caption {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: rgba(235, 235, 245, 0.6);
+  text-align: center;
+}
+.sp-card {
+  flex: none;
+  padding: 14px 16px;
+  border-radius: 22px;
+  background: rgba(28, 28, 32, 0.86);
+  border: 0.5px solid rgba(255, 255, 255, 0.1);
+  animation: rise 0.4s var(--ease-out) both;
+}
+.sp-card > * + * {
+  margin-top: 10px;
+}
+.sp-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 15px;
+}
+.sp-head span {
+  font-size: 13px;
+  color: rgba(235, 235, 245, 0.62);
+  font-variant-numeric: tabular-nums;
+}
+.sp-bins {
+  height: 26px;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+}
+.sp-bins i {
+  flex: 1;
+  border-radius: 2px 2px 0 0;
+  background: #6c8fd6;
+  transition: height 0.3s var(--ease-out);
+}
+.sp-bins i.later {
+  background: #3b4a6b;
+}
+.sp-bins i.none {
+  background: rgba(255, 255, 255, 0.08);
+}
+.sp-progress {
+  height: 3px;
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.12);
+  margin-top: 4px !important;
+}
+.sp-progress > div {
+  height: 100%;
+  border-radius: 3px;
+  background: #4f8cff;
+  transition: width 0.25s linear;
+}
+.sp-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+.sp-stats > div,
+.sp-nums > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 9px 12px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.06);
+  min-width: 0;
+}
+.sp-stats small,
+.sp-nums small {
+  font-size: 12px;
+  color: rgba(235, 235, 245, 0.6);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sp-stats b {
+  font-size: 18px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.sp-stats b em {
+  font-style: normal;
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(235, 235, 245, 0.6);
+}
+.sp-note {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: rgba(235, 235, 245, 0.58);
+}
+.sp-note.warn,
+.sp-how.warn {
+  color: #ff9f0a;
+}
+.sp-branches {
+  display: block;
+  width: 100%;
+  height: 110px;
+}
+.sp-axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 2px !important;
+  font-size: 11px;
+  color: rgba(235, 235, 245, 0.55);
+}
+/* 3. 再現 */
+.sp-stage.sp-at-replay {
+  justify-content: flex-start;
+}
+.sp-replay {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  max-width: 420px;
+}
+.sp-replay .replay-cube {
+  position: absolute;
+  inset: 0;
+}
+.sp-replay .replay-stage {
+  position: absolute;
+  inset: 0;
+}
+.sp-replay .cube3d {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  max-height: none;
+  aspect-ratio: auto;
+  background: none;
+  border: 0;
+}
+.sp-phase {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+.sp-phase b {
+  font-size: clamp(26px, 8vw, 36px);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+.sp-phase span {
+  font-size: 14px;
+  color: rgba(235, 235, 245, 0.62);
+  font-variant-numeric: tabular-nums;
+}
+.sp-replay-panel {
+  flex: none;
+}
+.sp-replay-panel > * + * {
+  margin-top: 10px;
+}
+.sp-moves {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 46px;
+  padding: 0 14px;
+  border-radius: 18px;
+  background: rgba(28, 28, 32, 0.86);
+  border: 0.5px solid rgba(255, 255, 255, 0.1);
+  overflow: hidden;
+  font-size: 20px;
+  font-weight: 600;
+}
+.sp-moves .mv {
+  flex: none;
+  color: #fff;
+}
+.sp-moves .mv.past {
+  color: rgba(255, 255, 255, 0.38);
+}
+.sp-moves .mv.now {
+  color: #000;
+  background: var(--stage-accent);
+  border-radius: 8px;
+  padding: 2px 7px;
+}
+.sp-moves .mv.inferred {
+  text-decoration: underline dashed rgba(255, 159, 10, 0.9);
+  text-underline-offset: 5px;
+}
+.sp-moves .sp-count {
+  margin-left: auto;
+  flex: none;
+  font-size: 13px;
+  font-weight: 500;
+  color: rgba(235, 235, 245, 0.6);
+  font-variant-numeric: tabular-nums;
+}
+.sp-band {
+  position: relative;
+}
+.sp-band .segs {
+  display: flex;
+  gap: 3px;
+  height: 8px;
+}
+.sp-band .segs i,
+.sp-split-bar i {
+  border-radius: 3px;
+  background: #3b4a6b;
+}
+.sp-band .segs i.cross,
+.sp-split-bar i.cross,
+.sp-splits i.cross {
+  background: #2f5fc4;
+}
+.sp-band .segs i.f2l,
+.sp-split-bar i.f2l,
+.sp-splits i.f2l {
+  background: #4f8cff;
+}
+.sp-band .segs i.oll,
+.sp-split-bar i.oll,
+.sp-splits i.oll {
+  background: #93b4f5;
+}
+.sp-band .segs i.pll,
+.sp-split-bar i.pll,
+.sp-splits i.pll {
+  background: #d7e2fb;
+}
+.sp-band .segs i:not(.on) {
+  opacity: 0.45;
+}
+.sp-band .head {
+  position: absolute;
+  top: -4px;
+  left: 0;
+  width: 2px;
+  height: 16px;
+  margin-left: -1px;
+  border-radius: 1px;
+  background: #fff;
+}
+.sp-band .names {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  font-size: 11px;
+  color: rgba(235, 235, 245, 0.55);
+}
+.sp-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.sp-actions .spacer {
+  flex: 1;
+}
+/* 形のないボタン（形のあるボタンは「次のソルブ」だけ） */
+.sp-text {
+  border: 0;
+  background: none;
+  color: rgba(235, 235, 245, 0.82);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  height: 38px;
+  padding: 0 8px;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.sp-text:active {
+  background: rgba(255, 255, 255, 0.08);
+}
+.sp-text[aria-pressed="true"] {
+  color: var(--stage-accent);
+}
+.sp-text.strong {
+  color: #fff;
+}
+/* 4. 結果カード */
+.sp-card.result {
+  padding: 14px 16px 12px;
+}
+.sp-nums {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+}
+.sp-nums > div {
+  background: none;
+  padding: 0;
+}
+.sp-nums b {
+  font-size: 28px;
+  font-weight: 300;
+  font-variant-numeric: tabular-nums;
+}
+.sp-split-bar {
+  display: flex;
+  gap: 3px;
+  height: 10px;
+}
+.sp-splits {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 6px;
+}
+.sp-splits li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 15px;
+}
+.sp-splits li > i {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+}
+.sp-splits li span {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.sp-splits em,
+.sp-reads em {
+  font-style: normal;
+  font-size: 12px;
+  color: rgba(235, 235, 245, 0.55);
+  margin-left: 6px;
+}
+.sp-splits b {
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+.sp-foot {
+  border-top: 0.5px solid rgba(255, 255, 255, 0.12);
+  padding-top: 8px;
+}
+.sp-reads {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+  color: rgba(235, 235, 245, 0.7);
+}
+.sp-reads b {
+  color: #fff;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.sp-how {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: rgba(235, 235, 245, 0.55);
+}
+.sp-card-actions {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  animation: rise 0.5s 0.15s var(--ease-out) both;
+}
+.stage .btn.primary.sp-next {
+  height: 50px;
+  border-radius: 16px;
+  font-size: 17px;
+}
+.sp-links {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 0 2px;
+}
+.sp-links .penalty-row {
+  display: contents;
+}
+.stage .sp-links .penalty-row .seg {
+  height: 40px;
+  border: 0;
+  background: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  color: rgba(235, 235, 245, 0.6);
+  font-size: 13px;
+  font-weight: 500;
+  padding: 0 6px;
+}
+.stage .sp-links .penalty-row .seg[aria-pressed="true"] {
+  color: var(--stage-accent);
+}
+.stage .sp-links .penalty-row .seg.danger {
+  color: #ff6961;
+}
+/* 縦に狭い画面: キューブを小さく */
+@media (max-height: 760px) and (orientation: portrait) {
+  .stop-screen {
+    gap: 6px;
+  }
+  .sp-note {
+    display: none;
+  }
+  .sp-card {
+    padding: 11px 13px;
+  }
+  .sp-card > * + * {
+    margin-top: 8px;
+  }
+}
+/* 広い画面・横持ち: 左にキューブ、右に板 */
+@media (min-width: 900px), (orientation: landscape) and (max-height: 540px) {
+  .stop-screen {
+    left: calc(92px + env(safe-area-inset-left));
+    right: calc(24px + env(safe-area-inset-right));
+    bottom: max(14px, env(safe-area-inset-bottom));
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(300px, 420px);
+    grid-template-rows: auto minmax(0, 1fr) auto auto;
+    column-gap: 24px;
+  }
+  .sp-top {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  .sp-stage {
+    grid-column: 1;
+    grid-row: 2 / span 3;
+  }
+  .sp-card,
+  .sp-replay-panel,
+  .sp-card-actions {
+    grid-column: 2;
+    align-self: end;
+  }
+  .sp-card,
+  .sp-replay-panel {
+    grid-row: 2 / span 2;
+  }
+  .sp-card-actions {
+    grid-row: 4;
+  }
+}

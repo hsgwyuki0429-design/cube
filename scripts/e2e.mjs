@@ -200,6 +200,35 @@ try {
       }
       await page.screenshot({ path: `${OUT}/seed${seed}-timer-done.png` });
       const live = await page.evaluate(() => window.__cubevisionTimer.get().result);
+      // E2E_STOP_SHOTS=フォルダ: 止めた後の画面（src/ui/StoppedScreen.tsx）を段ごとに撮る（止めた直後・録画を読む段の途中・枝・再現の途中・結果カード）。
+      // 描画の時間（1 回の最大・平均）と、知らせの数も出す
+      if (process.env.E2E_STOP_SHOTS) {
+        const dir = process.env.E2E_STOP_SHOTS;
+        mkdirSync(dir, { recursive: true });
+        await page.screenshot({ path: `${dir}/seed${seed}-0-stopped.png` });
+        const seen = {};
+        const t0s = Date.now();
+        let readShots = 0;
+        while (Date.now() - t0s < 240000) {
+          const st = await page.evaluate(() => ({ stage: window.__cubevisionStopStage, cells: window.__cubevisionShow?.get().read?.cells ?? -1 }));
+          if (!st.stage) break;
+          const first = seen[st.stage] === undefined;
+          seen[st.stage] ??= Date.now();
+          const since = Date.now() - seen[st.stage];
+          const want = st.stage === "read" ? readShots === 0 && since >= 1500 && st.cells > 0 : st.stage === "search" ? first : st.stage === "replay" ? !seen.replayShot && since >= 2500 : st.stage === "card" ? since >= 900 : false;
+          if (want) {
+            const name = st.stage === "replay" ? "3-replay" : st.stage === "card" ? "4-card" : st.stage === "search" ? "2-search" : "1-read";
+            await page.screenshot({ path: `${dir}/seed${seed}-${name}.png` });
+            console.log(`  止めた後の画面: ${dir}/seed${seed}-${name}.png`);
+            if (st.stage === "read") readShots++;
+            if (st.stage === "replay") seen.replayShot = true;
+            if (st.stage === "card") break;
+          }
+          await page.waitForTimeout(40);
+        }
+        const ds = await page.evaluate(() => ({ draw: { ...window.__cubevisionShowDraw }, received: window.__cubevisionShow?.get().received }));
+        console.log(`  止めた後の画面: 段 ${Object.keys(seen).filter((k) => k !== "replayShot").join("→")}・知らせ ${ds.received}・描画 ${ds.draw.n} 回 平均 ${(ds.draw.total / Math.max(1, ds.draw.n)).toFixed(2)}ms 最大 ${ds.draw.max.toFixed(2)}ms`);
+      }
       // E2E_NEXT=1: 休み中に「次のソルブ」を押して崩す（解析の結果は待たない）
       if (process.env.E2E_NEXT && !FAKECAM) {
         const rested = await page.waitForFunction(() => window.__cubevision.liveRest.resting, null, { timeout: 15000, polling: 50 }).then(() => true).catch(() => false);
