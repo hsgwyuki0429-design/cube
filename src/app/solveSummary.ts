@@ -145,17 +145,16 @@ const STAGE: Record<string, string> = { first: "1 回目", "deep-tried": "深い
 const WHY: Record<string, string> = { result: "解析の結果", error: "解析の失敗", next: "次のソルブ", guard: "保険の 180 秒" };
 const f1 = (x: number | undefined) => (x === undefined || !Number.isFinite(x) ? "-" : x.toFixed(1));
 
-// 画面に出す行（文字だけ）
+// 画面に出す行（文字だけ。スマホの幅で 1 行に収まるように短く）
 export function summaryLines(s: SolveSummary): string[] {
   const lines: string[] = [];
-  const how = [s.method, s.stage ? STAGE[s.stage] ?? s.stage : undefined, s.retried ? "録画全体のやり直し" : undefined].filter(Boolean).join("・");
-  lines.push(`解析 ${ANALYSIS[s.analysis] ?? s.analysis}${s.solved === false ? "（完成しない）" : ""}${how ? `（${how}）` : ""}${s.moves !== undefined ? `・推定 ${s.inferred}/${s.moves} 手` : ""}・待ち ${s.waitMs !== undefined ? `${(s.waitMs / 1000).toFixed(1)} 秒` : "-"}`);
-  if (s.error) lines.push(`  ${s.error}`);
+  const how = [s.method, s.stage ? (STAGE[s.stage] ?? s.stage) : undefined, s.retried ? "録画全体のやり直し" : undefined].filter(Boolean).join("・");
+  lines.push(`${ANALYSIS[s.analysis] ?? s.analysis}${s.solved === false ? "（完成しない）" : ""}${how ? `・${how}` : ""}${s.moves !== undefined ? `・推定 ${s.inferred}/${s.moves}` : ""}・待ち ${s.waitMs !== undefined ? `${(s.waitMs / 1000).toFixed(1)} 秒` : "-"}`);
+  if (s.error) lines.push(s.error);
   const fp = s.framePath;
-  if (fp) lines.push(`渡し方 ライブ ${fp.live ?? "-"}（一時 ${fp.liveWaits ?? 0}）・録画 ${fp.recorder ?? "-"}（一時 ${fp.recorderWaits ?? 0}）${fp.requested === false ? "・?solveload=default" : ""}${fp.liveNote ? `・${fp.liveNote}` : ""}${fp.recorderNote ? `・録画 ${fp.recorderNote}` : ""}`);
-  if (s.solveSec !== undefined)
-    lines.push(`ソルブ中 カメラ ${f1(s.camFps)}fps・ライブ ${f1(s.liveFps)} 枚/秒・マス ${s.cellsMedian ?? "-"}（中央）・面なし ${s.noFace !== undefined ? `${Math.round(s.noFace * 100)}%` : "-"}`);
-  if (s.rec) lines.push(`録画 ${s.rec.fps}fps・抜け ${s.rec.holes} か所（${s.rec.missing} 枚）・間引き ${s.rec.dropped ?? "-"}${s.rec.total !== undefined ? `/${s.rec.total}` : ""}`);
-  lines.push(`休み ${s.rests.length ? s.rests.map((r) => `止めて ${r.from.toFixed(1)}〜${r.to !== undefined ? r.to.toFixed(1) : "?"} 秒（${r.why ? WHY[r.why] ?? r.why : "続いている"}）`).join("・") : "なし"}`);
+  if (fp) lines.push(`渡し方 ${fp.live ?? "-"}/${fp.recorder ?? "-"}（一時 ${fp.liveWaits ?? 0}/${fp.recorderWaits ?? 0}）${fp.requested === false ? "・default" : ""}${fp.liveNote ? `・${fp.liveNote}` : ""}${fp.recorderNote ? `・録画 ${fp.recorderNote}` : ""}`);
+  if (s.solveSec !== undefined) lines.push(`ソルブ中 ${f1(s.camFps)}fps・ライブ ${f1(s.liveFps)}/秒・マス ${s.cellsMedian ?? "-"}・面なし ${s.noFace !== undefined ? `${Math.round(s.noFace * 100)}%` : "-"}`);
+  if (s.rec) lines.push(`録画 抜け ${s.rec.holes}（${s.rec.missing} 枚）・間引き ${s.rec.dropped ?? "-"}${s.rec.total !== undefined ? `/${s.rec.total}` : ""}`);
+  lines.push(`休み ${s.rests.length ? s.rests.map((r) => `${r.from.toFixed(1)}〜${r.to !== undefined ? r.to.toFixed(1) : "?"} 秒（${r.why ? (WHY[r.why] ?? r.why) : "続いている"}）`).join("・") : "なし"}`);
   return lines;
 }

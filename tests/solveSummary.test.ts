@@ -40,11 +40,11 @@ describe("solveSummary", () => {
     const lines = summaryLines(s).join("\n");
     expect(lines).toContain("確定");
     expect(lines).toContain("深い解き直し");
-    expect(lines).toContain("推定 1/3 手");
+    expect(lines).toContain("推定 1/3");
     expect(lines).toContain("待ち 7.5 秒");
-    expect(lines).toContain("カメラ 40.0fps");
+    expect(lines).toContain("ソルブ中 40.0fps");
     expect(lines).toContain("面なし 25%");
-    expect(lines).toContain("抜け 2 か所（3 枚）");
+    expect(lines).toContain("抜け 2（3 枚）");
     expect(lines).toContain("解析の結果");
   });
 
