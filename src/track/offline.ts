@@ -28,7 +28,13 @@ export interface OfflineOptions {
   // 解き直し全体の時間の上限（performance.now() の時刻）。過ぎたら、そこまでの前向きの結果（終わりに届かない）を返す（timedOut）。
   // 後ろ向きだけの答えを認めなかった後の深い 2 回目（refine.ts）で使う
   deadline?: number;
+  // 止めた後の画面に見せる探索の進み（src/vision/showFeed.ts）。観測を 1 つ進めるたびに呼ぶだけで、解き方は変えない
+  onSearch?: (e: SearchStep) => void;
 }
+
+// 探索の 1 歩: 前向き（f）・後ろ向き（b）がその観測（時刻 t）まで進んだときの仮説。meetT: つないだ所（見つかっていれば、その観測の時刻）。
+// bridge・finish: 前後がつながらず、隠れた区間の橋渡し・前向きを補う所に進んだ
+export type SearchStep = { dir: "f" | "b"; t: number; hyps: readonly Hypothesis[]; meetT?: number | null } | { dir: "bridge" | "finish" };
 
 export const DEFAULT_OFFLINE: OfflineOptions = {
   // 見失いからの復帰探索はしない（前後からつなぐ・橋渡しで補う方が正確で速い）。
@@ -127,6 +133,7 @@ export function decodeOffline(obs: Observation[], start: CubeState, end: CubeSta
     const p = new OfflineForward(start, options);
     for (const o of valid) {
       p.feed(o);
+      options.onSearch?.({ dir: "f", t: o.t, hyps: p.F[p.F.length - 1].hyps });
       if (options.deadline !== undefined && performance.now() > options.deadline) return { moves: p.fwd.bestMoves(), method: "forward", meetAt: -1, cost: p.fwd.costOffset, reachedEnd: false, timedOut: true };
     }
     fwd = p.fwd;
@@ -164,6 +171,7 @@ export function decodeOffline(obs: Observation[], start: CubeState, end: CubeSta
       const cost = f.cost + F[k].offset + b.cost + B[k].offset - f.obsCost;
       if (!best || cost < best.cost || (cost === best.cost && k < best.k)) best = { cost, k, f, b };
     }
+    options.onSearch?.({ dir: "b", t: valid[k].t, hyps: B[k].hyps, meetT: best ? valid[best.k].t : null });
     // つながる所が見つかっていて、ここでつないでもそれよりずっと高くつく（後ろ向きが見失っている）なら、後ろ向きを打ち切る。
     // 見失った後ろ向きは観測ごとに矛盾を払い続け、候補も深く探すので遅い: 実物のソルブ（観測 309）で、後ろ向きは終わりの 60 観測の
     // 後ずっと見失ったまま残りの 250 観測を探していた（解き直しの時間のほとんど）
@@ -200,9 +208,11 @@ export function decodeOffline(obs: Observation[], start: CubeState, end: CubeSta
   }
   // 前後どちらも、隠れていた同じ区間で見失った: 隠れる前の前向きの仮説と、隠れた後の後ろ向きの仮説を短い手順でつなぐ
   const late = () => options.deadline !== undefined && performance.now() > options.deadline;
+  options.onSearch?.({ dir: "bridge" });
   const bridged = options.bridge === false || late() ? null : bridge(F, B, valid, options.tick, options.deadline);
   if (bridged) return bridged;
   // それでもつながらない: 前向きの結果を、終わりの状態にたどり着くよう補う
+  options.onSearch?.({ dir: "finish" });
   const fixed = late() ? null : finishDeep(fwd, end, lastT, options.tick);
   if (fixed) return { moves: fixed, method: "forward-finish", meetAt: -1, cost: fwd.costOffset, reachedEnd: true };
   // 届かない: 後ろ向きが終わりから続けて追えていた所までの手順を付ける（タイムの終わりは決められる）

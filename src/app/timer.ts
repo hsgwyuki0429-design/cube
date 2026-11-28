@@ -20,6 +20,7 @@ import { controller } from "./controller";
 import { settingsStore } from "./settings";
 import { type Solve, type StartWhy, loadSolves, saveSolves } from "./storage";
 import { createStore } from "./store";
+import { LiveReads } from "./liveReads";
 
 export type TimerPhase = "idle" | "preparing" | "scrambling" | "inspection" | "solving" | "done";
 
@@ -72,6 +73,7 @@ let replanKey = ""; // スクランブルの案内を作り直した追跡の状
 const startDetector = new StartDetector(); // インスペクション中に回し始めたか（src/app/startDetect.ts）
 const stopDetector = new StopDetector(); // 計測中に完成したか（src/app/stopDetect.ts）
 let startWhy: StartWhy | null = null; // 始めた理由（記録の Solve.edges）
+const liveReads = new LiveReads(); // ライブが読んだマス（記録の Solve.liveReads。結果カード）
 
 const POSTROLL_MS = 1200; // 止めた後も録画を続ける時間（最後の手の回し終わりを確かめる）
 
@@ -302,6 +304,7 @@ function finish(u: TrackUpdate | null, how: StopReason, lookT?: number, pad?: Pa
   const inspectionMs = s.startT - s.inspectionStart;
   const penalty: Solve["penalty"] = settingsStore.get().inspection ? (inspectionMs > 17000 ? "DNF" : inspectionMs > 15000 ? "+2" : "") : "";
   const analyze = recording && controller.recorder.recording;
+  const reads = liveReads.sum(s.startT, endT);
   const solve: Solve = {
     id: `${Date.now()}`,
     date: Date.now(),
@@ -316,6 +319,7 @@ function finish(u: TrackUpdate | null, how: StopReason, lookT?: number, pad?: Pa
     ...(pad ? { pad: { ms: pad.ms } } : {}),
     poses: posesOf(s.startT, endT),
     edges: { ...(startWhy ? { start: startWhy } : {}), stop: how === "look" || how === "tracked" ? (stopDetector.why ?? { how: how === "look" ? "ids" : "tracked" }) : { how } },
+    ...(reads.frames ? { liveReads: reads } : {}),
     ...(analyze ? { analysis: "pending" as const, provisionalMs: timeMs } : {}),
   };
   const solves = [solve, ...s.solves];
@@ -330,7 +334,7 @@ function finish(u: TrackUpdate | null, how: StopReason, lookT?: number, pad?: Pa
   // （at〜until は揃って見えていたフレーム: until は止めると決めたフレーム）
   const hold = stopDetector.why?.hold ?? 0;
   const stop: LiveStop | undefined = how === "look" && lookT !== undefined ? { at: lookT, until: lookT + hold } : how === "tracked" && u ? { at: u.observation.t, until: u.observation.t } : undefined;
-  const live: LiveSpan = { id: solve.id, start: startState, startT: s.startT, endT, how, ...(stop ? { stop } : {}) };
+  const live: LiveSpan = { id: solve.id, start: startState, startT: s.startT, endT, how, stopT, ...(stop ? { stop } : {}) };
   window.setTimeout(async () => {
     // 速報値を、止めた後のフレーム（最後の手が止まったところ）も使って更新する
     if (how === "tracked") await refreshLive(live, s.startIndex, endIndex);
@@ -347,6 +351,7 @@ interface LiveSpan {
   endT: number;
   how: StopReason;
   stop?: LiveStop; // ライブが揃ったと判断して止めた時刻（RefineInput.stop）
+  stopT: number; // 止めた時刻（止めてから確定するまで: Solve.settleMs）
 }
 
 async function refreshLive(live: LiveSpan, from: number, to: number): Promise<void> {
@@ -378,6 +383,8 @@ async function analyzeRecording(live: LiveSpan, endT: number): Promise<void> {
     await analyzeRecordingInner(live, endT);
   } finally {
     markPhase(null);
+    // 止めてから確定（一部推定・速報値も）するまで（結果カード）
+    if (timerStore.get().solves.some((x) => x.id === live.id)) updateSolve(live.id, { settleMs: Math.round(performance.now() - live.stopT) });
   }
 }
 
@@ -551,6 +558,8 @@ timerStore.subscribe((t) => {
 });
 controller.liveRest.setPhase(timerStore.get().phase, 0);
 controller.onFrameResult(onFrame);
+// ライブが読んだマス（開始の判定より前に回し始めていた分も数えるので、場面によらず残す: src/app/liveReads.ts）
+controller.onFrameResult((m) => liveReads.push(m.t, m.sight));
 onPadEvent(onPad);
 // 1 秒ごとの処理の様子（src/app/perfLog.ts）の場面: タイマーの場面
 controller.perf.phase = () => timerStore.get().phase;
