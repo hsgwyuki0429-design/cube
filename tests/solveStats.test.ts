@@ -37,13 +37,11 @@ describe("solveStats", () => {
   });
   const st = solveStats(rec);
 
-  it("手数・目標との差", () => {
+  it("手数", () => {
     expect(st.solved).toBe(true);
     expect(st.htm).toBe(38);
     // 半回転は R2 L2 F2 U2 R2 = 5 手 → QTM は 38 + 5
     expect(st.qtm).toBe(43);
-    expect(st.overTarget).toBe(38 - 50);
-    expect(solveStats(rec, { targetMoves: 40 }).overTarget).toBe(-2);
     expect(st.inferred).toBe(1);
   });
 

@@ -50,7 +50,6 @@ export interface StatsInput {
 }
 
 export interface StatsOptions {
-  targetMoves?: number; // 目標の手数（HTM）。既定 50
   pauseMs?: number; // これ以上の手と手の間を「止まった所」にする。既定 300
   tpsWindow?: number; // 手ごとの移動平均の手数。既定 5
   peekMs?: number; // 持ち替えの後これ以内に元の向きに戻した 2 回を「傾けて戻した」（peek）にする。既定 1500
@@ -123,8 +122,6 @@ export interface SolveStats {
   ms: number; // end − start
   htm: number;
   qtm: number;
-  target: number;
-  overTarget: number; // htm − target（負なら目標より少ない）
   tps: number; // htm / ms
   phases: PhaseStat[] | null; // 揃わない・クロスの面が決まらないなら null
   crossFace: number; // クロスを作った面（分からなければ −1）
@@ -198,7 +195,6 @@ export function statsInputFromSolve(solve: SolveRecordLike): StatsInput {
 }
 
 export function solveStats(input: StatsInput, opts: StatsOptions = {}): SolveStats {
-  const target = opts.targetMoves ?? 50;
   const pauseMs = opts.pauseMs ?? 300;
   const win = Math.max(2, opts.tpsWindow ?? 5);
   const all = input.moves;
@@ -372,8 +368,6 @@ export function solveStats(input: StatsInput, opts: StatsOptions = {}): SolveSta
     ms,
     htm,
     qtm,
-    target,
-    overTarget: htm - target,
     tps: ms > 0 ? htm / (ms / 1000) : 0,
     phases,
     crossFace,
