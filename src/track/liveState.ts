@@ -16,6 +16,7 @@
 // 読みとの食い違い = 読み違いの割合 ε（MEASURED_EPS: 種類 × 続いた長さ）から log2((1 − ε)·23 / ε)。同じピースの食い違いが続いた分は、
 // 続いた長さの ε で 1 本ぶんになるように差分だけ足す（1 枚だけの食い違い 9.5 ビット・10 枚続いても 13 ビット）
 import { type CubeState, NUM_ORIENTATIONS, VIEW, isSolved, solvedState } from "../cube/model";
+import { CORNER_FACELETS, EDGE_FACELETS } from "../cube/pattern";
 import { PARTNERS } from "../cube/stickers";
 import { IS_CORNER, NUM_PIECES, PIECE_OF, PIECE_REF, REF_AT, EXPECT_ROT, toCubeState } from "./pieces/model";
 import { CLS, IDX, positionOf, seqTable, solveExact, type CenterEq, type Eq } from "./pieces/tables";
@@ -56,6 +57,12 @@ export interface LiveStateOptions {
   solvedMin: number; // 揃った状態にしてよい、揃った位置に読めたピースの数（preferSolved）
   lostAll: boolean; // 見失ったとき、読めていないピースは全部「分からない」にする（false: 食い違いの続いていたピースだけ）
   lostBits: number; // 食い違いがこれ（ビット）以上続いたら、読めたピースをその場で読みの位置にする（見えていないピースは分からないまま）
+  // 1 つのピースだけが、置き方の決まった読みで同じ位置に fixRun 回続けて読めたのに仮説と食い違うなら、そのピースをその位置に置き直す
+  // （そこにいたはずのピースは「分からない」。0 = しない）。食い違いの点数は続いた分だけ差分で足すので 1 つのピースでは lostBits に届かず、
+  // ほかの仮説もないと、読みと食い違ったまま最後まで戻らなかった（docs/history.md の「ソルブ中に 3D が一度外れると戻らない」）
+  fixRun: number;
+  fixChain: boolean; // センター 1 つのまとまりの読みも置き直しに数える（ほかの読みが fixAgree 以上合い、食い違うのが 1 つだけのとき）
+  fixAgree: number;
 }
 
 export const DEFAULT_LIVE_STATE: LiveStateOptions = {
@@ -88,6 +95,9 @@ export const DEFAULT_LIVE_STATE: LiveStateOptions = {
   lostBits: 20,
   lostAll: false,
   solvedMin: 8,
+  fixRun: 3,
+  fixChain: false,
+  fixAgree: 3,
 };
 
 const KIND_DIRECT = 0;
@@ -395,6 +405,8 @@ export interface LiveHyp {
   guess: Uint8Array; // 3D に出す位置の見込み（決まらないピースも手に合わせて動かす。式には使わない）
   phi: Int8Array; // センターの向き（-1 = 分からない）
   miss: Uint8Array; // ピース（0〜19）・センター（20〜25）ごとの、読みと食い違い続けている枚数
+  odd: Int8Array; // ピースごとの、置き方の決まった読みで仮説と食い違った位置（-1 = なし）
+  oddN: Uint8Array; // その位置に続けて読めた回数（仮説と合う読みがあれば 0 に戻す）
   cost: number;
   last: number; // このフレームの食い違い（ビット）
   rs: Int8Array | null; // このフレームのまとまりごとの置き方（面の置き方の記憶に使う）
@@ -467,8 +479,126 @@ function propagate(mask: Uint32Array): void {
         }
       }
     }
-    if (!changed) return;
+    if (!changed) break;
   }
+  deduce(mask);
+}
+
+// 決まらないピースが少ない（DEDUCE_MAX 個まで）とき、物理的にありえる状態（コーナーのねじれ・エッジの反転の和・偶奇）が 1 つしかなければ
+// そこに決める（推測ではなく、ありえる置き方がほかにない）。2 つのコーナーだけが分からないとき、偶奇で入れ替わりが・ねじれの和で向きが決まる
+// ピース p が位置 b（種類の中の番号）にあるときの場所（コーナー 0〜7・エッジ 0〜11）と向き（analyzeState と同じ決め方）。
+// physical: 物理的にありえる = コーナーの向きの和 ≡ 0（mod 3）・エッジの向きの和 ≡ 0（mod 2）・場所の並べ替えの偶奇がコーナーとエッジで揃った状態と同じ
+let ORI: { slot: Int8Array; ori: Int8Array; parity0: number } | null = null;
+function oriTables(): NonNullable<typeof ORI> {
+  if (ORI) return ORI;
+  const slot = new Int8Array(NUM_PIECES * 24);
+  const ori = new Int8Array(NUM_PIECES * 24);
+  for (let p = 0; p < NUM_PIECES; p++) {
+    const c = clsOf(p);
+    const ref = PIECE_REF[p];
+    const home = [ref, ...PARTNERS[ref]];
+    const colors = home.map((x) => Math.floor(x / 9));
+    const list = c === 0 ? CORNER_FACELETS : EDGE_FACELETS;
+    for (let b = 0; b < 24; b++) {
+      const x = positionOf(c, b);
+      const at = [x, ...PARTNERS[x]];
+      const colorAt = (q: number) => colors[at.indexOf(q)];
+      const s = list.findIndex((fl) => fl.length === at.length && fl.every((q) => at.includes(q)));
+      slot[p * 24 + b] = s;
+      if (c === 0) ori[p * 24 + b] = list[s].findIndex((q) => colorAt(q) === 0 || colorAt(q) === 3);
+      else {
+        // エッジの最初の色: U/D の色があればそれ、なければ F/B の色
+        const first = colors.find((f) => f === 0 || f === 3) ?? colors.find((f) => f === 2 || f === 5)!;
+        ori[p * 24 + b] = colorAt(list[s][0]) === first ? 0 : 1;
+      }
+    }
+  }
+  ORI = { slot, ori, parity0: 0 };
+  ORI.parity0 = physics(Array.from({ length: NUM_PIECES }, (_, p) => IDX[PIECE_REF[p]])).parity;
+  return ORI;
+}
+function permParity(perm: number[]): number {
+  let swaps = 0;
+  const seen = new Array(perm.length).fill(false);
+  for (let i = 0; i < perm.length; i++) {
+    if (seen[i]) continue;
+    let len = 0;
+    for (let j = i; !seen[j]; j = perm[j]) {
+      seen[j] = true;
+      len++;
+    }
+    swaps += len - 1;
+  }
+  return swaps & 1;
+}
+function physics(pos: ArrayLike<number>): { twist: number; flip: number; parity: number } {
+  const t = ORI!;
+  let twist = 0;
+  let flip = 0;
+  const pc: number[] = [];
+  const pe: number[] = [];
+  for (let p = 0; p < NUM_PIECES; p++) {
+    const k = p * 24 + pos[p];
+    if (clsOf(p) === 0) {
+      twist += t.ori[k];
+      pc.push(t.slot[k]);
+    } else {
+      flip += t.ori[k];
+      pe.push(t.slot[k]);
+    }
+  }
+  return { twist: twist % 3, flip: flip & 1, parity: (permParity(pc) + permParity(pe)) & 1 };
+}
+export const physical = (pos: ArrayLike<number>): boolean => {
+  const t = oriTables();
+  const v = physics(pos);
+  return v.twist === 0 && v.flip === 0 && v.parity === t.parity0;
+};
+
+const DEDUCE_MAX = 3;
+const DEDUCE_COMBOS = 216;
+function deduce(mask: Uint32Array): void {
+  const unk: number[] = [];
+  for (let p = 0; p < NUM_PIECES; p++) if (!single(mask[p])) unk.push(p);
+  if (!unk.length || unk.length > DEDUCE_MAX) return;
+  let combos = 1;
+  for (const p of unk) {
+    let n = 0;
+    for (let x = mask[p]; x; x &= x - 1) n++;
+    combos *= n;
+  }
+  if (combos > DEDUCE_COMBOS) return;
+  const pos = Array.from(mask, (m) => (single(m) ? bitIndex(m) : -1));
+  const used = [0, 0];
+  for (let p = 0; p < NUM_PIECES; p++) if (single(mask[p])) used[clsOf(p)] |= PLACE[clsOf(p)][bitIndex(mask[p])];
+  let found: number[] | null = null;
+  let count = 0;
+  const walk = (k: number): void => {
+    if (count > 1) return;
+    if (k === unk.length) {
+      if (physical(pos)) {
+        count++;
+        found = unk.map((p) => pos[p]);
+      }
+      return;
+    }
+    const p = unk[k];
+    const c = clsOf(p);
+    for (let x = mask[p] & ~used[c]; x; x &= x - 1) {
+      const b = bitIndex(x & -x);
+      used[c] |= PLACE[c][b];
+      pos[p] = b;
+      walk(k + 1);
+      used[c] &= ~PLACE[c][b];
+    }
+    pos[p] = -1;
+  };
+  walk(0);
+  if (count !== 1 || !found) return;
+  const got: number[] = found;
+  unk.forEach((p, k) => {
+    mask[p] = 1 << got[k];
+  });
 }
 
 export interface LiveStats {
@@ -479,6 +609,7 @@ export interface LiveStats {
   recovered: number;
   recoverTries: number;
   lost: number;
+  relocated: number;
   merged: number;
   maxHyps: number;
   evals: number;
@@ -506,7 +637,7 @@ export class LiveState {
   // 錨: 食い違いのない最後の仮説（見失ったところからの復帰の始まり）
   private anchor: { h: LiveHyp; t: number } | null = null;
   private lastRecover = -Infinity;
-  readonly stats: LiveStats = { frames: 0, steps: 0, deep: 0, deepSkipped: 0, recovered: 0, recoverTries: 0, lost: 0, merged: 0, maxHyps: 0, evals: 0, timedOut: 0, ms: { pick: 0, deep: 0, child: 0, recover: 0, maxDeep: 0, maxRecover: 0 }, over: { pick: 0, deep: 0, child: 0, recover: 0 } };
+  readonly stats: LiveStats = { frames: 0, steps: 0, deep: 0, deepSkipped: 0, recovered: 0, recoverTries: 0, lost: 0, relocated: 0, merged: 0, maxHyps: 0, evals: 0, timedOut: 0, ms: { pick: 0, deep: 0, child: 0, recover: 0, maxDeep: 0, maxRecover: 0 }, over: { pick: 0, deep: 0, child: 0, recover: 0 } };
   private nBase = 0;
 
   // phi: センターの向きの初め（分からない面は -1。TrackerEngine が切り替える前のフレームで見たセンターの向きから）
@@ -521,7 +652,7 @@ export class LiveState {
     }
     this.nBase = base?.n ?? 0;
     const mask0 = hypOf(state);
-    const h: LiveHyp = { mask: mask0, guess: Uint8Array.from(mask0, (m) => (single(m) ? bitIndex(m) : 0)), phi: phi ? Int8Array.from(phi) : new Int8Array(6).fill(-1), miss: new Uint8Array(26), cost: 0, last: 0, rs: null, tail, base };
+    const h: LiveHyp = { mask: mask0, guess: Uint8Array.from(mask0, (m) => (single(m) ? bitIndex(m) : 0)), phi: phi ? Int8Array.from(phi) : new Int8Array(6).fill(-1), miss: new Uint8Array(26), odd: new Int8Array(NUM_PIECES).fill(-1), oddN: new Uint8Array(NUM_PIECES), cost: 0, last: 0, rs: null, tail, base };
     this.hyps = [h];
     this.anchor = { h, t };
   }
@@ -835,6 +966,8 @@ export class LiveState {
     const guess = h.guess.slice();
     applyMoves(mask, phi, seq, guess);
     const miss = h.miss.slice();
+    const odd = h.odd.slice();
+    const oddN = h.oddN.slice();
     const rs = new Int8Array(fr.groups.length).fill(-1);
     let multi = false;
     fr.groups.forEach((g, gi) => {
@@ -859,6 +992,19 @@ export class LiveState {
         if (best >= this.options.contCap) return;
       }
       rs[gi] = r;
+      // 置き直しに数える読み: 置き方の決まったまとまり（fixChain ならセンター 1 つのまとまりも、ほかの読みが fixAgree 以上合い、
+      // 食い違うのが 1 つだけのとき: 置き方は合っていてそのピースだけが違う）
+      let fixable = g.mode === 0;
+      if (g.mode === 1 && this.options.fixChain) {
+        let ok = 0;
+        let bad = 0;
+        for (let j = g.from; j < g.to; j++) {
+          const y = fr.ys[j * 4 + r];
+          if (y >= 0 && (mask[fr.piece[j]] >>> y) & 1) ok++;
+          else bad++;
+        }
+        fixable = bad === 1 && ok >= this.options.fixAgree;
+      }
       for (let j = g.from; j < g.to; j++) {
         const p = fr.piece[j];
         const y = fr.ys[j * 4 + r];
@@ -869,7 +1015,17 @@ export class LiveState {
           }
           guess[p] = y;
           miss[p] = 0;
-        } else miss[p] = Math.min(255, miss[p] + 1);
+          oddN[p] = 0;
+        } else {
+          miss[p] = Math.min(255, miss[p] + 1);
+          if (fixable && y >= 0) {
+            if (odd[p] === y) oddN[p] = Math.min(255, oddN[p] + 1);
+            else {
+              odd[p] = y;
+              oddN[p] = 1;
+            }
+          }
+        }
       }
     });
     for (const ce of fr.centers) {
@@ -886,7 +1042,7 @@ export class LiveState {
       const b = t0 + ((fr.t - t0) * (j + 1)) / seq.length;
       tail = { move: seq[j], t0: a, t: b, orient: this.orient, inferred: false, prev: tail, len: (tail?.len ?? 0) + 1 };
     }
-    return { mask, guess, phi, miss, cost: ch.cost, last: ch.last, rs, tail, base: h.base };
+    return { mask, guess, phi, miss, odd, oddN, cost: ch.cost, last: ch.last, rs, tail, base: h.base };
   }
 
   // 一番よい仮説の置き方で、面の置き方を覚える（センターの見えない面の続きに使う）
@@ -919,7 +1075,7 @@ export class LiveState {
       for (let f = 0; f < 6; f++) if (h.phi[f] !== phi[f]) phi[f] = -1;
     }
     propagate(mask);
-    return { mask, guess: b.guess.slice(), phi, miss: b.miss.slice(), cost: 0, last: b.last, rs: b.rs, tail: b.tail, base: b.base };
+    return { mask, guess: b.guess.slice(), phi, miss: b.miss.slice(), odd: b.odd.slice(), oddN: b.oddN.slice(), cost: 0, last: b.last, rs: b.rs, tail: b.tail, base: b.base };
   }
 
   private afterStep(fr: LiveFrame): void {
@@ -934,6 +1090,7 @@ export class LiveState {
     let missBits = 0;
     for (let k = 0; k < 26; k++) if (b.miss[k] >= 2) missBits += W[k < 20 ? KIND_DIRECT : KIND_CENTER][lenBucket(b.miss[k])];
     if (missBits >= o.lostBits) this.teleport(fr);
+    else this.relocate(b, fr);
     this.preferSolved(fr);
   }
 
@@ -947,7 +1104,7 @@ export class LiveState {
     if (read.size < this.options.solvedMin) return;
     for (const [p, y] of read) if (y !== IDX[PIECE_REF[p]]) return;
     const mask = Uint32Array.from({ length: NUM_PIECES }, (_, p) => 1 << IDX[PIECE_REF[p]]);
-    const h: LiveHyp = { mask, guess: Uint8Array.from(mask, (m) => bitIndex(m)), phi: b.phi.slice(), miss: new Uint8Array(26), cost: 0, last: 0, rs: b.rs, tail: b.tail, base: { n: ++this.nBase, at: b.tail?.len ?? 0, state: Array.from(solvedState()), t: fr.t } };
+    const h: LiveHyp = { mask, guess: Uint8Array.from(mask, (m) => bitIndex(m)), phi: b.phi.slice(), miss: new Uint8Array(26), odd: new Int8Array(NUM_PIECES).fill(-1), oddN: new Uint8Array(NUM_PIECES), cost: 0, last: 0, rs: b.rs, tail: b.tail, base: { n: ++this.nBase, at: b.tail?.len ?? 0, state: Array.from(solvedState()), t: fr.t } };
     this.stats.lost++;
     this.hyps = [h, ...this.hyps.map((x) => ({ ...x, cost: x.cost + 4 }))].slice(0, this.options.maxHyps);
   }
@@ -991,7 +1148,7 @@ export class LiveState {
       const b = t0 + ((t1 - t0) * (j + 1)) / seq.length;
       tail = { move: m, t0: a, t: b, orient: this.orient, inferred: true, prev: tail, len: (tail?.len ?? 0) + 1 };
     });
-    return { mask, guess, phi, miss: new Uint8Array(26), cost: 0, last: 0, rs: h.rs, tail, base: h.base };
+    return { mask, guess, phi, miss: new Uint8Array(26), odd: new Int8Array(NUM_PIECES).fill(-1), oddN: new Uint8Array(NUM_PIECES), cost: 0, last: 0, rs: h.rs, tail, base: h.base };
   }
 
   // 見失った: 一番よい仮説の、食い違い続けているピースを読みの位置にし、そこにいたはずのピースは「分からない」にする
@@ -1018,10 +1175,46 @@ export class LiveState {
     this.stats.lost++;
     const guess = b.guess.slice();
     for (const [p, y] of read) guess[p] = y;
-    const h: LiveHyp = { mask, guess, phi, miss: new Uint8Array(26), cost: 0, last: 0, rs: b.rs, tail: b.tail, base: { n: ++this.nBase, at: b.tail?.len ?? 0, state: [], t: fr.t } };
+    this.jump(b, mask, phi, guess, fr);
+  }
+
+  // 一番よい仮説から、状態を手なしで変えた仮説を作って一番にする（手順はここでつながらない: base。元の仮説も残す）
+  private jump(b: LiveHyp, mask: Uint32Array, phi: Int8Array, guess: Uint8Array, fr: LiveFrame): void {
+    const h: LiveHyp = { mask, guess, phi, miss: new Uint8Array(26), odd: new Int8Array(NUM_PIECES).fill(-1), oddN: new Uint8Array(NUM_PIECES), cost: 0, last: 0, rs: b.rs, tail: b.tail, base: { n: ++this.nBase, at: b.tail?.len ?? 0, state: [], t: fr.t } };
     h.base!.state = Array.from(this.display(h));
     this.hyps = [h, ...this.hyps.map((x) => ({ ...x, cost: x.cost + 4 }))].slice(0, this.options.maxHyps);
     this.anchor = null;
+  }
+
+  // 置き直す: 置き方の決まった読みで fixRun 回続けて同じ位置に読めたのに仮説と食い違うピースを、その位置にする。そこ（同じキュービー）に
+  // いたはずのピースは「分からない」（ほかの決まったピースの場所を除く）。読めていないほかのピースはそのまま
+  private relocate(b: LiveHyp, fr: LiveFrame): boolean {
+    const o = this.options;
+    if (!o.fixRun) return false;
+    const fix: number[] = [];
+    for (let p = 0; p < NUM_PIECES; p++) if (b.oddN[p] >= o.fixRun && b.odd[p] >= 0) fix.push(p);
+    if (!fix.length) return false;
+    const mask = b.mask.slice();
+    const guess = b.guess.slice();
+    const freed = [0, 0];
+    for (const p of fix) {
+      mask[p] = 1 << b.odd[p];
+      guess[p] = b.odd[p];
+      freed[clsOf(p)] |= PLACE[clsOf(p)][b.odd[p]];
+    }
+    for (let c = 0; c < 2; c++) {
+      if (!freed[c]) continue;
+      let taken = 0;
+      for (let p = 0; p < NUM_PIECES; p++) if (clsOf(p) === c && single(mask[p]) && (fix.includes(p) || !(mask[p] & freed[c]))) taken |= PLACE[c][bitIndex(mask[p])];
+      for (let p = 0; p < NUM_PIECES; p++) {
+        if (clsOf(p) !== c || fix.includes(p) || !(mask[p] & freed[c])) continue;
+        mask[p] = (single(mask[p]) ? 0 : mask[p] & ~freed[c]) || FULL24 & ~taken;
+      }
+    }
+    propagate(mask);
+    this.stats.relocated++;
+    this.jump(b, mask, b.phi.slice(), guess, fr);
+    return true;
   }
 
   // 3D に出す状態: 決まったピースはその位置、決まらないピースは前に出した位置（取り得る位置にあって空いていれば）か、空いている取り得る位置

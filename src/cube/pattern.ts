@@ -33,9 +33,10 @@ function clockwise(faces: number[]): number[] {
   return dot(cross(NORMAL[ud], NORMAL[a]), sumNormals(faces)) < 0 ? [ud, a, b] : [ud, b, a];
 }
 
-const EDGE_FACELETS = EDGE_SLOTS.map((slot) => slot.map((f) => faceletAt(sumNormals(slot), NORMAL[f])));
+// エッジ・コーナーの場所ごとの facelet（analyzeState の向きの決め方の並び。コーナーは U/D の面から時計回り）
+export const EDGE_FACELETS = EDGE_SLOTS.map((slot) => slot.map((f) => faceletAt(sumNormals(slot), NORMAL[f])));
 const CORNER_ORDER = CORNER_SLOTS.map(clockwise);
-const CORNER_FACELETS = CORNER_ORDER.map((order) => order.map((f) => faceletAt(sumNormals(order), NORMAL[f])));
+export const CORNER_FACELETS = CORNER_ORDER.map((order) => order.map((f) => faceletAt(sumNormals(order), NORMAL[f])));
 
 export type StateProblem =
   | { kind: "count"; color: number; count: number }
