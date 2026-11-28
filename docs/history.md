@@ -660,6 +660,8 @@ GAN Smart Timer を Web Bluetooth でつなぐ（iOS の Safari は Web Bluetoot
   1 個は指がかかったマスが読めない（seed 7 の tall で 79% 対 100%、seed 4 で 57% 対 72%）。小さく写す視点では差が 1〜2 ポイント
 - 合成の手順は 1 フレームより圧縮・遠さに強く、8 本ではどちらも精密解析が全部つながる。**1 フレームの差（ぶれ・遠さ・圧縮で 1 個が上、
   指で 4 個が上）が実物のソルブでどちらに出るかは、実機で比べて決める**（`docs/roadmap.md` の「配置 3」）
+- E2E（デモの合成カメラ、seed 11）: 既定と `E2E_QUERY='&stickers=standard'` のどちらも追跡 100%・final OK、タイマーも両方 done（meet）・
+  5Mbps。認識の procMs は 1 個 58・43・31ms、4 個 45・37・37ms で、走らせるたびのぶれの方が大きい
 
 ## スキャン（`src/scan`）
 
