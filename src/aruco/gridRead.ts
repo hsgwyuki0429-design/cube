@@ -3,8 +3,9 @@
 // まとめて読む。指で隠れたマーカーは枠が黒くないので外す）。格子は少しずれていることがある（ピースの段差・前のフレームの格子）ので、
 // マスごとに 1 マス分ほどの範囲で位置と大きさを合わせてから読む（枠の点が暗く、マーカーの間の点が明るい所）。回している途中の層の
 // マスは向きが合わないので読めない（読めないままにする）。1 マス 0.1〜0.3ms（山登り）・0.3〜0.7ms（範囲全体）。OpenCV の検出は
-// 1 フレーム 20〜60ms。3×3 の符号（unique54・aruco12）で、マーカーの間にステッカーの色が見える配置（4 個: quad-half）向け
-// （1 個の配置はマーカーの間がないので読めない: null）。DOM もカメラも知らない
+// 1 フレーム 20〜60ms。3×3 の符号（unique54・aruco12）向け。4 個の配置（quad-half）はマーカーの間のステッカーの色を明るい所にし、
+// 1 個の配置（standard）はマーカーの間がないので、マーカーの外の色の縁（ステッカーの 0.42〜0.5）の真ん中を明るい所にする
+// （縁は細いので、明るさの基準は符号の明るいマスとも比べる: singleMarker）。DOM もカメラも知らない
 import { type Mat3, type Pt, applyH, invertH } from "../vision/homography";
 import { chroma, median } from "../lib/util";
 import { type VisibleFace, cellH, readConfidence } from "./cube";
@@ -63,6 +64,7 @@ interface Layout {
   inner: Pt[]; // 4 × 9 × 4（マーカーごと・マスごとに 2×2 の点）
   gap: Pt[];
   squares: Pt[][]; // マーカーの四角（左上から時計回り、面の軸にそろえた向き）
+  single: boolean; // マーカーの間がない（1 個の配置）: gap はマーカーの外の色の縁
 }
 
 function layoutOf(design: StickerDesign): Layout {
@@ -95,7 +97,18 @@ function layoutOf(design: StickerDesign): Layout {
       const v = -0.42 + (0.84 * i) / 16;
       if (!insideAny(u, v, 0.4 * m)) gap.push([u, v]);
     }
-  return { border, inner, gap, squares };
+  // 1 個の配置: マーカーの間の点がない。マーカーの外の色の縁（マーカーの辺 / 2 〜 ステッカーの辺 / 2 = 0.5）の真ん中を回る点にする
+  // （4 隅は隣のステッカーの間の黒に近いので使わない）。4 個の配置は今まで通り
+  const single = !gap.length;
+  if (single) {
+    const r = (design.side / 2 + 0.5) / 2;
+    const n = 12;
+    for (let k = 0; k < n; k++) {
+      const t = -design.side / 2 + (design.side * (k + 0.5)) / n;
+      gap.push([t, -r], [r, t], [-t, r], [-r, -t]);
+    }
+  }
+  return { border, inner, gap, squares, single };
 }
 const layouts = new WeakMap<StickerDesign, Layout>();
 
@@ -207,11 +220,9 @@ export function gridReadCell(img: ImageLike, H: Mat3, cell: number, scheme: Stic
   // 合わせた位置で読む
   score(best.k, best.dx, best.dy);
   const sortedG = Array.from(gv).sort((a, b) => a - b);
-  const light = sortedG[Math.floor(ng * 0.5)];
+  let light = sortedG[Math.floor(ng * 0.5)];
   const sortedB = Array.from(bv).sort((a, b) => a - b);
   const dark = sortedB[Math.floor(nb * 0.25)];
-  if (light - dark < o.minContrast) return null;
-  const thr = (light + dark) / 2;
   const ox = J[0] * best.dx + J[1] * best.dy;
   const oy = J[2] * best.dx + J[3] * best.dy;
   const markers = design.at.length;
@@ -219,6 +230,11 @@ export function gridReadCell(img: ImageLike, H: Mat3, cell: number, scheme: Stic
   const iA = pack(L.inner);
   const iv = new Float32Array(L.inner.length);
   if (read(iA, L.inner.length, best.k, ox, oy, iv) < 0) return null;
+  // 1 個の配置: 色の縁は細く（16mm で 1.3mm）、ぶれ・圧縮で黒い枠や隣の黒と混ざって暗く読める。符号の明るいマス（内側の点の上から
+  // 1/4）の方が明るければそれを明るさの基準にする
+  if (L.single) light = Math.max(light, Array.from(iv).sort((a, b) => a - b)[Math.floor(iv.length * 0.75)]);
+  if (light - dark < o.minContrast) return null;
+  const thr = (light + dark) / 2;
   const perI = L.inner.length / markers; // 9 マス × 4 点
   // マーカーごと: 枠が黒いか（指で隠れていないか）、符号のマスの明るさ（thr からの差）
   const valid: boolean[] = [];
@@ -281,15 +297,18 @@ export function gridReadCell(img: ImageLike, H: Mat3, cell: number, scheme: Stic
   const out: Marker[] = [];
   const rgbSum = [0, 0, 0];
   let rgbN = 0;
-  for (let q = 0; q < ng; q++) {
-    const xi = Math.round(c0[0] + ox + best.k * gA[q * 2]);
-    const yi = Math.round(c0[1] + oy + best.k * gA[q * 2 + 1]);
-    const kk = (yi * img.width + xi) * 4;
+  const addRgb = (x: number, y: number) => {
+    const kk = (Math.round(y) * img.width + Math.round(x)) * 4;
     rgbSum[0] += img.data[kk];
     rgbSum[1] += img.data[kk + 1];
     rgbSum[2] += img.data[kk + 2];
     rgbN++;
+  };
+  // 色: 4 個の配置はマーカーの間（ステッカーの色）。1 個の配置は符号の明るいマス（検出の Marker.rgb と同じ。色の縁は細く黒と混ざる）
+  if (L.single) {
+    for (let i = 0; i < 9; i++) if ((code >> i) & 1) for (let q = 0; q < 4; q++) addRgb(c0[0] + ox + best.k * iA[(i * 4 + q) * 2], c0[1] + oy + best.k * iA[(i * 4 + q) * 2 + 1]);
   }
+  if (!rgbN) for (let q = 0; q < ng; q++) addRgb(c0[0] + ox + best.k * gA[q * 2], c0[1] + oy + best.k * gA[q * 2 + 1]);
   const rgb: [number, number, number] = [Math.round(rgbSum[0] / rgbN), Math.round(rgbSum[1] / rgbN), Math.round(rgbSum[2] / rgbN)];
   for (let k = 0; k < markers; k++) {
     if (!valid[k]) continue;

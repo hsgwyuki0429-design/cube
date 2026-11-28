@@ -70,6 +70,9 @@ const GRID_REDETECT_MS = 500;
 const GRID_REDETECT_FRAMES = 3;
 const GRID_REGION_MS = 1000;
 const TRACK_MIN = 8;
+// 格子で読めたとみなすマーカーの数（配置ごと）: 4 個の配置は 1 枚に 4 個読めるので TRACK_MIN（ステッカー 2〜4 枚）、1 個の配置は 1 枚に
+// 1 個なので同じくらいのステッカーの数（4 枚）
+const gridMin = (design: StickerDesign) => (design.at.length > 1 ? TRACK_MIN : 4);
 const TRACK_MIN_FIT = 0.85; // 追ったマーカーの明暗が符号どおりの割合（検出と同じ: src/aruco/detect.ts の MIN_FIT）
 
 type Box = { t: number; x0: number; y0: number; x1: number; y1: number; side: number; small: number };
@@ -409,7 +412,7 @@ function liveMarkers(
   const fresh = !!st && [...st.known.values()].some((k) => k.t === st.t);
   if (canTrack && grid && fresh) {
     const { markers, offsets } = readKnown(st, img, t, scheme, design);
-    if (markers.length >= TRACK_MIN) {
+    if (markers.length >= gridMin(design)) {
       let faces = build(markers);
       // 戻らない面: その面のあった範囲だけ検出する。面の割り当てが変わった（正面が読めず、残りの面が正面とみなされた）ときはすぐ、
       // ほかは MISSING_MS より長く戻らなければ（同じ面は MISSING_MS ごとに 1 回まで）。正面がないだけ（回している・指で隠れた）なら
@@ -418,7 +421,8 @@ function liveMarkers(
       const lost = [...st.known].filter(([slot, k]) => (urgent ? t - k.tried > 0 : t - k.t > MISSING_MS && t - k.tried > MISSING_MS) && !faces.faces.some((f) => f.slot === slot && !f.partial));
       if (lost.length) {
         // 外れた面の範囲をまとめて 1 回だけ検出する（面ごとに検出すると、重なった範囲を何度も二値化していた）
-        const pad = Math.max(...markers.map((m) => m.side)) * 1.5;
+        // 広げる量はステッカーの辺の 0.6 ほど（4 個の配置のマーカーの辺 × 1.5。1 個の配置はマーカーが大きいので割り戻す）
+        const pad = Math.max(...markers.map((m) => m.side)) * 1.5 * Math.min(1, 0.4 / design.side);
         const x0 = Math.max(0, Math.floor(Math.min(...lost.map(([, k]) => k.box.x)) - pad));
         const y0 = Math.max(0, Math.floor(Math.min(...lost.map(([, k]) => k.box.y)) - pad));
         const x1 = Math.min(img.width, Math.ceil(Math.max(...lost.map(([, k]) => k.box.x + k.box.w)) + pad));

@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { gunzipSync, gzipSync } from "node:zlib";
 import { it } from "vitest";
-import { STICKERS, designOf } from "../../src/aruco/design";
+import { STICKERS, designOf, stickerPipeline, stickersOf } from "../../src/aruco/design";
 import { ARUCO_REFS } from "../../src/aruco/palette";
 import { MOVE_NAMES, type Vec3, applyMoves, parseMoves, solvedState, statesEqual } from "../../src/cube/model";
 import { TrackerEngine } from "../../src/track/engine";
@@ -23,8 +23,12 @@ import { loadTestOpenCv } from "../cv";
 import { applyMoveStickers, renderArucoCube, solvedStickers } from "../arucoCube";
 import type { Finger } from "../render";
 
-// DESIGN=standard など: マーカーの配置（src/aruco/design.ts）・SCHEME=aruco54 など: 符号（4×4 の 54 種類）。マーカーの形式の比較用
-const BENCH_STICKERS = { stickers: (process.env.SCHEME ?? STICKERS.stickers) as typeof STICKERS.stickers, arucoDesign: (process.env.DESIGN ?? STICKERS.arucoDesign) as typeof STICKERS.arucoDesign };
+// DESIGN=standard など: マーカーの配置（src/aruco/design.ts）・SCHEME=aruco54 など: 符号（4×4 の 54 種類）。マーカーの形式の比較用。
+// DESIGN だけなら本体の ?stickers= と同じ設定（stickerPipeline: 1 個の配置も専用の検出）。QUAD=0 で OpenCV の検出
+// VIEW=small: どの手順もキューブを小さく写す視点（1280×720・正面のマスの間隔 約 31px。実機で遠くから撮ったとき）
+const BENCH_STICKERS: PipelineConfig = process.env.SCHEME
+  ? { stickers: process.env.SCHEME as PipelineConfig["stickers"], arucoDesign: process.env.DESIGN ?? STICKERS.arucoDesign }
+  : { ...stickerPipeline(stickersOf(process.env.DESIGN ?? STICKERS.arucoDesign)), ...(process.env.QUAD === "0" ? { arucoQuad: false } : {}) };
 const LIVE_BASE: PipelineConfig = { ...BENCH_STICKERS, arucoRegion: true, arucoTrack: true }; // src/app/controller.ts の pipelineConfig と同じ（精密解析にも使う）
 const LIVE_ONLY: Partial<PipelineConfig> = { arucoTurn: false }; // ライブだけ（controller.liveConfig）
 // decoder: 追跡のデコーダの設定（認識の設定ではない）
@@ -96,9 +100,11 @@ function dist(a: string[], b: string[]): number {
   return d[a.length][b.length];
 }
 
+const SMALL = { name: "small", w: 1280, h: 720, eye: [3.6, 3.2, 10] as Vec3 };
+
 function scene(seed: number) {
   const r = rng(seed);
-  const view = VIEWS[seed % VIEWS.length];
+  const view = process.env.VIEW === "small" ? SMALL : VIEWS[seed % VIEWS.length];
   const moves: number[] = [];
   while (moves.length < 10) {
     const m = Math.floor(r() * 18);
@@ -152,12 +158,12 @@ it("手順の総合評価", async () => {
   const [from, to] = (process.env.SEEDS ?? "1-10").split("-").map(Number);
   const liveNames = (process.env.LIVE ?? Object.keys(LIVE).join(",")).split(",").filter(Boolean);
   const refineNames = (process.env.REFINE ?? Object.keys(REFINE).join(",")).split(",").filter(Boolean);
-  const design = designOf(BENCH_STICKERS.arucoDesign);
+  const design = designOf(BENCH_STICKERS.arucoDesign ?? STICKERS.arucoDesign);
   for (let seed = from; seed <= (to ?? from); seed++) {
     const sc = scene(seed);
     const { w, h, eye } = sc.view;
     // 名前@k: 実機のライブのように、Worker が処理している間（処理時間 × k）に来たフレームは捨てる（k はスマホが Node より遅い分）
-    const lives = liveNames.map((name) => ({
+    const makeLives = () => liveNames.map((name) => ({
       name,
       // 名前@fN: 1 秒 N 枚に固定して処理する（処理時間によらない。低い fps での崩れ方を比べる）
       k: name.split("@")[1]?.startsWith("f") ? 0 : Number((name.split("@")[1] ?? process.env.LIVEK ?? "0").replace(/s$/, "")),
@@ -172,8 +178,9 @@ it("手順の総合評価", async () => {
       busyUntil: -Infinity,
       processed: 0,
       spent: [] as number[],
+      shown: [] as { t: number; state: Uint8Array }[], // 処理したフレームごとに 3D に出した状態（一致の割合）
     }));
-    const refines = refineNames.map((name) => ({
+    const makeRefines = () => refineNames.map((name) => ({
       name,
       still: REFINE[name].still === false ? null : new StillSkipper(),
       refiner: new Refiner(cv as never, { state: Array.from(solvedState()), refs: ARUCO_REFS, from: 0, to: Infinity, startHint: 300, pipeline: { ...LIVE_BASE, ...REFINE[name].pipeline }, gate: REFINE[name].gate !== false }),
@@ -181,7 +188,6 @@ it("手順の総合評価", async () => {
     }));
     let st = solvedStickers();
     let done = 0;
-    let prevGrid: Float32Array | null = null;
     const pitch = (75 * Math.min(w, h)) / 960 / (eye[2] / 5.5);
     let renderMs = 0;
     const shiftMemory = {};
@@ -202,7 +208,7 @@ it("手順の総合評価", async () => {
         fingers.push({ a: [tip[0] - pitch * 3, tip[1] + pitch * 3], b: tip, width: pitch * 0.9 });
       }
       const t0 = performance.now();
-      const cacheFile = process.env.CACHE ? `${process.env.CACHE}/${process.env.SCHEME ?? ""}${process.env.DESIGN ?? ""}${process.env.SPEED ?? "normal"}${process.env.ROT ? "-rot" : ""}-${FPS}-${seed}-${Math.round(t)}.gz` : null;
+      const cacheFile = process.env.CACHE ? `${process.env.CACHE}/${process.env.SCHEME ?? ""}${process.env.DESIGN ?? ""}${process.env.VIEW ?? ""}${process.env.SPEED ?? "normal"}${process.env.ROT ? "-rot" : ""}-${FPS}-${seed}-${Math.round(t)}.gz` : null;
       const img = cacheFile && existsSync(cacheFile) ? { data: new Uint8ClampedArray(gunzipSync(readFileSync(cacheFile))), width: w, height: h } : renderArucoCube(cv as never, {
         width: w,
         height: h,
@@ -212,7 +218,7 @@ it("手順の総合評価", async () => {
         turn: turning ? { move: sc.moves[done], fraction: (t - cur.start) / cur.dur, spread: Math.min(0.3, 1000 / FPS / 2 / cur.dur) } : undefined,
         noise: 2.5,
         seed: Math.round(t) + seed * 100000,
-        scheme: BENCH_STICKERS.stickers,
+        scheme: BENCH_STICKERS.stickers as "unique54",
         fingers,
         design,
       });
@@ -220,141 +226,161 @@ it("手順の総合評価", async () => {
       renderMs += performance.now() - t0;
       frameList.push({ img, t, fingers: done, turning });
     }
-    // H264=2500 など: 本体の録画と同じ形の H.264（kbps）に圧縮して戻した映像で測る（CLAUDE.md の ffmpeg の条件）
-    if (process.env.H264) {
-      const raw = Buffer.concat(frameList.map((f) => Buffer.from(f.img.data.buffer, f.img.data.byteOffset, f.img.data.byteLength)));
-      const br = `${process.env.H264}k`;
-      const enc = spawnSync("ffmpeg", ["-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", `${w}x${h}`, "-r", String(FPS), "-i", "-", "-pix_fmt", "yuv420p", "-c:v", "libx264", "-profile:v", "baseline", "-preset", "veryfast", "-tune", "zerolatency", "-b:v", br, "-maxrate", br, "-bufsize", `${Number(process.env.H264) / 2}k`, "-g", String(FPS), "-f", "h264", "-"], { input: raw, maxBuffer: 1 << 30 });
-      const dec = spawnSync("ffmpeg", ["-loglevel", "error", "-f", "h264", "-i", "-", "-f", "rawvideo", "-pix_fmt", "rgba", "-"], { input: enc.stdout, maxBuffer: 2 ** 32 });
-      const n = w * h * 4;
-      if (dec.stdout.length < n * frameList.length) throw new Error(`H.264 の圧縮・復号に失敗: ${enc.stderr} ${dec.stderr}`);
-      frameList.forEach((f, i) => {
-        if ((i + 1) * n <= dec.stdout.length) f.img = { data: new Uint8ClampedArray(dec.stdout.buffer.slice(dec.stdout.byteOffset + i * n, dec.stdout.byteOffset + (i + 1) * n)), width: w, height: h };
-      });
-    }
-    for (const { img, t, turning } of frameList) {
-      const grid = thumb(img);
-      const motion = prevGrid ? motionOf(grid, prevGrid) : Infinity;
-      prevGrid = grid;
-      for (const l of lives) {
-        if (l.select) {
-          l.pending.push({ img, t, motion });
-          if (l.pending.length > 8) l.pending.shift();
-        }
-        if ((l.k || l.every) && t < l.busyUntil) continue;
-        let pick = { img, t };
-        if (l.select && l.pending.length) {
-          let best = l.pending[l.pending.length - 1];
-          for (const p of l.pending) if (p.motion < best.motion * 0.7) best = p;
-          pick = best;
-          l.pending = [];
-        }
-        const a = performance.now();
-        const res = processFrame(cv as never, pick.img, pick.t, l.cfg, l.memory);
-        l.engine.push(frameReading(pick.t, res));
-        const spent = performance.now() - a;
-        l.ms += spent;
-        l.processed++;
-        l.spent.push(spent);
-        l.busyUntil = l.every ? t + l.every - 1 : t + spent * l.k - 1;
-        if (process.env.LIVEDUMP && t >= Number(process.env.LIVEDUMP)) process.stdout.write(`# live ${l.name} ${pick.t.toFixed(0)} ${liveStats.last} ${spent.toFixed(0)}ms m${res.quads.length} ${l.engine.decoder.status} ${l.engine.decoder.bestMoves().map((m) => MOVE_NAMES[m.move]).join(" ")} | obs ${l.engine.decoder.observations} cost ${l.engine.decoder.lastObservationCost.toFixed(2)} | ${res.faces.map((f) => `${f.slot}:${(f.ids ?? []).map((id) => (id < 0 ? "." : id)).join(",")}`).join(" ")}\n`);
+    // H264=2500 など: 本体の録画と同じ形の H.264（kbps）に圧縮して戻した映像で測る（CLAUDE.md の ffmpeg の条件）。H264=0,5000,2500 のように
+    // 並べると、同じ描画をそれぞれの画質で測る（0 = 圧縮なし。行の h264 に入る）
+    const rawFrames = frameList.map((f) => f.img);
+    for (const kbps of (process.env.H264 ?? "0").split(",").map(Number)) {
+      const lives = makeLives();
+      const refines = makeRefines();
+      let prevGrid: Float32Array | null = null;
+      frameList.forEach((f, i) => (f.img = rawFrames[i]));
+      if (kbps) {
+        const raw = Buffer.concat(rawFrames.map((img) => Buffer.from(img.data.buffer, img.data.byteOffset, img.data.byteLength)));
+        const br = `${kbps}k`;
+        const enc = spawnSync("ffmpeg", ["-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", `${w}x${h}`, "-r", String(FPS), "-i", "-", "-pix_fmt", "yuv420p", "-c:v", "libx264", "-profile:v", "baseline", "-preset", "veryfast", "-tune", "zerolatency", "-b:v", br, "-maxrate", br, "-bufsize", `${kbps / 2}k`, "-g", String(FPS), "-f", "h264", "-"], { input: raw, maxBuffer: 1 << 30 });
+        const dec = spawnSync("ffmpeg", ["-loglevel", "error", "-f", "h264", "-i", "-", "-f", "rawvideo", "-pix_fmt", "rgba", "-"], { input: enc.stdout, maxBuffer: 2 ** 32 });
+        const n = w * h * 4;
+        if (dec.stdout.length < n * frameList.length) throw new Error(`H.264 の圧縮・復号に失敗: ${enc.stderr} ${dec.stderr}`);
+        frameList.forEach((f, i) => {
+          if ((i + 1) * n <= dec.stdout.length) f.img = { data: new Uint8ClampedArray(dec.stdout.buffer.slice(dec.stdout.byteOffset + i * n, dec.stdout.byteOffset + (i + 1) * n)), width: w, height: h };
+        });
       }
-      if (process.env.SHIFTS && t <= Number(process.env.SHIFTS)) {
-        const res = processFrame(cv as never, img, t, { ...LIVE_BASE, arucoThorough: true }, shiftMemory);
-        process.stdout.write(`# ${t.toFixed(0).padStart(4)} ${turning ? "T" : " "} ${res.faces.map((f) => `${f.slot}:${(f.shift ?? []).map((p) => (p ? String(Math.round(Math.hypot(...p) * 100)).padStart(2) : " .")).join(" ")}`).join(" | ")}\n`);
-      }
-      for (const rf of refines) {
-        const a = performance.now();
-        for (const f of rf.still ? rf.still.next(img, t) : [{ img, t }]) rf.refiner.push(f.img, f.t);
-        rf.ms += performance.now() - a;
-      }
-    }
-    // 正解は手をまとめた形（L' R' L' = L2 R' など、同じ状態になる並び）
-    const truthAlg = simplifyMoves(parseMoves(sc.alg).map((move, i) => ({ move, t: i, orient: 0 }))).map((m) => MOVE_NAMES[m.move]).join(" ");
-    const truth = truthAlg.split(" ");
-    // 正解: まとめた正解と同じ並び、または同じ手数で同じ状態（反対の面の手の順番が入れ替わっただけ: D' U' = U' D'）
-    // 精密解析は、打ち消し合う 2 手でも層が動いて止まったのを見た手（無駄な動き）は残す（separateMotions）ので、回した手そのまま
-    // （U D' U' を D' にまとめない）も正解。まとめると正解と同じになる並びも、回した手より長くなければ正解
-    const raw = sc.alg;
-    const correct = (got: string[]) =>
-      got.join(" ") === truthAlg ||
-      got.join(" ") === raw ||
-      (got.length === truth.length && statesEqual(applyMoves(solvedState(), got.join(" ")), applyMoves(solvedState(), truthAlg))) ||
-      (got.length <= sc.moves.length && simplifyMoves(parseMoves(got.join(" ")).map((move, i) => ({ move, t: i, orient: 0 }))).map((m) => MOVE_NAMES[m.move]).join(" ") === truthAlg);
-    const frames = Math.floor(sc.endT / (1000 / FPS)) + 1;
-    const rows: object[] = [];
-    for (const l of lives) {
-      const got = simplifyMoves(l.engine.decoder.bestMoves()).map((m) => MOVE_NAMES[m.move]);
-      // 確定した手だけ（本体のライブの 3D は確定した手だけ回す）
-      const sure = simplifyMoves(l.engine.decoder.bestMoves().slice(0, l.engine.decoder.confirmedCount())).map((m) => MOVE_NAMES[m.move]);
-      // 最後に 3D に出している状態（作り変えていればその状態）が本当の状態と同じか
-      const shown = l.engine.view?.state ?? Array.from(l.engine.decoder.best().state);
-      const stateOk = statesEqual(Uint8Array.from(shown), applyMoves(solvedState(), sc.alg));
-      rows.push({ seed, view: sc.view.name, kind: "live", cfg: l.name, stateOk, ok: correct(got), dist: dist(got, truth), okSure: correct(sure), distSure: dist(sure, truth), sure: sure.join(" "), got: got.join(" "), truth: truthAlg, ms: l.ms / l.processed, fps: (l.processed * 1000) / sc.endT, p90: [...l.spent].sort((a, b) => a - b)[Math.floor(l.spent.length * 0.9)], max: Math.max(...l.spent) });
-    }
-    const target = applyMoves(solvedState(), sc.alg);
-    const tStart = sc.timing[0].start;
-    const tEnd = sc.timing[sc.moves.length - 1].start + sc.timing[sc.moves.length - 1].dur;
-    for (const rf of refines) {
-      const r0 = performance.now();
-      const res = rf.refiner.result(target);
-      const resultMs = performance.now() - r0;
-      const got = res.moves.map((m) => MOVE_NAMES[m.move]);
-      if (process.env.DUMP) {
-        process.stdout.write(`# 手順 ${sc.alg}\n# 正解の時刻 ${sc.timing.map((x) => `${x.start.toFixed(0)}-${(x.start + x.dur).toFixed(0)}`).join(" ")}\n`);
-        process.stdout.write(`# raw ${JSON.stringify(res.raw?.map((m) => ({ m: MOVE_NAMES[m.move], t0: Math.round(m.t0 ?? -1), t: Math.round(m.t), s: Math.round(m.start), e: Math.round(m.end) })))}\n`);
-        for (const ob of rf.refiner.engine.observationLog) if (ob.t >= Number(process.env.OBS_FROM ?? 1e9) && ob.t <= Number(process.env.OBS_TO ?? 0)) process.stdout.write(`# 観測 ${ob.t.toFixed(0)} ${ob.faces.map((f) => `${f.slot}:${Array.from(f.labels).map((l) => (l < 0 ? "." : l)).join("")}${f.ids ? `[${Array.from(f.ids).join(",")}]` : ""}`).join(" ")}\n`);
-        const fr = rf.refiner.engine.frames;
-        for (const which of [0, (res.raw?.length ?? 1) - 1]) {
-          const m = res.raw?.[which];
-          if (!m) continue;
-          const orient = res.moves[Math.min(which, res.moves.length - 1)].orient;
-          const face = Math.floor(m.move / 3);
-          const tc = sc.timing[which === 0 ? 0 : sc.moves.length - 1];
-          const lines: string[] = [];
-          for (let k = 1; k < fr.length; k++) {
-            if (fr[k].t < tc.start - 250 || fr[k].t > tc.start + tc.dur + 350) continue;
-            // 層の側面のマス: 読み（色・ID の有無・ずれ・指）
-            const cells: string[] = [];
-            for (const f of fr[k].faces)
-              for (let cell = 0; cell < 9; cell++) {
-                if (!cellInLayer(orient, f.slot, cell, face)) continue;
-                const sh = f.shift?.[cell];
-                const prev = fr[k - 1].faces.find((x) => x.slot === f.slot)?.shift?.[cell];
-                const d = sh && prev ? Math.round(Math.hypot(sh[0] - prev[0], sh[1] - prev[1]) * 100) : null;
-                cells.push(`${f.slot}${cell}${f.masked?.[cell] ? "m" : f.valid[cell] ? "" : "x"}${sh ? (d === null ? "+" : d) : "."}`);
-              }
-            const at = layerAtRest(fr[k], orient, face, undefined, fr[k - 1]);
-            lines.push(`${fr[k].t.toFixed(0).padStart(5)} ${fr[k].t >= tc.start && fr[k].t <= tc.start + tc.dur ? "T" : " "} ${at === null ? "?" : at ? "止" : "動"} ${cells.join(" ")}`);
+      for (const { img, t, turning } of frameList) {
+        const grid = thumb(img);
+        const motion = prevGrid ? motionOf(grid, prevGrid) : Infinity;
+        prevGrid = grid;
+        for (const l of lives) {
+          if (l.select) {
+            l.pending.push({ img, t, motion });
+            if (l.pending.length > 8) l.pending.shift();
           }
-          process.stdout.write(`# ${which === 0 ? "最初" : "最後"}の手 ${MOVE_NAMES[m.move]}:\n${lines.map((l) => `#   ${l}`).join("\n")}\n`);
+          if ((l.k || l.every) && t < l.busyUntil) continue;
+          let pick = { img, t };
+          if (l.select && l.pending.length) {
+            let best = l.pending[l.pending.length - 1];
+            for (const p of l.pending) if (p.motion < best.motion * 0.7) best = p;
+            pick = best;
+            l.pending = [];
+          }
+          const a = performance.now();
+          const res = processFrame(cv as never, pick.img, pick.t, l.cfg, l.memory);
+          l.engine.push(frameReading(pick.t, res));
+          const spent = performance.now() - a;
+          l.shown.push({ t: pick.t, state: Uint8Array.from(l.engine.view?.state ?? l.engine.decoder.best().state) });
+          l.ms += spent;
+          l.processed++;
+          l.spent.push(spent);
+          l.busyUntil = l.every ? t + l.every - 1 : t + spent * l.k - 1;
+          if (process.env.LIVEDUMP && t >= Number(process.env.LIVEDUMP)) process.stdout.write(`# live ${l.name} ${pick.t.toFixed(0)} ${liveStats.last} ${spent.toFixed(0)}ms m${res.quads.length} ${l.engine.decoder.status} ${l.engine.decoder.bestMoves().map((m) => MOVE_NAMES[m.move]).join(" ")} | obs ${l.engine.decoder.observations} cost ${l.engine.decoder.lastObservationCost.toFixed(2)} | ${res.faces.map((f) => `${f.slot}:${(f.ids ?? []).map((id) => (id < 0 ? "." : id)).join(",")}`).join(" ")}\n`);
+        }
+        if (process.env.SHIFTS && t <= Number(process.env.SHIFTS)) {
+          const res = processFrame(cv as never, img, t, { ...LIVE_BASE, arucoThorough: true }, shiftMemory);
+          process.stdout.write(`# ${t.toFixed(0).padStart(4)} ${turning ? "T" : " "} ${res.faces.map((f) => `${f.slot}:${(f.shift ?? []).map((p) => (p ? String(Math.round(Math.hypot(...p) * 100)).padStart(2) : " .")).join(" ")}`).join(" | ")}\n`);
+        }
+        for (const rf of refines) {
+          const a = performance.now();
+          for (const f of rf.still ? rf.still.next(img, t) : [{ img, t }]) rf.refiner.push(f.img, f.t);
+          rf.ms += performance.now() - a;
         }
       }
-      rows.push({
-        seed,
-        view: sc.view.name,
-        kind: "refine",
-        cfg: rf.name,
-        ok: correct(got),
-        dist: dist(got, truth),
-        got: got.join(" "),
-        truth: truthAlg,
-        startErr: res.start === null ? null : res.start - tStart,
-        endErr: res.end === null ? null : res.end - tEnd,
-        startUncertain: res.startUncertain,
-        endUncertain: res.endUncertain,
-        method: res.method,
-        ms: rf.ms / frames,
-        resultMs,
-        processed: rf.refiner.frames,
-      });
+      // 正解は手をまとめた形（L' R' L' = L2 R' など、同じ状態になる並び）
+      const truthAlg = simplifyMoves(parseMoves(sc.alg).map((move, i) => ({ move, t: i, orient: 0 }))).map((m) => MOVE_NAMES[m.move]).join(" ");
+      const truth = truthAlg.split(" ");
+      // 正解: まとめた正解と同じ並び、または同じ手数で同じ状態（反対の面の手の順番が入れ替わっただけ: D' U' = U' D'）
+      // 精密解析は、打ち消し合う 2 手でも層が動いて止まったのを見た手（無駄な動き）は残す（separateMotions）ので、回した手そのまま
+      // （U D' U' を D' にまとめない）も正解。まとめると正解と同じになる並びも、回した手より長くなければ正解
+      const raw = sc.alg;
+      const correct = (got: string[]) =>
+        got.join(" ") === truthAlg ||
+        got.join(" ") === raw ||
+        (got.length === truth.length && statesEqual(applyMoves(solvedState(), got.join(" ")), applyMoves(solvedState(), truthAlg))) ||
+        (got.length <= sc.moves.length && simplifyMoves(parseMoves(got.join(" ")).map((move, i) => ({ move, t: i, orient: 0 }))).map((m) => MOVE_NAMES[m.move]).join(" ") === truthAlg);
+      const frames = Math.floor(sc.endT / (1000 / FPS)) + 1;
+      const rows: object[] = [];
+      for (const l of lives) {
+        const got = simplifyMoves(l.engine.decoder.bestMoves()).map((m) => MOVE_NAMES[m.move]);
+        // 確定した手だけ（本体のライブの 3D は確定した手だけ回す）
+        const sure = simplifyMoves(l.engine.decoder.bestMoves().slice(0, l.engine.decoder.confirmedCount())).map((m) => MOVE_NAMES[m.move]);
+        // 最後に 3D に出している状態（作り変えていればその状態）が本当の状態と同じか
+        const shown = l.engine.view?.state ?? Array.from(l.engine.decoder.best().state);
+        const stateOk = statesEqual(Uint8Array.from(shown), applyMoves(solvedState(), sc.alg));
+        // 3D の一致: 処理したフレームで 3D に出した状態が、その時刻か 300ms 前までの本当の状態と同じだった割合（CLAUDE.md の「ライブの良し悪し」）
+        const truthAt = (t: number) => {
+          let s0 = solvedState();
+          for (let i = 0; i < sc.moves.length && sc.timing[i].start + sc.timing[i].dur <= t; i++) s0 = applyMoves(s0, MOVE_NAMES[sc.moves[i]]);
+          return s0;
+        };
+        const match = l.shown.filter((x) => [0, 100, 200, 300].some((d) => statesEqual(x.state, truthAt(x.t - d)))).length / Math.max(1, l.shown.length);
+        rows.push({ seed, view: sc.view.name, design: BENCH_STICKERS.arucoDesign, h264: kbps, kind: "live", cfg: l.name, stateOk, match, ok: correct(got), dist: dist(got, truth), okSure: correct(sure), distSure: dist(sure, truth), sure: sure.join(" "), got: got.join(" "), truth: truthAlg, ms: l.ms / l.processed, fps: (l.processed * 1000) / sc.endT, p90: [...l.spent].sort((a, b) => a - b)[Math.floor(l.spent.length * 0.9)], max: Math.max(...l.spent) });
+      }
+      const target = applyMoves(solvedState(), sc.alg);
+      const tStart = sc.timing[0].start;
+      const tEnd = sc.timing[sc.moves.length - 1].start + sc.timing[sc.moves.length - 1].dur;
+      for (const rf of refines) {
+        const r0 = performance.now();
+        const res = rf.refiner.result(target);
+        const resultMs = performance.now() - r0;
+        const got = res.moves.map((m) => MOVE_NAMES[m.move]);
+        if (process.env.DUMP) {
+          process.stdout.write(`# 手順 ${sc.alg}\n# 正解の時刻 ${sc.timing.map((x) => `${x.start.toFixed(0)}-${(x.start + x.dur).toFixed(0)}`).join(" ")}\n`);
+          process.stdout.write(`# raw ${JSON.stringify(res.raw?.map((m) => ({ m: MOVE_NAMES[m.move], t0: Math.round(m.t0 ?? -1), t: Math.round(m.t), s: Math.round(m.start), e: Math.round(m.end) })))}\n`);
+          for (const ob of rf.refiner.engine.observationLog) if (ob.t >= Number(process.env.OBS_FROM ?? 1e9) && ob.t <= Number(process.env.OBS_TO ?? 0)) process.stdout.write(`# 観測 ${ob.t.toFixed(0)} ${ob.faces.map((f) => `${f.slot}:${Array.from(f.labels).map((l) => (l < 0 ? "." : l)).join("")}${f.ids ? `[${Array.from(f.ids).join(",")}]` : ""}`).join(" ")}\n`);
+          const fr = rf.refiner.engine.frames;
+          for (const which of [0, (res.raw?.length ?? 1) - 1]) {
+            const m = res.raw?.[which];
+            if (!m) continue;
+            const orient = res.moves[Math.min(which, res.moves.length - 1)].orient;
+            const face = Math.floor(m.move / 3);
+            const tc = sc.timing[which === 0 ? 0 : sc.moves.length - 1];
+            const lines: string[] = [];
+            for (let k = 1; k < fr.length; k++) {
+              if (fr[k].t < tc.start - 250 || fr[k].t > tc.start + tc.dur + 350) continue;
+              // 層の側面のマス: 読み（色・ID の有無・ずれ・指）
+              const cells: string[] = [];
+              for (const f of fr[k].faces)
+                for (let cell = 0; cell < 9; cell++) {
+                  if (!cellInLayer(orient, f.slot, cell, face)) continue;
+                  const sh = f.shift?.[cell];
+                  const prev = fr[k - 1].faces.find((x) => x.slot === f.slot)?.shift?.[cell];
+                  const d = sh && prev ? Math.round(Math.hypot(sh[0] - prev[0], sh[1] - prev[1]) * 100) : null;
+                  cells.push(`${f.slot}${cell}${f.masked?.[cell] ? "m" : f.valid[cell] ? "" : "x"}${sh ? (d === null ? "+" : d) : "."}`);
+                }
+              const at = layerAtRest(fr[k], orient, face, undefined, fr[k - 1]);
+              lines.push(`${fr[k].t.toFixed(0).padStart(5)} ${fr[k].t >= tc.start && fr[k].t <= tc.start + tc.dur ? "T" : " "} ${at === null ? "?" : at ? "止" : "動"} ${cells.join(" ")}`);
+            }
+            process.stdout.write(`# ${which === 0 ? "最初" : "最後"}の手 ${MOVE_NAMES[m.move]}:\n${lines.map((l) => `#   ${l}`).join("\n")}\n`);
+          }
+        }
+        rows.push({
+          seed,
+          view: sc.view.name,
+          design: BENCH_STICKERS.arucoDesign,
+          h264: kbps,
+          kind: "refine",
+          cfg: rf.name,
+          ok: correct(got),
+          dist: dist(got, truth),
+          got: got.join(" "),
+          truth: truthAlg,
+          startErr: res.start === null ? null : res.start - tStart,
+          endErr: res.end === null ? null : res.end - tEnd,
+          startUncertain: res.startUncertain,
+          endUncertain: res.endUncertain,
+          method: res.method,
+          solved: res.solved,
+          inferred: res.moves.filter((m) => m.inferred).length,
+          ms: rf.ms / frames,
+          resultMs,
+          processed: rf.refiner.frames,
+        });
+      }
+      for (const row of rows) {
+        const line = JSON.stringify(row);
+        process.stdout.write(`${line}\n`);
+        if (process.env.OUT) appendFileSync(process.env.OUT, `${line}\n`);
+      }
+      process.stdout.write(`# seed ${seed} ${sc.view.name} h264 ${kbps} 描画 ${(renderMs / frameList.length).toFixed(0)}ms/フレーム ライブ ${JSON.stringify(liveStats)}\n`);
+      Object.assign(liveStats, { tracked: 0, gridded: 0, partial: 0, detected: 0, last: "" });
     }
-    for (const row of rows) {
-      const line = JSON.stringify(row);
-      process.stdout.write(`${line}\n`);
-      if (process.env.OUT) appendFileSync(process.env.OUT, `${line}\n`);
-    }
-    process.stdout.write(`# seed ${seed} ${sc.view.name} 描画 ${(renderMs / frames).toFixed(0)}ms/フレーム ライブ ${JSON.stringify(liveStats)}\n`);
-    Object.assign(liveStats, { tracked: 0, gridded: 0, partial: 0, detected: 0, last: "" });
   }
 }, 7200000);

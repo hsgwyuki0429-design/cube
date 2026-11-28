@@ -6,6 +6,8 @@ import { useStore } from "../app/store";
 import { HelpPage } from "./HelpPage";
 import { exportLiveLog } from "./liveLogExport";
 import { exportRecording } from "./recordingExport";
+import { STICKERS, type StickerLayout } from "../aruco/design";
+import { timerStore } from "../app/timer";
 
 function Field(props: { label: string; desc?: string; children: preact.ComponentChildren }) {
   return (
@@ -40,6 +42,40 @@ function Select<K extends keyof Settings>(props: { k: K; options: [Settings[K], 
 function Toggle<K extends keyof Settings>({ k }: { k: K }) {
   const v = useStore(settingsStore, (s) => s[k]);
   return <input type="checkbox" checked={!!v} onChange={(e) => updateSettings({ [k]: (e.target as HTMLInputElement).checked } as Partial<Settings>)} />;
+}
+
+// ステッカーのマーカーの配置（src/aruco/design.ts の STICKERS）。認識の Worker・精密解析・デモの合成キューブは起動したときの配置で動くので、
+// 変えたら保存してページを読み込み直す（URL の ?stickers= は外す: 付いているとそちらが優先される）。解析中のソルブがあれば先に確かめる
+const LAYOUT_OPTIONS: [StickerLayout, string][] = [
+  ["quad-half", "1 枚に 4 個"],
+  ["standard", "1 枚に 1 個"],
+];
+function StickerSelect() {
+  return (
+    <select
+      value={STICKERS.arucoDesign}
+      onChange={(e) => {
+        const el = e.target as HTMLSelectElement;
+        const next = el.value as StickerLayout;
+        if (next === STICKERS.arucoDesign) return;
+        const pending = timerStore.get().solves.some((x) => x.analysis === "pending");
+        if (pending && !confirm("解析中のソルブがあります。切り替えるとページを読み込み直し、そのソルブは速報値のままになります。切り替えますか？")) {
+          el.value = STICKERS.arucoDesign;
+          return;
+        }
+        updateSettings({ stickerLayout: next });
+        const url = new URL(location.href);
+        url.searchParams.delete("stickers");
+        location.replace(url.toString());
+      }}
+    >
+      {LAYOUT_OPTIONS.map(([o, label]) => (
+        <option value={o} key={o}>
+          {label}
+        </option>
+      ))}
+    </select>
+  );
 }
 
 // 使うカメラ: 端末が持っているカメラ（前面・背面・超広角など）から選ぶ。名前の一覧はカメラを一度許可すると取れるので、
@@ -125,6 +161,9 @@ export function SettingsPage() {
         <div class="card-body form">
           <Field label="使うカメラ" desc={info ? `使用中: ${info.label || "カメラ"}（${info.width}×${info.height}${info.frameRate ? `・${Math.round(info.frameRate)}fps` : ""}）` : "カメラを一度許可すると、超広角などのカメラも選べます"}>
             <CameraSelect />
+          </Field>
+          <Field label="ステッカー" desc={`貼ったステッカーのマーカーの数（印刷用 PDF の 5 ページ目が 4 個、2 ページ目が 1 個）。切り替えるとページを読み込み直します${new URLSearchParams(location.search).has("stickers") ? "（いまは URL の ?stickers= で選ばれています）" : ""}`}>
+            <StickerSelect />
           </Field>
         </div>
       </div>

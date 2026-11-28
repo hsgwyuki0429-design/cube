@@ -18,6 +18,7 @@
 //   REAL_RREADINGS=ファイル（精密解析が精密に処理したフレームの読み: betweenMoves.debug.test.ts）
 //   REAL_OBS=ファイル（精密解析の観測を書き出す: obsReplay.debug.test.ts で解き直しだけを測る）・REAL_OBS_ONLY=1（書き出したら解き直さない）
 //   REAL_REF=ファイル（精密解析の結果を書き出す。REAL_REFINE=0 なら読み込んで、ライブの一致だけ測る: ライブを直して何度も測るとき）
+//   REAL_DESIGN=standard（ステッカーのマーカーの配置。書き出した録画は撮ったときの配置: lib/recording.ts の exportLayout）
 //   REAL_PIECES=1（精密解析の解き直しをステッカーの動きの方程式で: RefineInput.pieces。表の AND 版。REAL_PIECES=v1 は最初の版）
 // 設定画面の「録画を書き出す」で書き出した録画（cubevision-rec-….mp4）は、REAL_VIDEO=そのファイル だけで本体と同じ条件になる
 // （tests/debug/lib/recording.ts）: 圧縮し直さず・縮めずに YUV のまま読み（本体と同じ planesToRgba）、時刻は本体の時間軸（ms）、始まりの状態・
@@ -34,7 +35,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { it } from "vitest";
-import { STICKERS } from "../../src/aruco/design";
+import { STICKERS, stickerPipeline, stickersOf } from "../../src/aruco/design";
 import { ARUCO_REFS } from "../../src/aruco/palette";
 import { MOVE_NAMES, VIEW, applyMove, applyMoves, inverseMove, isSolved, parseMoves, solvedState, statesEqual } from "../../src/cube/model";
 import { mostLikelyState } from "../../src/cube/pattern";
@@ -52,7 +53,7 @@ import { sightFrame } from "../../src/track/sight";
 import { type RefineResult, Refiner } from "../../src/vision/refine";
 import { ShowFeed } from "../../src/vision/showFeed";
 import { DEFAULT_PIPELINE } from "../../src/vision/pipeline";
-import { type StatFrame, compareResults, exportPlan, loadExport, readExportFrames, readStats, statFrame } from "./lib/recording";
+import { type StatFrame, compareResults, exportLayout, exportPlan, loadExport, readExportFrames, readStats, statFrame } from "./lib/recording";
 import type { SightFrame } from "../../src/track/sight";
 import { loadTestOpenCv } from "../cv";
 import { writePng } from "./png";
@@ -163,8 +164,12 @@ it("実際のプレイ動画", async () => {
       }
     }
   };
+  // ステッカーのマーカーの配置: 書き出しはそれを撮った配置（exportLayout）、ほかは REAL_DESIGN=standard など（既定は本体の既定）
+  const layout = exp ? exportLayout(exp) : (process.env.REAL_DESIGN ?? STICKERS.arucoDesign);
+  const stickerCfg = stickerPipeline(stickersOf(layout));
+  if (layout !== STICKERS.arucoDesign) process.stdout.write(`# ステッカーの配置 ${layout}\n`);
   // 本体のライブの認識（controller.liveConfig）。REAL_LIVE='{"arucoGrid":false}' などで上書き
-  const liveCfg = { ...STICKERS, arucoRegion: true, arucoTrack: true, arucoTurn: false, arucoGrid: true, arucoColorFill: false, ...JSON.parse(process.env.REAL_LIVE ?? "{}") };
+  const liveCfg = { ...stickerCfg, arucoRegion: true, arucoTrack: true, arucoTurn: false, arucoGrid: true, arucoColorFill: false, ...JSON.parse(process.env.REAL_LIVE ?? "{}") };
   const out: string[] = [];
 
   let start = solvedState();
@@ -180,7 +185,7 @@ it("実際のプレイ動画", async () => {
     let used = 0;
     await readFrames(
       (img, t) => {
-        const r = processFrame(cv as never, img, t, { ...STICKERS }, mem);
+        const r = processFrame(cv as never, img, t, { ...stickerCfg }, mem);
         const o = orientOfIds(r);
         if (o === null) return;
         used++;
@@ -263,7 +268,7 @@ it("実際のプレイ動画", async () => {
             engine: { ...plan.input.engine, ...refineEngine, decoder: { ...plan.input.engine?.decoder, ...refineEngine.decoder } },
             pipeline: { ...DEFAULT_PIPELINE, ...plan.input.pipeline, ...JSON.parse(process.env.REAL_REFINE_CFG ?? "{}") },
           })
-        : new Refiner(cv as never, { state: Array.from(start), refs: ARUCO_REFS, from: from * 1000, to: to * 1000, ...(process.env.REAL_PIECES ? { pieces: process.env.REAL_PIECES === "v1" ? ("v1" as const) : ("and" as const) } : {}), ...(process.env.REAL_REFINE_GATE === "0" ? { gate: false } : {}), engine: { observer: ARUCO_OBSERVER, ...JSON.parse(process.env.REAL_REFINE_ENGINE ?? "{}"), decoder: { beamWidth: 32, maxMovesPerStep: 3, rotationCost: 1.5, ...JSON.parse(process.env.REAL_REFINE_ENGINE ?? "{}").decoder } }, pipeline: { ...STICKERS, ...JSON.parse(process.env.REAL_REFINE_CFG ?? "{}") } });
+        : new Refiner(cv as never, { state: Array.from(start), refs: ARUCO_REFS, from: from * 1000, to: to * 1000, ...(process.env.REAL_PIECES ? { pieces: process.env.REAL_PIECES === "v1" ? ("v1" as const) : ("and" as const) } : {}), ...(process.env.REAL_REFINE_GATE === "0" ? { gate: false } : {}), engine: { observer: ARUCO_OBSERVER, ...JSON.parse(process.env.REAL_REFINE_ENGINE ?? "{}"), decoder: { beamWidth: 32, maxMovesPerStep: 3, rotationCost: 1.5, ...JSON.parse(process.env.REAL_REFINE_ENGINE ?? "{}").decoder } }, pipeline: { ...stickerCfg, ...JSON.parse(process.env.REAL_REFINE_CFG ?? "{}") } });
   // REAL_RFRAMES=22.1-23.0: 精密解析が精密に処理したフレームの面
   // 精密解析が精密に処理したフレームの読み（ID が読めたマスの数。認識の良し悪し）
   const rstat = { frames: 0, faces: 0, ids: 0, empty: 0 };
@@ -521,10 +526,14 @@ it("実際のプレイ動画", async () => {
       const base = ref ?? res;
       const range: [number, number] | null = rr ? [rr[0], rr[1]] : base.start !== null && base.end !== null ? [base.start, base.end] : null;
       if (range) {
-        const st = readStats(range, allTimes, statFrames, statSights);
-        const row = { name: process.env.REAL_NAME ?? file.split("/").pop(), label: process.env.REAL_STATS_LABEL ?? (exp ? "実機" : "動画"), ...st, solved: res.solved, method: res.method, moves: res.moves.length, inferred: res.moves.filter((m) => m.inferred).length, ...(exp ? { recorder: exp.recorder, device: exp.device?.ua } : {}) };
+        // 誤読の物差しの正解の代わり: 本体の結果（書き出し）か、この解析の結果（完成まで届いたものだけ）
+        const truthRes = (exp?.analysis.result?.solved ? exp.analysis.result : null) ?? (base.solved ? base : null);
+        const truthState = truthRes?.startState ?? (exp ? exp.analysis.input.state : Array.from(start));
+        const st = readStats(range, allTimes, statFrames, statSights, truthRes ? { state: truthState, moves: truthRes.moves } : undefined);
+        const app = exp?.analysis.result;
+        const row = { name: process.env.REAL_NAME ?? file.split("/").pop(), label: process.env.REAL_STATS_LABEL ?? (exp ? "実機" : "動画"), layout, ...st, solved: res.solved, method: res.method, moves: res.moves.length, inferred: res.moves.filter((m) => m.inferred).length, ...(exp ? { recorder: exp.recorder, device: exp.device?.ua, waitMs: exp.analysis.waitMs, app: app ? { solved: app.solved, inferred: app.moves.filter((m) => m.inferred).length, moves: app.moves.length } : null, analysis: exp.solve?.analysis } : {}) };
         appendFileSync(process.env.REAL_STATS_OUT!, `${JSON.stringify(row)}\n`);
-        out.push(`読める量（${(range[0] / 1000).toFixed(2)}〜${(range[1] / 1000).toFixed(2)}s）: ${st.fps}fps（間隔の中央 ${st.medianMs}ms・抜け ${st.holes} か所 ${st.missing} 枚）・1 フレームに読めたマス ${st.cells}・ピース ${st.pieces}・確かな読みのない 1 秒より長い区間 ${st.gaps1}（${st.gaps1Sec} 秒）・いちばん長い ${st.longest} 秒`);
+        out.push(`読める量（${(range[0] / 1000).toFixed(2)}〜${(range[1] / 1000).toFixed(2)}s）: ${st.fps}fps（間隔の中央 ${st.medianMs}ms・抜け ${st.holes} か所 ${st.missing} 枚）・1 フレームに読めたマス ${st.cells}・ピース ${st.pieces}・確かな読みのない 1 秒より長い区間 ${st.gaps1}（${st.gaps1Sec} 秒）・いちばん長い ${st.longest} 秒・面が組めない ${(st.faceless * 100).toFixed(1)}%・指 ${(st.masked * 100).toFixed(1)}%${st.misread !== undefined ? `・誤読 ${(st.misread * 100).toFixed(2)}%（${st.misreadReads}）` : ""}`);
       } else out.push("読める量: 範囲が決まらない（REAL_STATS_RANGE か REAL_STATS_REF を渡す）");
     }
     // REAL_METHODS=old,v1,and・REAL_METHODS_OUT=ファイル: 同じ読みで解き直しの方法ごとに結果を 1 行ずつ足す（REAL_PIECES=1 と一緒に:

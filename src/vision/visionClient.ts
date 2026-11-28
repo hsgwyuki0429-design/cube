@@ -1,6 +1,6 @@
 // 認識 Worker のクライアント。空いているときだけ最新フレームを送る（詰まったら間引く）。
 import { markerSize, stickerScheme } from "../aruco/codes";
-import { STICKERS, designOf } from "../aruco/design";
+import { STICKERS, designOf, stickerPipeline } from "../aruco/design";
 import type { EngineOptions, TrackUpdate } from "../track/engine";
 import type { Lab } from "./color";
 import type { PipelineConfig } from "./pipeline";
@@ -10,6 +10,7 @@ import type { LiveStop } from "../track/stopCut";
 import type { RefineInput, RefineResult } from "./refine";
 import type { VideoFileInfo } from "./videoFile";
 import type { WorkerPerf } from "../app/perfLog";
+import { FrameGate } from "./frameGate";
 
 // Worker に送って結果がまだ来ていないフレームの上限。Worker は待っているフレームのうち動きのいちばん小さいものを処理する
 // （src/vision/vision.worker.ts の pickFrame）。処理が速ければ待つフレームはほとんどない
@@ -23,7 +24,8 @@ const MAX_INFLIGHT_EACH = 2; // Worker 2 つのとき、それぞれに送って
 
 // 本体のステッカー（3×3 の符号を 4 個）は専用の検出（src/aruco/quadDetect.ts）で読むので、認識の Worker は OpenCV を読み込まない
 // （約 4MB の読み込みと、Worker 1 個あたり 134MB のヒープがいらない。src/vision/arucoFrame.ts の usesQuad と同じ条件）
-const NEEDS_OPENCV = !(markerSize(stickerScheme(STICKERS.stickers)) === 3 && designOf(STICKERS.arucoDesign).at.length === 4);
+// 1 個の配置（?stickers=standard）も専用の検出で読む（stickerPipeline の arucoQuad）
+const NEEDS_OPENCV = !(markerSize(stickerScheme(STICKERS.stickers)) === 3 && (designOf(STICKERS.arucoDesign).at.length === 4 || !!stickerPipeline(STICKERS).arucoQuad));
 
 // Worker に処理の様子（累計）を聞く（src/app/perfLog.ts）。忙しくて 900ms 以内に答えなければ null
 const perfAsks = new Map<number, (p: WorkerPerf | null) => void>();
@@ -58,15 +60,21 @@ export class VisionClient {
   private helperInflight = 0;
   private nextSeq = 1;
   helperFrames = 0; // 補助の Worker が認識したフレームの数（調査用）
-  videoFrames = false; // カメラのフレームを VideoFrame のまま送る（既定。?solveload=default で使わない）
-  videoFrameNote: string | null = null; // VideoFrame をやめた理由（調査用）
+  // カメラのフレームを VideoFrame のまま送るか（既定。?solveload=default で使わない）。一時的な失敗では戻さない（src/vision/frameGate.ts）
+  readonly frameGate = new FrameGate("ライブ");
+  get videoFrames(): boolean {
+    return this.frameGate.enabled;
+  }
+  set videoFrames(on: boolean) {
+    this.frameGate.enabled = on;
+  }
+  get videoFrameNote(): string | null {
+    return this.frameGate.note; // VideoFrame をやめた理由（調査用）
+  }
 
-  // VideoFrame を使えなかった: 今までのやり方（メインスレッドで画像にする）に戻す
+  // VideoFrame を Worker で描けなかった: 今までのやり方（メインスレッドで画像にする）に戻す
   private disableVideoFrames(why: string): void {
-    if (!this.videoFrames) return;
-    this.videoFrames = false;
-    this.videoFrameNote = why;
-    console.warn("VideoFrame を使わずに送ります:", why);
+    this.frameGate.disable(why);
   }
   // 補助の Worker に送ってよいか（録画の圧縮が詰まっている間は休ませる: 精密解析の録画の方が大事。controller が決める）
   useHelper = true;
@@ -197,6 +205,15 @@ export class VisionClient {
       this.onStat?.("full");
       return false;
     }
+    // vframe（既定）: カメラのフレームを VideoFrame のまま渡し、縮める・画素にするのは Worker で（メインスレッドの 1 枚ごとの時間を減らす。
+    // 実機の iPhone でメインスレッド 580 → 30ms/秒）。映像のフレームがまだない（一時的）ならこのフレームは送らずに次を待つ。
+    // 映像があるのに続けて作れない・渡せない端末では、今までのやり方に戻して以後も使わない（src/vision/frameGate.ts）
+    let frame: VideoFrame | null = null;
+    if (this.frameGate.enabled) {
+      const made = this.frameGate.make(video, Math.round(t * 1000));
+      if (made.kind === "wait") return false;
+      if (made.kind === "frame") frame = made.frame;
+    }
     if (toHelper) this.helperInflight++;
     else this.inflight++;
     this.onStat?.(toHelper ? "sentHelper" : "sent");
@@ -211,17 +228,15 @@ export class VisionClient {
         if (toHelper && this.helper) this.helper.postMessage({ type: "recognize", id, t, bitmap, seq, w, h } satisfies ToWorker, [bitmap]);
         else this.post({ type: "frame", id, t, bitmap, seq, w, h }, [bitmap]);
       };
-      // vframe（既定）: カメラのフレームを VideoFrame のまま渡し、縮める・画素にするのは Worker で（メインスレッドの 1 枚ごとの時間を減らす。
-      // 実機の iPhone でメインスレッド 580 → 30ms/秒）。作れない・渡せない端末では、今までのやり方に戻して以後も使わない
-      if (this.videoFrames && typeof VideoFrame !== "undefined") {
-        let frame: VideoFrame | null = null;
+      if (frame) {
         try {
-          frame = new VideoFrame(video, { timestamp: Math.round(t * 1000) });
           send(frame);
+          this.frameGate.sent();
           return true;
         } catch (e) {
-          frame?.close();
-          this.disableVideoFrames(`送れない: ${String(e)}`);
+          frame.close();
+          // 一時的なら、このフレームは送らなかったことにする（下の catch）。続けば今までのやり方に戻し、このフレームからそちらで
+          if (this.frameGate.sendFailed(video, e).kind === "wait") throw e;
         }
       }
       let bitmap: ImageBitmap;
@@ -239,10 +254,10 @@ export class VisionClient {
       send(bitmap);
       return true;
     } catch (e) {
-      if (toHelper) {
-        this.helperInflight = Math.max(0, this.helperInflight - 1);
-        this.worker.postMessage({ type: "foreign-skip", seq } satisfies ToWorker);
-      } else this.inflight = Math.max(0, this.inflight - 1);
+      if (toHelper) this.helperInflight = Math.max(0, this.helperInflight - 1);
+      else this.inflight = Math.max(0, this.inflight - 1);
+      // 送らなかった通し番号を飛ばす（主の Worker が待たない）
+      this.worker.postMessage({ type: "foreign-skip", seq } satisfies ToWorker);
       this.lastError = String(e);
       return false;
     }

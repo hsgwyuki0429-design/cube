@@ -1,5 +1,6 @@
 // アプリの中枢: カメラ → 認識 Worker → スキャン／追跡 の流れをまとめる。UI はこのストアを購読するだけ。
 import { LIVE_TRACKED_ORIENT } from "../track/orient";
+import type { FramePath } from "../vision/frameGate";
 import { Matrix4, Quaternion } from "three";
 import { type Mat3, ORIENTATIONS, mul } from "../cube/model";
 import { F, isSolved, solvedState } from "../cube/model";
@@ -19,7 +20,7 @@ import { RefineClient, VisionClient } from "../vision/visionClient";
 import { ARUCO_OBSERVER, LIVE_OBSERVER } from "../track/observer";
 import { ARUCO_NAMES, ARUCO_REFS } from "../aruco/palette";
 import { type Settings, facingOf, settingsStore } from "./settings";
-import { STICKERS } from "../aruco/design";
+import { STICKERS, stickerPipeline } from "../aruco/design";
 import { loadSolves, personalSequences } from "./storage";
 import { createStore } from "./store";
 import { markPhase } from "./crashGuard";
@@ -280,9 +281,10 @@ class Controller {
     this.vision.setTrackingOptions(this.liveEngineOptions(s));
   }
 
-  // 認識の設定（ステッカーの符号・マーカーの配置は STICKERS だけ）。ライブも直前のマーカーの周りだけで検出する（arucoRegion）
+  // 認識の設定（ステッカーの符号・マーカーの配置は STICKERS だけ。既定は 4 個、URL の ?stickers=standard で 1 個）。ライブも直前の
+  // マーカーの周りだけで検出する（arucoRegion）。ライブ・精密解析・スキャン・開始と停止の判定はどれもこの設定の認識の結果を使う
   pipelineConfig(): Partial<PipelineConfig> {
-    return { ...STICKERS, arucoRegion: true, arucoTrack: true };
+    return { ...stickerPipeline(STICKERS), arucoRegion: true, arucoTrack: true };
   }
 
   // ライブの認識: 面の格子で追う（arucoGrid。src/vision/arucoFrame.ts の liveMarkers）。回転途中の形（arucoTurn）は使わない。
@@ -804,13 +806,18 @@ class Controller {
   }
 
   // 実際に使ったカメラのフレームの渡し方（書き出しに残す: vframe = VideoFrame のまま・bitmap = 今までのやり方）と、戻した理由
-  framePath(): { live: "vframe" | "bitmap"; liveNote: string | null; recorder: "vframe" | "bitmap"; recorderNote: string | null; requested: boolean } {
+  // waits: 映像のフレームがまだないなど一時的に VideoFrame を作れず・渡せず、そのフレームだけ渡さなかった回数（戻してはいない）と最後の理由
+  framePath(): FramePath {
     return {
       requested: SOLVE_LOAD.vframe,
       live: this.vision?.videoFrames ? "vframe" : "bitmap",
       liveNote: this.vision?.videoFrameNote ?? null,
+      liveWaits: this.vision?.frameGate.waits ?? 0,
+      liveWaitNote: this.vision?.frameGate.waitNote ?? null,
       recorder: this.recorder.videoFrames ? "vframe" : "bitmap",
       recorderNote: this.recorder.videoFrameNote,
+      recorderWaits: this.recorder.frameGate.waits,
+      recorderWaitNote: this.recorder.frameGate.waitNote,
     };
   }
 
